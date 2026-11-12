@@ -1,6 +1,19 @@
+<p align="center">
+  <img src="admin/static/ark-logo.svg" alt="ARK Shield Logo" width="110" />
+</p>
+
 # ARK (Air-gapped Retrieval & Knowledge)
 
 ARK (`ark-stack`) is a 100% open-source, Linux-based Infrastructure-as-Code (IaC) appliance for deploying high-concurrency local LLM inference, enterprise SSO, and multi-tenant RAG across **strictly air-gapped (offline)** offices.
+
+| Color | Hex | Usage |
+| :--- | :--- | :--- |
+| **Deep Void** | `#0A0E17` | Midnight background & boundaries |
+| **Steel Shield** | `#1E293B` | System & container panels |
+| **Signal Amber** | `#F55A00` | Admin alerts, isolation badges & offline status banner |
+| **Tech Cyan** | `#00E5FF` | RAG actions, data retrieval & AI features |
+| **Glint White** | `#E2E8F0` | High-contrast UI text |
+| **Armor Gray** | `#64748B` | Infrastructure & secondary labels |
 
 - **[Installation & Setup Guide](docs/INSTALL.md)** — HQ bundling, offline server installation, Keycloak/AD SSO, TLS, and initial setup.
 - **[User & Operations Guide](docs/USER_GUIDE.md)** — Day-to-day usage for end users (WebUI chat, Office/IDE APIs) and administrators (`ark-admin`, connectors, backups, and audits).

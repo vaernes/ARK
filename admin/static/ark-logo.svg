@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 132" fill="none">
+  <defs>
+    <linearGradient id="steel" x1="0" y1="0" x2="120" y2="132" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#94A3B8"/>
+      <stop offset="50%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+    <linearGradient id="darkPlate" x1="60" y1="10" x2="60" y2="122" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0A0E17"/>
+    </linearGradient>
+  </defs>
+  <!-- Outer Shield -->
+  <path d="M60 4L112 24V66C112 96 89 116 60 128C31 116 8 96 8 66V24L60 4Z" fill="url(#darkPlate)" stroke="url(#steel)" stroke-width="4"/>
+  <!-- Left Cyan Accent -->
+  <path d="M18 32L42 22V48L18 58V32Z" fill="#00E5FF" fill-opacity="0.22" stroke="#00E5FF" stroke-width="2"/>
+  <!-- Right Amber Accent -->
+  <path d="M102 32L78 22V48L102 58V32Z" fill="#F55A00" fill-opacity="0.22" stroke="#F55A00" stroke-width="2"/>
+  <!-- Armored 'A' Frame -->
+  <path d="M60 14L22 104H36L45 82H75L84 104H98L60 14Z" fill="url(#steel)" stroke="#E2E8F0" stroke-width="1.5"/>
+  <!-- Inner Core -->
+  <path d="M60 36L44 74H76L60 36Z" fill="#0A0E17" stroke="#475569" stroke-width="1.5"/>
+  <!-- Cyan & Amber Core Bars -->
+  <rect x="49" y="54" width="22" height="4" rx="1.5" fill="#00E5FF"/>
+  <rect x="45" y="62" width="30" height="4" rx="1.5" fill="#F55A00"/>
+  <rect x="41" y="70" width="38" height="4" rx="1.5" fill="#00E5FF"/>
+  <!-- Lower Armor Ribbing -->
+  <rect x="47" y="88" width="26" height="4" rx="1.5" fill="#F55A00"/>
+  <rect x="52" y="96" width="16" height="4" rx="1.5" fill="#00E5FF"/>
+</svg>

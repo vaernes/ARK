@@ -3,62 +3,139 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ARK Control Plane</title>
+  <title>ARK — Air-Gapped Retrieval &amp; Knowledge Control Plane</title>
+  <link rel="icon" type="image/svg+xml" href="/admin-console/static/ark-logo.svg" />
   <style>
-    :root { --bg: #0f172a; --card: #1e293b; --border: #334155; --text: #f1f5f9; --muted: #94a3b8; --accent: #38bdf8; --ok: #22c55e; --err: #ef4444; }
-    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
-    body { margin: 0; background: var(--bg); color: var(--text); padding: 24px; }
-    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
-    h1 { margin: 0; font-size: 1.5rem; }
-    h2 { margin-top: 0; font-size: 1.1rem; color: var(--accent); }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
-    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
-    input, select, textarea { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: #0f172a; color: var(--text); }
-    button { margin-top: 12px; padding: 8px 14px; border: none; border-radius: 6px; background: var(--accent); color: #0f172a; font-weight: 600; cursor: pointer; }
-    button.danger { background: var(--err); color: #fff; padding: 4px 8px; margin: 0; font-size: 0.78rem; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.85rem; }
-    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-    .badge { padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
-    .ok { background: rgba(34,197,94,0.2); color: var(--ok); }
-    .err { background: rgba(239,68,68,0.2); color: var(--err); }
-    pre { background: #0f172a; padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; }
+    :root {
+      --void: #0A0E17;
+      --shield: #1E293B;
+      --shield-alt: #141C2B;
+      --border: #2E3D52;
+      --amber: #F55A00;
+      --amber-soft: rgba(245, 90, 0, 0.16);
+      --cyan: #00E5FF;
+      --cyan-soft: rgba(0, 229, 255, 0.14);
+      --text: #E2E8F0;
+      --gray: #64748B;
+      --ok: #22C55E;
+      --err: #EF4444;
+    }
+    * { box-sizing: border-box; font-family: "Inter", system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: var(--void); color: var(--text); padding: 24px; min-height: 100vh; }
+
+    /* Header & Offline Status Banner */
+    .topbar {
+      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px;
+      background: var(--shield); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 20px; margin-bottom: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand img { width: 44px; height: 48px; }
+    .brand h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.08em; color: var(--text); }
+    .brand small { display: block; color: var(--gray); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
+
+    .status-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .offline-banner {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--amber-soft); border: 1px solid var(--amber); color: #FFB38A;
+      padding: 6px 12px; border-radius: 8px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .projects-pill {
+      background: var(--void); border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 12px; font-size: 0.8rem; color: var(--text);
+    }
+    .projects-pill strong { color: var(--cyan); margin-left: 6px; }
+
+    /* Grid & Steel Shield Cards */
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(390px, 1fr)); gap: 20px; }
+    .card {
+      background: var(--shield); border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    .card.admin-accent { border-top: 3px solid var(--amber); }
+    .card.rag-accent { border-top: 3px solid var(--cyan); }
+    h2 {
+      margin: 0 0 12px; font-size: 0.98rem; text-transform: uppercase; letter-spacing: 0.06em;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .card.admin-accent h2 { color: var(--amber); }
+    .card.rag-accent h2 { color: var(--cyan); }
+
+    label { display: block; font-size: 0.8rem; color: var(--gray); margin: 10px 0 4px; font-weight: 600; }
+    input, select, textarea {
+      width: 100%; padding: 9px 11px; border-radius: 7px; border: 1px solid var(--border);
+      background: var(--void); color: var(--text); font-size: 0.88rem;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--cyan); }
+
+    button {
+      margin-top: 12px; padding: 8px 14px; border: none; border-radius: 7px;
+      background: var(--cyan); color: var(--void); font-weight: 700; font-size: 0.84rem;
+      cursor: pointer; transition: opacity 0.15s ease;
+    }
+    button:hover { opacity: 0.9; }
+    button.amber { background: var(--amber); color: #fff; }
+    button.danger { background: var(--err); color: #fff; padding: 4px 9px; margin: 0; font-size: 0.75rem; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 0.83rem; }
+    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--gray); font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.05em; }
+    code { background: var(--void); padding: 2px 6px; border-radius: 4px; color: var(--cyan); font-size: 0.8rem; }
+
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
+    .ok { background: rgba(34, 197, 94, 0.18); color: var(--ok); }
+    .err { background: rgba(239, 68, 68, 0.2); color: var(--err); }
+    .rag { background: var(--cyan-soft); color: var(--cyan); border: 1px solid rgba(0,229,255,0.35); }
+    .clean { background: var(--amber-soft); color: #FFB38A; border: 1px solid rgba(245,90,0,0.4); }
+
+    pre {
+      background: var(--void); border: 1px solid var(--border); padding: 10px;
+      border-radius: 7px; overflow-x: auto; font-size: 0.78rem; color: var(--text);
+    }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>ARK Enterprise Control Plane</h1>
-      <small style="color: var(--muted)">Air-Gapped Multi-Tenant RAG, API Gateway, Connectors & Audit</small>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/admin-console/static/ark-logo.svg" alt="ARK Shield Logo" />
+      <div>
+        <h1>ARK CONTROL PLANE</h1>
+        <small>Air-Gapped Retrieval &amp; Knowledge</small>
+      </div>
     </div>
-    <button onclick="refreshAll()">Refresh All</button>
+    <div class="status-strip">
+      <div class="projects-pill">PROJECTS DEPLOYED <strong id="proj-count">0</strong></div>
+      <div class="offline-banner">&#9888; Strict Air-Gap &bull; Offline Mode</div>
+      <button style="margin-top:0" onclick="refreshAll()">Refresh</button>
+    </div>
   </header>
 
   <div class="grid">
     <!-- Health -->
-    <div class="card">
-      <h2>Service Health</h2>
+    <div class="card admin-accent">
+      <h2>Infrastructure Health</h2>
       <div id="health-list">Loading...</div>
     </div>
 
     <!-- Projects -->
-    <div class="card">
+    <div class="card rag-accent">
       <h2>Create Project (RAG or Clean)</h2>
       <label>Project Name</label>
       <input id="proj-name" placeholder="Project_Alpha" />
-      <label>Mode</label>
+      <label>Isolation Mode</label>
       <select id="proj-rag">
         <option value="true">RAG-Enabled (Qdrant + Company_Common + Project KB)</option>
         <option value="false">Clean Project (Isolated vLLM / No RAG)</option>
       </select>
       <label>System Prompt (optional)</label>
       <textarea id="proj-prompt" rows="2" placeholder="Custom instructions..."></textarea>
-      <button onclick="createProject()">Create Project</button>
+      <button onclick="createProject()">Deploy Project</button>
       <table id="proj-table"><thead><tr><th>Slug</th><th>Mode</th><th>Gateway Endpoint</th></tr></thead><tbody></tbody></table>
     </div>
 
     <!-- API Keys -->
-    <div class="card">
+    <div class="card admin-accent">
       <h2>Project API Keys (Office / IDEs)</h2>
       <label>Project</label>
       <select id="key-proj"></select>
@@ -66,27 +143,27 @@
       <input id="key-label" placeholder="Word Add-in / CI Script" />
       <label>Rate Limit (RPM)</label>
       <input id="key-rpm" type="number" value="60" />
-      <button onclick="createKey()">Issue API Key</button>
+      <button class="amber" onclick="createKey()">Issue Scoped Key</button>
       <pre id="key-output" style="display:none"></pre>
       <table id="key-table"><thead><tr><th>Project</th><th>Label</th><th>Prefix</th><th>Action</th></tr></thead><tbody></tbody></table>
     </div>
 
     <!-- Backup & Snapshot -->
-    <div class="card">
-      <h2>Backup & Company_Common Sync</h2>
+    <div class="card admin-accent">
+      <h2>Backup &amp; Company_Common Sync</h2>
       <label>Backup Destination Directory</label>
       <input id="backup-dir" />
-      <button onclick="saveBackupDir()">Save Backup Path</button>
+      <button class="amber" onclick="saveBackupDir()">Save Backup Path</button>
       <button onclick="runBackup()" style="margin-left:8px;">Run Full Backup Now</button>
       <hr style="border-color: var(--border); margin: 16px 0;" />
       <label>Upload Company_Common.snapshot</label>
       <input id="snap-file" type="file" accept=".snapshot" />
-      <button onclick="uploadSnapshot()">Upload & Recover Snapshot</button>
+      <button onclick="uploadSnapshot()">Upload &amp; Recover Snapshot</button>
       <pre id="ops-output" style="display:none"></pre>
     </div>
 
     <!-- Connectors -->
-    <div class="card">
+    <div class="card rag-accent">
       <h2>Document Connectors (M-Files / SharePoint / SMB)</h2>
       <label>Project</label>
       <select id="conn-proj"></select>
@@ -105,8 +182,8 @@
     </div>
 
     <!-- Audit Logs -->
-    <div class="card">
-      <h2>Recent Audit Events (Local + SIEM)</h2>
+    <div class="card admin-accent">
+      <h2>Security &amp; Audit Events (Local + SIEM)</h2>
       <table id="audit-table"><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Project</th><th>Status</th></tr></thead><tbody></tbody></table>
     </div>
   </div>
@@ -122,12 +199,13 @@
         api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/connectors'), api('/audit?limit=15')
       ]);
 
+      document.getElementById('proj-count').textContent = projects.length;
       document.getElementById('health-list').innerHTML = Object.entries(health.services)
-        .map(([k, v]) => `<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>${k}</span><span class="badge ${v === 'healthy' ? 'ok' : 'err'}">${v}</span></div>`)
+        .map(([k, v]) => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(46,61,82,0.45);"><span>${k}</span><span class="badge ${v === 'healthy' ? 'ok' : 'err'}">${v}</span></div>`)
         .join('');
 
       document.querySelector('#proj-table tbody').innerHTML = projects.map(p =>
-        `<tr><td>${p.slug}</td><td>${p.rag_enabled ? 'RAG' : 'Clean'}</td><td><code>/projects/${p.slug}/v1</code></td></tr>`
+        `<tr><td>${p.slug}</td><td><span class="badge ${p.rag_enabled ? 'rag' : 'clean'}">${p.rag_enabled ? 'RAG' : 'Clean'}</span></td><td><code>/projects/${p.slug}/v1</code></td></tr>`
       ).join('');
 
       const opts = projects.map(p => `<option value="${p.slug}">${p.name} (${p.slug})</option>`).join('');
@@ -141,11 +219,11 @@
       document.getElementById('backup-dir').value = backupCfg.backup_dir;
 
       document.querySelector('#conn-table tbody').innerHTML = conns.map(c =>
-        `<tr><td>${c.project_slug}</td><td>${c.connector_type}</td><td>${c.last_status || 'pending'}</td><td><button onclick="syncConn(${c.id})" style="margin:0;padding:4px 8px;font-size:0.78rem;">Sync</button></td></tr>`
+        `<tr><td>${c.project_slug}</td><td>${c.connector_type}</td><td>${c.last_status || 'pending'}</td><td><button onclick="syncConn(${c.id})" style="margin:0;padding:4px 9px;font-size:0.75rem;">Sync</button></td></tr>`
       ).join('');
 
       document.querySelector('#audit-table tbody').innerHTML = audits.map(a =>
-        `<tr><td>${a.created_at.slice(11,19)}</td><td>${a.event_type}</td><td>${a.actor}</td><td>${a.project_slug || '-'}</td><td>${a.status}</td></tr>`
+        `<tr><td>${a.created_at.slice(11,19)}</td><td>${a.event_type}</td><td>${a.actor}</td><td>${a.project_slug || '-'}</td><td><span class="badge ${a.status === 'success' ? 'ok' : 'err'}">${a.status}</span></td></tr>`
       ).join('');
     }
 

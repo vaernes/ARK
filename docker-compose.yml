@@ -233,6 +233,7 @@ services:
       ENABLE_OLLAMA_API: "false"
       # Database & Auth
       DATABASE_URL: "postgresql://${POSTGRES_USER:-ark_webui}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-openwebui}"
+      WEBUI_NAME: "ARK — Air-Gapped Retrieval & Knowledge"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY}"
       WEBUI_URL: "${WEBUI_URL:-https://ark.local}"
       ENABLE_SIGNUP: "${ENABLE_SIGNUP:-false}"
@@ -283,6 +284,7 @@ services:
     volumes:
       - ./data/open-webui:/app/backend/data
       - ./certs:/certs:ro
+      - ./admin/static/ark-logo.svg:/app/backend/open_webui/static/favicon.svg:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 20s
