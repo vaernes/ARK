@@ -42,6 +42,23 @@
 	# 3. ARK Control Plane (/admin-console) - Protected by Keycloak SSO (ark-admins group)
 	handle /admin-console* {
 		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth?allowed_groups=ark-admins
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Groups
+			@unauthorized status 401
+			handle_response @unauthorized {
+				redir * /oauth2/start?rd={uri}
+			}
+		}
+		reverse_proxy ark-admin:8090 {
+			header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
+			header_up X-Forwarded-Email {http.request.header.X-Auth-Request-Email}
+			header_up X-Forwarded-Groups {http.request.header.X-Auth-Request-Groups}
+		}
+	}
+
+	# 3b. ARK User Self-Service API Key Portal (/portal) - Any authenticated Keycloak user
+	handle /portal* {
+		forward_auth oauth2-proxy:4180 {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Groups
 			@unauthorized status 401
@@ -52,6 +69,7 @@
 		reverse_proxy ark-admin:8090 {
 			header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
 			header_up X-Forwarded-Email {http.request.header.X-Auth-Request-Email}
+			header_up X-Forwarded-Groups {http.request.header.X-Auth-Request-Groups}
 		}
 	}
 

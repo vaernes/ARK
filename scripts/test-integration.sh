@@ -139,7 +139,6 @@ main() {
     --http-address=0.0.0.0:4180 \
     --email-domain=* \
     --insecure-oidc-allow-unverified-email=true \
-    --allowed-group=ark-admins \
     --oidc-groups-claim=groups \
     --set-xauthrequest=true \
     --pass-user-headers=true \

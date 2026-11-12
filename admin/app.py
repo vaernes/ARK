@@ -74,6 +74,7 @@ rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 
 app = FastAPI(title="ARK Control Plane & Project API Gateway", docs_url="/admin-console/docs", openapi_url="/admin-console/openapi.json")
 app.mount("/admin-console/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+app.mount("/portal/static", StaticFiles(directory=str(APP_DIR / "static")), name="portal-static")
 
 
 def init_db() -> None:
@@ -98,10 +99,13 @@ def init_db() -> None:
                     label TEXT NOT NULL,
                     key_prefix TEXT NOT NULL,
                     key_hash TEXT NOT NULL UNIQUE,
+                    owner TEXT NOT NULL DEFAULT 'admin',
                     rate_limit_rpm INTEGER NOT NULL DEFAULT 60,
                     revoked BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+
+                ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT 'admin';
 
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id BIGSERIAL PRIMARY KEY,
@@ -150,6 +154,15 @@ def get_actor(request: Request) -> str:
     return request.headers.get("X-Forwarded-Email") or request.headers.get("X-Forwarded-User") or "admin"
 
 
+def get_user_groups(request: Request) -> set[str]:
+    raw = request.headers.get("X-Forwarded-Groups", "")
+    return {g.strip().lstrip("/") for g in raw.split(",") if g.strip()}
+
+
+def user_has_project_access(groups: set[str], slug: str, group_name: str) -> bool:
+    return "ark-admins" in groups or slug in groups or group_name in groups
+
+
 def get_qdrant() -> QdrantClient:
     return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=30)
 
@@ -192,6 +205,116 @@ class CreateConnectorRequest(BaseModel):
 def admin_ui() -> HTMLResponse:
     html_path = APP_DIR / "static" / "index.html"
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/portal/", response_class=HTMLResponse)
+@app.get("/portal", response_class=HTMLResponse)
+def portal_ui() -> HTMLResponse:
+    html_path = APP_DIR / "static" / "portal.html"
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/portal/api/me")
+def portal_me(request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    groups = sorted(get_user_groups(request))
+    return {"user": actor, "groups": groups, "is_admin": "ark-admins" in groups}
+
+
+@app.get("/portal/api/projects")
+def portal_projects(request: Request) -> list[dict[str, Any]]:
+    groups = get_user_groups(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT slug, name, group_name, model_id, rag_enabled, created_at "
+                "FROM projects ORDER BY created_at DESC"
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "slug": r[0],
+            "name": r[1],
+            "group_name": r[2],
+            "model_id": r[3],
+            "rag_enabled": r[4],
+            "created_at": r[5].isoformat(),
+        }
+        for r in rows
+        if user_has_project_access(groups, r[0], r[2])
+    ]
+
+
+@app.get("/portal/api/keys")
+def portal_list_keys(request: Request) -> list[dict[str, Any]]:
+    actor = get_actor(request)
+    groups = get_user_groups(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT k.id, k.project_slug, k.label, k.key_prefix, k.rate_limit_rpm, k.revoked, k.created_at, p.group_name "
+                "FROM api_keys k JOIN projects p ON p.slug = k.project_slug "
+                "WHERE k.owner = %s AND k.revoked = FALSE ORDER BY k.created_at DESC",
+                (actor,),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "project_slug": r[1],
+            "label": r[2],
+            "key_prefix": r[3],
+            "rate_limit_rpm": r[4],
+            "revoked": r[5],
+            "created_at": r[6].isoformat(),
+        }
+        for r in rows
+        if user_has_project_access(groups, r[1], r[7])
+    ]
+
+
+@app.post("/portal/api/keys")
+def portal_create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    groups = get_user_groups(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT group_name FROM projects WHERE slug = %s", (req.project_slug,))
+            proj = cur.fetchone()
+            if not proj or not user_has_project_access(groups, req.project_slug, proj[0]):
+                raise HTTPException(status_code=403, detail="You do not have access to this project.")
+
+            raw_key = f"ark_proj_{secrets.token_urlsafe(32)}"
+            key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+            prefix = raw_key[:16]
+            cur.execute(
+                "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, owner, rate_limit_rpm) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (req.project_slug, req.label, prefix, key_hash, actor, req.rate_limit_rpm),
+            )
+            key_id = cur.fetchone()[0]
+        conn.commit()
+
+    audit.record("apikey.create", actor=actor, project_slug=req.project_slug, details={"key_id": key_id, "label": req.label, "portal": True})
+    return {"id": key_id, "api_key": raw_key, "prefix": prefix, "project_slug": req.project_slug}
+
+
+@app.delete("/portal/api/keys/{key_id}")
+def portal_revoke_key(key_id: int, request: Request) -> dict[str, str]:
+    actor = get_actor(request)
+    groups = get_user_groups(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT project_slug, owner FROM api_keys WHERE id = %s", (key_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="API key not found.")
+            if row[1] != actor and "ark-admins" not in groups:
+                raise HTTPException(status_code=403, detail="You can only revoke your own API keys.")
+            cur.execute("UPDATE api_keys SET revoked = TRUE WHERE id = %s", (key_id,))
+        conn.commit()
+    audit.record("apikey.revoke", actor=actor, project_slug=row[0], details={"key_id": key_id, "portal": True})
+    return {"status": "revoked"}
 
 
 @app.get("/admin-console/api/health")
@@ -411,8 +534,8 @@ def create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, rate_limit_rpm) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (req.project_slug, req.label, prefix, key_hash, req.rate_limit_rpm),
+                "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, owner, rate_limit_rpm) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (req.project_slug, req.label, prefix, key_hash, actor, req.rate_limit_rpm),
             )
             key_id = cur.fetchone()[0]
         conn.commit()

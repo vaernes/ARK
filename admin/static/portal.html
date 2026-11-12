@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARK — User API Key Portal</title>
+  <link rel="icon" type="image/svg+xml" href="/portal/static/ark-logo.svg" />
+  <style>
+    :root {
+      --void: #0A0E17;
+      --shield: #1E293B;
+      --border: #2E3D52;
+      --amber: #F55A00;
+      --amber-soft: rgba(245, 90, 0, 0.16);
+      --cyan: #00E5FF;
+      --cyan-soft: rgba(0, 229, 255, 0.14);
+      --text: #E2E8F0;
+      --gray: #64748B;
+      --ok: #22C55E;
+      --err: #EF4444;
+    }
+    * { box-sizing: border-box; font-family: "Inter", system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: var(--void); color: var(--text); padding: 24px; min-height: 100vh; }
+
+    .topbar {
+      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px;
+      background: var(--shield); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 20px; margin-bottom: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand img { width: 44px; height: 48px; }
+    .brand h1 { margin: 0; font-size: 1.3rem; letter-spacing: 0.08em; color: var(--text); }
+    .brand small { display: block; color: var(--gray); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
+
+    .nav-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .pill {
+      background: var(--void); border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 12px; font-size: 0.8rem; color: var(--text);
+    }
+    .pill strong { color: var(--cyan); }
+    a.nav-link {
+      text-decoration: none; background: var(--void); border: 1px solid var(--border);
+      color: var(--text); padding: 7px 12px; border-radius: 8px; font-size: 0.82rem; font-weight: 600;
+    }
+    a.nav-link:hover { border-color: var(--cyan); color: var(--cyan); }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }
+    .card {
+      background: var(--shield); border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    .card.cyan-accent { border-top: 3px solid var(--cyan); }
+    .card.amber-accent { border-top: 3px solid var(--amber); }
+    h2 { margin: 0 0 12px; font-size: 0.98rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cyan); }
+    .card.amber-accent h2 { color: var(--amber); }
+
+    label { display: block; font-size: 0.8rem; color: var(--gray); margin: 10px 0 4px; font-weight: 600; }
+    input, select {
+      width: 100%; padding: 9px 11px; border-radius: 7px; border: 1px solid var(--border);
+      background: var(--void); color: var(--text); font-size: 0.88rem;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--cyan); }
+
+    button {
+      margin-top: 12px; padding: 8px 14px; border: none; border-radius: 7px;
+      background: var(--cyan); color: var(--void); font-weight: 700; font-size: 0.84rem; cursor: pointer;
+    }
+    button.amber { background: var(--amber); color: #fff; }
+    button.danger { background: var(--err); color: #fff; padding: 4px 9px; margin: 0; font-size: 0.75rem; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 0.83rem; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--gray); font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.05em; }
+    code { background: var(--void); padding: 2px 6px; border-radius: 4px; color: var(--cyan); font-size: 0.8rem; }
+
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
+    .rag { background: var(--cyan-soft); color: var(--cyan); border: 1px solid rgba(0,229,255,0.35); }
+    .clean { background: var(--amber-soft); color: #FFB38A; border: 1px solid rgba(245,90,0,0.4); }
+
+    pre {
+      background: var(--void); border: 1px solid var(--border); padding: 10px;
+      border-radius: 7px; overflow-x: auto; font-size: 0.78rem; color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/portal/static/ark-logo.svg" alt="ARK Shield Logo" />
+      <div>
+        <h1>ARK USER PORTAL</h1>
+        <small>Self-Service Project API Keys &amp; Endpoints</small>
+      </div>
+    </div>
+    <div class="nav-strip">
+      <div class="pill">User: <strong id="me-user">...</strong></div>
+      <div class="pill">Groups: <strong id="me-groups">-</strong></div>
+      <a class="nav-link" href="/">Open WebUI Chat</a>
+      <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
+    </div>
+  </header>
+
+  <div id="ui-alert" style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:16px; font-size:0.85rem;"></div>
+
+  <div class="grid">
+    <div class="card cyan-accent">
+      <h2>My Accessible Projects</h2>
+      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Use any project's Base URL below in IDE plugins (Continue/Cline), Office add-ins, or scripts with your personal <code>ark_proj_*</code> key.</p>
+      <table id="proj-table">
+        <thead><tr><th>Project</th><th>Mode</th><th>OpenAI Base URL</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card amber-accent">
+      <h2>Issue Personal API Key</h2>
+      <label>Project</label>
+      <select id="key-proj"></select>
+      <label>Key Label</label>
+      <input id="key-label" placeholder="VS Code Continue / Word Add-in" />
+      <label>Rate Limit (RPM)</label>
+      <input id="key-rpm" type="number" value="60" min="1" max="6000" />
+      <button class="amber" onclick="createKey()">Generate API Key</button>
+      <pre id="key-output" style="display:none"></pre>
+
+      <h2 style="margin-top:22px;">My Active API Keys</h2>
+      <table id="key-table">
+        <thead><tr><th>Project</th><th>Label</th><th>Prefix</th><th>RPM</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const showError = (msg) => {
+      const el = document.getElementById('ui-alert');
+      el.textContent = msg;
+      el.style.display = msg ? 'block' : 'none';
+    };
+
+    const api = (path, opts = {}) => fetch('/portal/api' + path, opts).then(async r => {
+      if (!r.ok) {
+        const text = await r.text();
+        showError('API Error: ' + text);
+        throw new Error(text);
+      }
+      showError('');
+      return r.json();
+    });
+
+    async function refresh() {
+      const [me, projects, keys] = await Promise.all([api('/me'), api('/projects'), api('/keys')]);
+      document.getElementById('me-user').textContent = me.user;
+      document.getElementById('me-groups').textContent = me.groups.length ? me.groups.join(', ') : 'none';
+      if (me.is_admin) {
+        document.getElementById('admin-link').style.display = 'inline-block';
+      }
+
+      const origin = window.location.origin;
+      document.querySelector('#proj-table tbody').innerHTML = projects.length
+        ? projects.map(p => `<tr><td>${p.name}</td><td><span class="badge ${p.rag_enabled ? 'rag' : 'clean'}">${p.rag_enabled ? 'RAG' : 'Clean'}</span></td><td><code>${origin}/projects/${p.slug}/v1</code></td></tr>`).join('')
+        : '<tr><td colspan="3" style="color:var(--gray)">No projects assigned to your groups yet. Ask an administrator to add your group or deploy a project.</td></tr>';
+
+      document.getElementById('key-proj').innerHTML = projects
+        .map(p => `<option value="${p.slug}">${p.name} (${p.slug})</option>`)
+        .join('');
+
+      document.querySelector('#key-table tbody').innerHTML = keys.length
+        ? keys.map(k => `<tr><td>${k.project_slug}</td><td>${k.label}</td><td><code>${k.key_prefix}...</code></td><td>${k.rate_limit_rpm}</td><td><button class="danger" onclick="revokeKey(${k.id})">Revoke</button></td></tr>`).join('')
+        : '<tr><td colspan="5" style="color:var(--gray)">No active keys issued yet.</td></tr>';
+    }
+
+    async function createKey() {
+      const proj = document.getElementById('key-proj').value;
+      if (!proj) return showError('No accessible project selected.');
+      const res = await api('/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_slug: proj,
+          label: document.getElementById('key-label').value || 'personal-key',
+          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10) || 60
+        })
+      });
+      const out = document.getElementById('key-output');
+      out.style.display = 'block';
+      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key + '\n\nBase URL: ' + window.location.origin + '/projects/' + res.project_slug + '/v1';
+      refresh();
+    }
+
+    async function revokeKey(id) {
+      await api(`/keys/${id}`, { method: 'DELETE' });
+      refresh();
+    }
+
+    refresh();
+  </script>
+</body>
+</html>
