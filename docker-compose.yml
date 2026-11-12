@@ -186,7 +186,7 @@ services:
   # 6. Apache Tika: Offline Document Parsing Engine
   # ----------------------------------------------------------------------------
   tika:
-    image: ${TIKA_IMAGE:-apache/tika:latest-full}
+    image: ${TIKA_IMAGE:-apache/tika:3.1.0.0-full}
     container_name: ark-tika
     restart: unless-stopped
     environment:
@@ -419,6 +419,7 @@ services:
       EMBED_VECTOR_SIZE: "${EMBED_VECTOR_SIZE:-1024}"
       ARK_BACKUP_DIR: "/backups"
       ARK_AUDIT_LOG_FILE: "/var/log/ark/audit.jsonl"
+      ARK_PROXY_AUTH_SECRET: "${ARK_PROXY_AUTH_SECRET}"
       SIEM_SYSLOG_HOST: "${SIEM_SYSLOG_HOST:-}"
       SIEM_SYSLOG_PORT: "${SIEM_SYSLOG_PORT:-514}"
       SIEM_SYSLOG_PROTOCOL: "${SIEM_SYSLOG_PROTOCOL:-udp}"
@@ -429,7 +430,10 @@ services:
       - ./artifacts/models:/models
       - ./certs:/certs:ro
     networks:
-      - ark-net
+      ark-net:
+      ark-control:
+        aliases:
+          - ark-admin-control
 
   # ----------------------------------------------------------------------------
   # 11. Caddy: Local HTTPS Termination & LAN API/UI Routing
@@ -453,6 +457,7 @@ services:
         condition: service_healthy
     environment:
       ARK_DOMAIN: "${ARK_DOMAIN:-ark.local}"
+      ARK_PROXY_AUTH_SECRET: "${ARK_PROXY_AUTH_SECRET}"
       DO_NOT_TRACK: "1"
     ports:
       - "${HTTP_PORT:-80}:80"
@@ -464,7 +469,11 @@ services:
       - ./certs:/certs:ro
     networks:
       - ark-net
+      - ark-control
 
 networks:
   ark-net:
     driver: bridge
+  ark-control:
+    driver: bridge
+    internal: true

@@ -148,6 +148,22 @@
       return r.json();
     });
 
+    function el(tag, attrs = {}, children = []) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'className') node.className = v;
+        else if (k === 'style') node.setAttribute('style', v);
+        else if (k === 'text') node.textContent = v;
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
+        else node.setAttribute(k, v);
+      }
+      for (const child of Array.isArray(children) ? children : [children]) {
+        if (child === null || child === undefined) continue;
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
     async function refresh() {
       const [me, projects, keys] = await Promise.all([api('/me'), api('/projects'), api('/keys')]);
       document.getElementById('me-user').textContent = me.user;
@@ -157,17 +173,49 @@
       }
 
       const origin = window.location.origin;
-      document.querySelector('#proj-table tbody').innerHTML = projects.length
-        ? projects.map(p => `<tr><td>${p.name}</td><td><span class="badge ${p.rag_enabled ? 'rag' : 'clean'}">${p.rag_enabled ? 'RAG' : 'Clean'}</span></td><td><code>${origin}/projects/${p.slug}/v1</code></td></tr>`).join('')
-        : '<tr><td colspan="3" style="color:var(--gray)">No projects assigned to your groups yet. Ask an administrator to add your group or deploy a project.</td></tr>';
+      const projBody = document.querySelector('#proj-table tbody');
+      if (projects.length) {
+        projBody.replaceChildren(
+          ...projects.map(p =>
+            el('tr', {}, [
+              el('td', { text: p.name }),
+              el('td', {}, el('span', { className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`, text: p.rag_enabled ? 'RAG' : 'Clean' })),
+              el('td', {}, el('code', { text: `${origin}/projects/${p.slug}/v1` }))
+            ])
+          )
+        );
+      } else {
+        projBody.replaceChildren(
+          el('tr', {}, el('td', {
+            colspan: '3',
+            style: 'color:var(--gray)',
+            text: 'No projects assigned to your groups yet. Ask an administrator to add your group or deploy a project.'
+          }))
+        );
+      }
 
-      document.getElementById('key-proj').innerHTML = projects
-        .map(p => `<option value="${p.slug}">${p.name} (${p.slug})</option>`)
-        .join('');
+      document.getElementById('key-proj').replaceChildren(
+        ...projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
+      );
 
-      document.querySelector('#key-table tbody').innerHTML = keys.length
-        ? keys.map(k => `<tr><td>${k.project_slug}</td><td>${k.label}</td><td><code>${k.key_prefix}...</code></td><td>${k.rate_limit_rpm}</td><td><button class="danger" onclick="revokeKey(${k.id})">Revoke</button></td></tr>`).join('')
-        : '<tr><td colspan="5" style="color:var(--gray)">No active keys issued yet.</td></tr>';
+      const keyBody = document.querySelector('#key-table tbody');
+      if (keys.length) {
+        keyBody.replaceChildren(
+          ...keys.map(k =>
+            el('tr', {}, [
+              el('td', { text: k.project_slug }),
+              el('td', { text: k.label }),
+              el('td', {}, el('code', { text: `${k.key_prefix}...` })),
+              el('td', { text: String(k.rate_limit_rpm) }),
+              el('td', {}, el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeKey(k.id) }))
+            ])
+          )
+        );
+      } else {
+        keyBody.replaceChildren(
+          el('tr', {}, el('td', { colspan: '5', style: 'color:var(--gray)', text: 'No active keys issued yet.' }))
+        );
+      }
     }
 
     async function createKey() {

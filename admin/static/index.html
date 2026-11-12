@@ -161,6 +161,10 @@
       <button class="amber" onclick="saveBackupDir()">Save Backup Path</button>
       <button onclick="runBackup()" style="margin-left:8px;">Run Full Backup Now</button>
       <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Restore Full Backup Bundle</label>
+      <select id="restore-backup-select"></select>
+      <button class="danger" style="margin-top:10px;padding:8px 14px;font-size:0.84rem;" onclick="restoreSelectedBackup()">Verify &amp; Restore Backup</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
       <label>Upload Company_Common.snapshot</label>
       <input id="snap-file" type="file" accept=".snapshot" />
       <button onclick="uploadSnapshot()">Upload &amp; Recover Snapshot</button>
@@ -230,50 +234,140 @@
       return r.json();
     });
 
+    function el(tag, attrs = {}, children = []) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'className') node.className = v;
+        else if (k === 'style') node.setAttribute('style', v);
+        else if (k === 'text') node.textContent = v;
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
+        else node.setAttribute(k, v);
+      }
+      for (const child of Array.isArray(children) ? children : [children]) {
+        if (child === null || child === undefined) continue;
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
     async function refreshAll() {
-      const [health, projects, keys, backupCfg, conns, audits, modelsInfo] = await Promise.all([
-        api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/connectors'), api('/audit?limit=15'), api('/models')
+      const [health, projects, keys, backupCfg, backups, conns, audits, modelsInfo] = await Promise.all([
+        api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'), api('/connectors'), api('/audit?limit=15'), api('/models')
       ]);
 
       document.getElementById('proj-count').textContent = projects.length;
-      document.getElementById('health-list').innerHTML = Object.entries(health.services)
-        .map(([k, v]) => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(46,61,82,0.45);"><span>${k}</span><span class="badge ${v === 'healthy' ? 'ok' : 'err'}">${v}</span></div>`)
-        .join('');
+      document.getElementById('health-list').replaceChildren(
+        ...Object.entries(health.services).map(([k, v]) =>
+          el('div', { style: 'display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(46,61,82,0.45);' }, [
+            el('span', { text: k }),
+            el('span', { className: `badge ${v === 'healthy' ? 'ok' : 'err'}`, text: v })
+          ])
+        )
+      );
 
-      document.querySelector('#proj-table tbody').innerHTML = projects.map(p =>
-        `<tr><td>${p.slug}</td><td><span class="badge ${p.rag_enabled ? 'rag' : 'clean'}">${p.rag_enabled ? 'RAG' : 'Clean'}</span></td><td><code>${p.effective_llm_model || '-'}</code></td><td><code>/projects/${p.slug}/v1</code></td><td style="white-space:nowrap;"><button style="margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;" onclick="setProjectLlm('${p.slug}', '${p.llm_model || ''}')">LLM</button><button class="danger" onclick="deleteProject('${p.slug}')">Delete</button></td></tr>`
-      ).join('');
+      document.querySelector('#proj-table tbody').replaceChildren(
+        ...projects.map(p =>
+          el('tr', {}, [
+            el('td', { text: p.slug }),
+            el('td', {}, el('span', { className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`, text: p.rag_enabled ? 'RAG' : 'Clean' })),
+            el('td', {}, el('code', { text: p.effective_llm_model || '-' })),
+            el('td', {}, el('code', { text: `/projects/${p.slug}/v1` })),
+            el('td', { style: 'white-space:nowrap;' }, [
+              el('button', {
+                style: 'margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;',
+                text: 'LLM',
+                onClick: () => setProjectLlm(p.slug, p.llm_model || '')
+              }),
+              el('button', {
+                className: 'danger',
+                text: 'Delete',
+                onClick: () => deleteProject(p.slug)
+              })
+            ])
+          ])
+        )
+      );
 
-      const opts = projects.map(p => `<option value="${p.slug}">${p.name} (${p.slug})</option>`).join('');
-      document.getElementById('key-proj').innerHTML = opts;
-      document.getElementById('conn-proj').innerHTML = opts;
+      const makeProjOpts = () => projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }));
+      document.getElementById('key-proj').replaceChildren(...makeProjOpts());
+      document.getElementById('conn-proj').replaceChildren(...makeProjOpts());
 
-      document.querySelector('#key-table tbody').innerHTML = keys.filter(k => !k.revoked).map(k =>
-        `<tr><td>${k.project_slug}</td><td>${k.label}</td><td><code>${k.key_prefix}...</code></td><td><button class="danger" onclick="revokeKey(${k.id})">Revoke</button></td></tr>`
-      ).join('');
+      document.querySelector('#key-table tbody').replaceChildren(
+        ...keys.filter(k => !k.revoked).map(k =>
+          el('tr', {}, [
+            el('td', { text: k.project_slug }),
+            el('td', { text: k.label }),
+            el('td', {}, el('code', { text: `${k.key_prefix}...` })),
+            el('td', {}, el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeKey(k.id) }))
+          ])
+        )
+      );
 
       document.getElementById('backup-dir').value = backupCfg.backup_dir;
+      const backupOpts = backups.length
+        ? backups.map(b => el('option', { value: b.name, text: `${b.name} (${(b.databases || []).length} DBs, ${(b.qdrant_snapshots || []).length} Qdrant)` }))
+        : [el('option', { value: '', text: 'No backup bundles found' })];
+      document.getElementById('restore-backup-select').replaceChildren(...backupOpts);
 
-      document.querySelector('#conn-table tbody').innerHTML = conns.map(c =>
-        `<tr><td>${c.project_slug}</td><td>${c.connector_type}</td><td>${c.last_status || 'pending'}</td><td><button onclick="syncConn(${c.id})" style="margin:0;padding:4px 9px;font-size:0.75rem;">Sync</button></td></tr>`
-      ).join('');
+      document.querySelector('#conn-table tbody').replaceChildren(
+        ...conns.map(c =>
+          el('tr', {}, [
+            el('td', { text: c.project_slug }),
+            el('td', { text: c.connector_type }),
+            el('td', { text: c.last_status || 'pending' }),
+            el('td', {}, el('button', { style: 'margin:0;padding:4px 9px;font-size:0.75rem;', text: 'Sync', onClick: () => syncConn(c.id) }))
+          ])
+        )
+      );
 
-      document.querySelector('#audit-table tbody').innerHTML = audits.map(a =>
-        `<tr><td>${a.created_at.slice(11,19)}</td><td>${a.event_type}</td><td>${a.actor}</td><td>${a.project_slug || '-'}</td><td><span class="badge ${a.status === 'success' ? 'ok' : 'err'}">${a.status}</span></td></tr>`
-      ).join('');
+      document.querySelector('#audit-table tbody').replaceChildren(
+        ...audits.map(a =>
+          el('tr', {}, [
+            el('td', { text: (a.created_at || '').slice(11, 19) }),
+            el('td', { text: a.event_type }),
+            el('td', { text: a.actor }),
+            el('td', { text: a.project_slug || '-' }),
+            el('td', {}, el('span', { className: `badge ${a.status === 'success' ? 'ok' : 'err'}`, text: a.status }))
+          ])
+        )
+      );
 
       const live = modelsInfo.vllm_live || {};
       const liveModels = (live.models || []).join(', ') || 'none';
-      document.getElementById('vllm-live-info').innerHTML =
-        `vLLM: <span class="badge ${live.reachable ? 'ok' : 'err'}">${live.reachable ? 'online' : 'unreachable'}</span> ` +
-        `Served: <code>${liveModels}</code> &bull; Configured: <code>${modelsInfo.configured.llm_model_dir}</code>`;
+      document.getElementById('vllm-live-info').replaceChildren(
+        document.createTextNode('vLLM: '),
+        el('span', { className: `badge ${live.reachable ? 'ok' : 'err'}`, text: live.reachable ? 'online' : 'unreachable' }),
+        document.createTextNode(' Served: '),
+        el('code', { text: liveModels }),
+        document.createTextNode(' \u2022 Configured: '),
+        el('code', { text: (modelsInfo.configured && modelsInfo.configured.llm_model_dir) || '-' })
+      );
       document.getElementById('default-llm-model').value = modelsInfo.default_llm_model || '';
-      document.querySelector('#model-table tbody').innerHTML = (modelsInfo.local_models || []).map(m => {
-        const arch = (m.architectures && m.architectures[0]) || m.model_type || '-';
-        const roleBadge = m.active_role ? `<span class="badge ok">${m.active_role}</span>` : '<span style="color:var(--gray)">staged</span>';
-        const delBtn = m.active_role ? '' : `<button class="danger" onclick="deleteLocalModel('${m.dir}')">Del</button>`;
-        return `<tr><td><code>${m.dir}</code></td><td>${arch}</td><td>${m.size_gib} GiB (${m.weight_files}w)</td><td>${roleBadge}</td><td style="white-space:nowrap;"><button style="margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;" onclick="planModelSwitch('${m.dir}')">Switch CLI</button>${delBtn}</td></tr>`;
-      }).join('');
+      document.querySelector('#model-table tbody').replaceChildren(
+        ...(modelsInfo.local_models || []).map(m => {
+          const arch = (m.architectures && m.architectures[0]) || m.model_type || '-';
+          const roleBadge = m.active_role
+            ? el('span', { className: 'badge ok', text: m.active_role })
+            : el('span', { style: 'color:var(--gray)', text: 'staged' });
+          const actions = [
+            el('button', {
+              style: 'margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;',
+              text: 'Switch CLI',
+              onClick: () => planModelSwitch(m.dir)
+            })
+          ];
+          if (!m.active_role) {
+            actions.push(el('button', { className: 'danger', text: 'Del', onClick: () => deleteLocalModel(m.dir) }));
+          }
+          return el('tr', {}, [
+            el('td', {}, el('code', { text: m.dir })),
+            el('td', { text: arch }),
+            el('td', { text: `${m.size_gib} GiB (${m.weight_files}w)` }),
+            el('td', {}, roleBadge),
+            el('td', { style: 'white-space:nowrap;' }, actions)
+          ]);
+        })
+      );
     }
 
     async function createProject() {
@@ -335,6 +429,18 @@
 
     async function runBackup() {
       const res = await api('/backups/run', { method: 'POST' });
+      showOps(res);
+      refreshAll();
+    }
+
+    async function restoreSelectedBackup() {
+      const name = document.getElementById('restore-backup-select').value;
+      if (!name) return alert('No backup bundle selected.');
+      if (!confirm(`Verify checksums and restore databases and Qdrant snapshots from '${name}'? This will overwrite current state.`)) return;
+      const res = await api('/backups/restore', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ backup_name: name, restore_databases: true, restore_qdrant: true })
+      });
       showOps(res);
       refreshAll();
     }

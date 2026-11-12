@@ -16,12 +16,14 @@ if [[ "${1:-}" == "--keep" ]]; then
 fi
 
 NET_NAME="ark-test-net"
+CONTROL_NET="ark-test-control"
 TMP_ROOT="$(mktemp -d /tmp/ark-test-XXXXXX)"
 PG_PASS="ark-test-pg-pass"
 KC_PASS="ark-test-kc-pass"
 QDRANT_KEY="ark-test-qdrant-key"
 VLLM_KEY="ark-test-vllm-key"
 COOKIE_SECRET="$(python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+PROXY_AUTH_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 
 log()  { printf '[%s] [TEST] %s\n' "$(date -u +'%H:%M:%S')" "$*"; }
 pass() { printf '[%s] [PASS] %s\n' "$(date -u +'%H:%M:%S')" "$*"; }
@@ -44,7 +46,7 @@ cleanup() {
     ark-test-tei-rerank \
     ark-test-qdrant \
     ark-test-postgres >/dev/null 2>&1 || true
-  docker network rm "${NET_NAME}" >/dev/null 2>&1 || true
+  docker network rm "${NET_NAME}" "${CONTROL_NET}" >/dev/null 2>&1 || true
   rm -rf "${TMP_ROOT}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -57,8 +59,9 @@ main() {
   log "Building ark-admin image..."
   docker build -q -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
 
-  log "Creating isolated Docker network '${NET_NAME}'..."
+  log "Creating isolated Docker networks '${NET_NAME}' and '${CONTROL_NET}'..."
   docker network create "${NET_NAME}" >/dev/null
+  docker network create --internal "${CONTROL_NET}" >/dev/null
 
   log "Starting PostgreSQL 16..."
   docker run -d --name ark-test-postgres --network "${NET_NAME}" --network-alias postgres \
@@ -170,53 +173,93 @@ main() {
     -e KEYCLOAK_INTERNAL_URL="http://keycloak:8080/auth" \
     -e ARK_BACKUP_DIR="/backups" \
     -e ARK_AUDIT_LOG_FILE="/var/log/ark/audit.jsonl" \
+    -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
     -v "${TMP_ROOT}/backups:/backups" \
     -v "${TMP_ROOT}/audit:/var/log/ark" \
     -v "${TMP_ROOT}/models:/models" \
     ark-admin:latest >/dev/null
+  docker network connect --alias ark-admin-control "${CONTROL_NET}" ark-test-ark-admin >/dev/null
 
   log "Starting Caddy reverse proxy on 127.0.0.1:8443..."
   docker run -d --name ark-test-caddy --network "${NET_NAME}" --network-alias caddy \
     -p 127.0.0.1:8443:443 \
     -e ARK_DOMAIN="localhost" \
+    -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
     -v "${REPO_ROOT}/config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
     caddy:2-alpine >/dev/null
+  docker network connect "${CONTROL_NET}" ark-test-caddy >/dev/null
 
   sleep 3
 
   # 1. Test Keycloak OIDC Discovery through Caddy
-  log "1/7 Testing Keycloak OIDC discovery via Caddy..."
+  log "1/8 Testing Keycloak OIDC discovery via Caddy..."
   curl -ksf "https://localhost:8443/auth/realms/ark/.well-known/openid-configuration" | grep -q '"issuer"' || \
     fail "Keycloak OIDC discovery failed through Caddy."
   pass "Keycloak OIDC discovery reachable via Caddy."
 
-  # 2. Test Admin Console SSO protection (must redirect to /oauth2/start)
-  log "2/7 Testing /admin-console/ SSO forward_auth enforcement..."
-  local admin_code
+  # 2. Test Admin Console SSO protection & peer-container bypass rejection
+  log "2/8 Testing /admin-console/ SSO forward_auth & peer bypass rejection..."
+  local admin_code spoof_caddy_code peer_bypass_code non_admin_code
   admin_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:8443/admin-console/")
   [[ "${admin_code}" == "302" ]] || fail "Expected 302 redirect for unauthenticated /admin-console/, got ${admin_code}"
-  pass "Unauthenticated /admin-console/ redirected to SSO (HTTP 302)."
+  spoof_caddy_code=$(curl -ks -o /dev/null -w "%{http_code}" \
+    -H "X-Ark-Proxy-Secret: ${PROXY_AUTH_SECRET}" \
+    -H "X-Forwarded-User: attacker" \
+    -H "X-Forwarded-Groups: ark-admins" \
+    "https://localhost:8443/admin-console/api/projects")
+  [[ "${spoof_caddy_code}" == "302" ]] || fail "Expected 302 for forged proxy headers at Caddy, got ${spoof_caddy_code}"
+
+  peer_bypass_code=$(docker exec ark-test-vllm python3 -c "
+import urllib.request, urllib.error
+req = urllib.request.Request(
+    'http://ark-admin:8090/admin-console/api/projects',
+    headers={'X-Forwarded-User': 'attacker', 'X-Forwarded-Groups': 'ark-admins'}
+)
+try:
+    urllib.request.urlopen(req, timeout=5)
+    print(200)
+except urllib.error.HTTPError as e:
+    print(e.code)
+")
+  [[ "${peer_bypass_code}" == "403" ]] || fail "Expected 403 for peer-container bypass to ark-admin, got ${peer_bypass_code}"
+
+  non_admin_code=$(docker exec ark-test-ark-admin python3 -c "
+import requests
+r = requests.get('http://localhost:8090/admin-console/api/projects', headers={
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'jdoe',
+    'X-Forwarded-Groups': 'project-alpha',
+}, timeout=5)
+print(r.status_code)
+")
+  [[ "${non_admin_code}" == "403" ]] || fail "Expected 403 for non-admin user on /admin-console/api/projects, got ${non_admin_code}"
+  pass "Admin SSO forward_auth, peer bypass block (403), and ark-admins RBAC verified."
 
   # 3. Test raw /v1 bypass blocking
-  log "3/7 Testing raw /v1/* bypass block..."
+  log "3/8 Testing raw /v1/* bypass block..."
   local raw_code
   raw_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:8443/v1/chat/completions")
   [[ "${raw_code}" == "403" ]] || fail "Expected 403 for raw /v1/*, got ${raw_code}"
   pass "Raw /v1/* bypass blocked (HTTP 403)."
 
   # 4. Create RAG project + Clean project via ark-admin
-  log "4/7 Provisioning RAG project (Project_Alpha) and Clean project (Clean_Sandbox)..."
+  log "4/8 Provisioning RAG project (Project_Alpha) and Clean project (Clean_Sandbox)..."
   docker exec ark-test-ark-admin python3 -c "
 import requests
-r1 = requests.post('http://localhost:8090/admin-console/api/projects', json={'name': 'Project_Alpha', 'rag_enabled': True})
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+r1 = requests.post('http://localhost:8090/admin-console/api/projects', headers=H, json={'name': 'Project_Alpha', 'rag_enabled': True})
 r1.raise_for_status()
-r2 = requests.post('http://localhost:8090/admin-console/api/projects', json={'name': 'Clean_Sandbox', 'rag_enabled': False})
+r2 = requests.post('http://localhost:8090/admin-console/api/projects', headers=H, json={'name': 'Clean_Sandbox', 'rag_enabled': False})
 r2.raise_for_status()
 "
   pass "Created Project_Alpha (RAG) and Clean_Sandbox (Clean)."
 
   # 5. Issue API keys & ingest a sample document vector into Project_Alpha
-  log "5/7 Issuing scoped API keys and testing Qdrant RAG + Clean project routing..."
+  log "5/8 Issuing scoped API keys and testing Qdrant RAG + Clean project routing..."
   local keys_json
   keys_json=$(docker exec ark-test-ark-admin python3 -c "
 import json, requests
@@ -224,8 +267,13 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct
 from connectors import embed_texts
 
-k1 = requests.post('http://localhost:8090/admin-console/api/keys', json={'project_slug': 'project-alpha', 'label': 'office-addin'}).json()['api_key']
-k2 = requests.post('http://localhost:8090/admin-console/api/keys', json={'project_slug': 'clean-sandbox', 'label': 'ide-plugin'}).json()['api_key']
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+k1 = requests.post('http://localhost:8090/admin-console/api/keys', headers=H, json={'project_slug': 'project-alpha', 'label': 'office-addin'}).json()['api_key']
+k2 = requests.post('http://localhost:8090/admin-console/api/keys', headers=H, json={'project_slug': 'clean-sandbox', 'label': 'ide-plugin'}).json()['api_key']
 
 vec = embed_texts('http://tei-embed:80', ['ARK Project Alpha secret specification'])[0]
 qc = QdrantClient(url='http://qdrant:6333', api_key='${QDRANT_KEY}')
@@ -279,9 +327,14 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   # 5c. Test API key revocation and project deletion
   docker exec ark-test-ark-admin python3 -c "
 import requests
-keys = requests.get('http://localhost:8090/admin-console/api/keys').json()
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+keys = requests.get('http://localhost:8090/admin-console/api/keys', headers=H).json()
 clean_id = next(k['id'] for k in keys if k['project_slug'] == 'clean-sandbox')
-requests.delete(f'http://localhost:8090/admin-console/api/keys/{clean_id}').raise_for_status()
+requests.delete(f'http://localhost:8090/admin-console/api/keys/{clean_id}', headers=H).raise_for_status()
 "
   local revoked_code
   revoked_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/clean-sandbox/v1/chat/completions" \
@@ -293,7 +346,12 @@ requests.delete(f'http://localhost:8090/admin-console/api/keys/{clean_id}').rais
 
   docker exec ark-test-ark-admin python3 -c "
 import requests
-requests.delete('http://localhost:8090/admin-console/api/projects/clean-sandbox').raise_for_status()
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+requests.delete('http://localhost:8090/admin-console/api/projects/clean-sandbox', headers=H).raise_for_status()
 "
   pass "Deleted Clean_Sandbox project via API."
 
@@ -301,7 +359,12 @@ requests.delete('http://localhost:8090/admin-console/api/projects/clean-sandbox'
   log "6/8 Testing LLM & Model Management APIs..."
   docker exec ark-test-ark-admin python3 -c "
 import requests
-m = requests.get('http://localhost:8090/admin-console/api/models', timeout=10)
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+m = requests.get('http://localhost:8090/admin-console/api/models', headers=H, timeout=10)
 m.raise_for_status()
 info = m.json()
 assert info['vllm_live']['reachable'] is True, info
@@ -309,52 +372,106 @@ assert 'ark-llm' in info['vllm_live']['models'], info
 dirs = {x['dir'] for x in info['local_models']}
 assert 'Qwen--Qwen2.5-14B-Instruct' in dirs and 'Qwen--Qwen2.5-32B-Instruct' in dirs, dirs
 
-r_def = requests.post('http://localhost:8090/admin-console/api/models/default', json={'model_name': 'ark-llm-v2'})
+r_def = requests.post('http://localhost:8090/admin-console/api/models/default', headers=H, json={'model_name': 'ark-llm-v2'})
 r_def.raise_for_status()
 assert r_def.json()['default_llm_model'] == 'ark-llm-v2'
-requests.post('http://localhost:8090/admin-console/api/models/default', json={'model_name': 'ark-llm'}).raise_for_status()
+requests.post('http://localhost:8090/admin-console/api/models/default', headers=H, json={'model_name': 'ark-llm'}).raise_for_status()
 
-r_proj = requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/model', json={'llm_model': 'ark-llm-custom'})
+r_proj = requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/model', headers=H, json={'llm_model': 'ark-llm-custom'})
 r_proj.raise_for_status()
 assert r_proj.json()['effective_llm_model'] == 'ark-llm-custom'
-requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/model', json={'llm_model': ''}).raise_for_status()
+requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/model', headers=H, json={'llm_model': ''}).raise_for_status()
 
-r_plan = requests.post('http://localhost:8090/admin-console/api/models/switch-plan', json={'model_dir': 'Qwen--Qwen2.5-32B-Instruct', 'model_type': 'llm'})
+r_plan = requests.post('http://localhost:8090/admin-console/api/models/switch-plan', headers=H, json={'model_dir': 'Qwen--Qwen2.5-32B-Instruct', 'model_type': 'llm'})
 r_plan.raise_for_status()
 assert './scripts/update-llm.sh --type llm --model-dir Qwen--Qwen2.5-32B-Instruct' in r_plan.json()['command']
 "
   pass "LLM & Model Management endpoints verified."
 
-  # 7. Test Backup Runner
-  log "7/8 Testing full PostgreSQL + Qdrant backup..."
+  # 7. Test Full Backup (Postgres + Qdrant snapshot files) & Full-Stack Restore
+  log "7/8 Testing full PostgreSQL + Qdrant backup & restore..."
   docker exec ark-test-ark-admin python3 -c "
+from pathlib import Path
 import requests
-r = requests.post('http://localhost:8090/admin-console/api/backups/run', timeout=60)
-r.raise_for_status()
+from qdrant_client import QdrantClient
+from backup_utils import verify_backup_manifest
+
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+r = requests.post('http://localhost:8090/admin-console/api/backups/run', headers=H, timeout=60)
+if not r.ok:
+    raise RuntimeError(f'Backup failed HTTP {r.status_code}: {r.text}')
 data = r.json()
 assert len(data['databases']) == 3, data
 assert len(data['qdrant_snapshots']) >= 2, data
-"
-  pass "Backup created 3 pg_dump archives and Qdrant snapshots."
 
-  # 8. Test Audit Logs
+dest = Path(data['destination'])
+assert (dest / 'manifest.json').is_file(), 'manifest.json missing'
+manifest = verify_backup_manifest(dest)
+assert len(manifest['databases']) == 3, manifest
+assert len(manifest['qdrant_snapshots']) >= 2, manifest
+for s in manifest['qdrant_snapshots']:
+    snap_path = dest / s['path']
+    assert snap_path.is_file() and snap_path.stat().st_size > 0, f'Missing snapshot file: {snap_path}'
+
+# Mutate Qdrant + DB state, then verify restore recovers both
+qc = QdrantClient(url='http://qdrant:6333', api_key='${QDRANT_KEY}')
+qc.delete(collection_name='Project_Alpha', points_selector=['11111111-1111-1111-1111-111111111111'])
+assert qc.count(collection_name='Project_Alpha').count == 0
+requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/model', headers=H, json={'llm_model': 'mutated-before-restore'}).raise_for_status()
+
+rest = requests.post('http://localhost:8090/admin-console/api/backups/restore', headers=H, json={'backup_name': data['backup_name']}, timeout=120)
+if not rest.ok:
+    raise RuntimeError(f'Restore failed HTTP {rest.status_code}: {rest.text}')
+rdata = rest.json()
+assert set(rdata['restored_databases']) == {'openwebui', 'keycloak', 'ark_admin'}, rdata
+assert 'Project_Alpha' in rdata['restored_collections'], rdata
+assert qc.count(collection_name='Project_Alpha').count == 1, 'Qdrant point was not restored!'
+proj_info = [p for p in requests.get('http://localhost:8090/admin-console/api/projects', headers=H).json() if p['slug'] == 'project-alpha'][0]
+assert proj_info['llm_model'] == '', proj_info
+"
+  pass "Backup files, Qdrant snapshot download, manifest verification, and full restore verified."
+
+  # 8. Test Audit Logs (PostgreSQL + append-only audit.jsonl)
   log "8/8 Verifying audit logs..."
   docker exec ark-test-ark-admin python3 -c "
-import requests
-logs = requests.get('http://localhost:8090/admin-console/api/audit?limit=30').json()
+import json, requests
+from pathlib import Path
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+logs = requests.get('http://localhost:8090/admin-console/api/audit?limit=40', headers=H).json()
 events = {l['event_type'] for l in logs}
-assert 'project.create' in events
-assert 'project.delete' in events
-assert 'project.model_update' in events
-assert 'model.default_update' in events
-assert 'model.switch_plan' in events
-assert 'apikey.create' in events
-assert 'apikey.revoke' in events
-assert 'api.chat_completion' in events
-assert 'api.auth_failed' in events
-assert 'backup.run' in events
+for expected in (
+    'auth.denied',
+    'project.create',
+    'project.delete',
+    'project.model_update',
+    'model.default_update',
+    'model.switch_plan',
+    'apikey.create',
+    'apikey.revoke',
+    'api.chat_completion',
+    'api.auth_failed',
+    'backup.restore',
+):
+    assert expected in events, f'{expected} missing from DB audit_logs: {events}'
+
+jsonl_events = {
+    json.loads(line)['event_type']
+    for line in Path('/var/log/ark/audit.jsonl').read_text(encoding='utf-8').splitlines()
+    if line.strip()
+}
+assert 'backup.run' in jsonl_events, jsonl_events
+assert 'backup.restore' in jsonl_events, jsonl_events
+assert 'auth.denied' in jsonl_events, jsonl_events
 "
-  pass "All expected events recorded in PostgreSQL audit_logs."
+  pass "All expected events recorded in PostgreSQL audit_logs and audit.jsonl."
 
   log "ALL INTEGRATION TESTS PASSED!"
 }

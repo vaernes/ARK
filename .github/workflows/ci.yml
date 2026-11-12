@@ -15,6 +15,9 @@ jobs:
       - name: Shell syntax check
         run: bash -n scripts/*.sh
 
+      - name: Python unit tests
+        run: python3 -m unittest discover -s tests -v
+
       - name: Air-gap & offline-flag invariants check
         run: |
           python3 - <<'EOF'

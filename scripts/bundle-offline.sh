@@ -89,7 +89,8 @@ load_env() {
   QDRANT_IMAGE="${QDRANT_IMAGE:-qdrant/qdrant:v1.12.5}"
   OPEN_WEBUI_IMAGE="${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.5.10}"
   POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
-  TIKA_IMAGE="${TIKA_IMAGE:-apache/tika:latest-full}"
+  TIKA_IMAGE="${TIKA_IMAGE:-apache/tika:3.1.0.0-full}"
+  TIKA_IMAGE_DIGEST="${TIKA_IMAGE_DIGEST:-sha256:1221afa48af9158e14b8d005bbcfa49f3d7fc4e5113db48cad586955bc64992b}"
   CADDY_IMAGE="${CADDY_IMAGE:-caddy:2-alpine}"
   KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}"
   OAUTH2_PROXY_IMAGE="${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.7.1}"
@@ -151,14 +152,27 @@ main() {
     )
 
     for img in "${pull_images[@]}"; do
-      log "Pulling Docker image: ${img}"
-      docker pull "${img}"
+      if [[ "${img}" == "${TIKA_IMAGE}" && -n "${TIKA_IMAGE_DIGEST}" && "${img}" != *@sha256:* ]]; then
+        local pinned_ref="${img}@${TIKA_IMAGE_DIGEST}"
+        log "Pulling Tika image with pinned digest: ${pinned_ref}"
+        docker pull "${pinned_ref}"
+        docker tag "${pinned_ref}" "${img}"
+      else
+        log "Pulling Docker image: ${img}"
+        docker pull "${img}"
+      fi
     done
 
     log "Building local ark-admin image: ${ARK_ADMIN_IMAGE}"
     docker build -t "${ARK_ADMIN_IMAGE}" "${REPO_ROOT}/admin"
 
     local images=("${pull_images[@]}" "${ARK_ADMIN_IMAGE}")
+
+    log "Recording image provenance digests -> ${ARTIFACTS_DIR}/ark-images.digests.txt"
+    : > "${ARTIFACTS_DIR}/ark-images.digests.txt"
+    for img in "${images[@]}"; do
+      docker image inspect --format '{{.Id}} {{json .RepoTags}} {{json .RepoDigests}}' "${img}" >> "${ARTIFACTS_DIR}/ark-images.digests.txt"
+    done
 
     log "Saving and compressing Docker images to ${images_archive} (zstd -T0)..."
     docker save "${images[@]}" | zstd -T0 -3 -f -o "${images_archive}"

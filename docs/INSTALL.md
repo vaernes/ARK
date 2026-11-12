@@ -56,6 +56,7 @@ Generate strong random values for:
 - `OIDC_OPENWEBUI_CLIENT_SECRET`
 - `OIDC_OAUTH2_PROXY_CLIENT_SECRET`
 - `OAUTH2_PROXY_COOKIE_SECRET` (must be 32-byte URL-safe base64, e.g. `python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())'`)
+- `ARK_PROXY_AUTH_SECRET` (shared secret between Caddy and `ark-admin` to block peer-container proxy bypass, e.g. `python3 -c 'import secrets; print(secrets.token_hex(32))'`)
 
 Optional enterprise settings in `.env`:
 - **SIEM Forwarding:** Set `SIEM_SYSLOG_HOST`, `SIEM_SYSLOG_PORT`, and `SIEM_SYSLOG_PROTOCOL` (`udp` or `tcp`).
@@ -127,5 +128,45 @@ Keycloak boots with the `ark` realm pre-imported from [config/keycloak/ark-realm
 2. **Generate an Open WebUI Admin API Key** (optional, for syncing Workspace Assistants into Open WebUI):
    - Sign in to `https://<your-ark-domain>` as an admin, go to **Settings → Account → API Keys**, and add `OPENWEBUI_API_KEY=...` to `.env`, then restart `ark-admin` (`docker compose up -d ark-admin`).
 3. **Create your first project** via the Admin UI (`https://<your-ark-domain>/admin-console/`) or via CLI (`python3 provisioning/bootstrap_ark.py --create-project "Project_Alpha"`).
+
+---
+
+## 8. Phase 7 — Backup Verification & Full-Stack Restore (Disaster Recovery)
+
+Full backups created from the Admin Console (`Run Full Backup Now`) write a timestamped directory under `ARK_BACKUP_DIR` (`ark-backup-<UTC_TIMESTAMP>/`) containing:
+- `openwebui.sql.gz`, `keycloak.sql.gz`, and `ark_admin.sql.gz` (PostgreSQL dumps)
+- `qdrant/<collection>/<snapshot>.snapshot` (downloaded Qdrant collection snapshots)
+- `manifest.json` (SHA-256 checksums and file inventory for all databases and Qdrant snapshots)
+
+### 1. Verify Backup Integrity Before Transfer or Restore
+```bash
+./scripts/restore-backup.sh --backup-dir /path/to/ark-backup-YYYYMMDDTHHMMSSZ --verify-only
+```
+This validates every file in `manifest.json` against its SHA-256 digest and verifies `gzip` stream integrity on all PostgreSQL archives.
+
+### 2. Full-Stack Restore via CLI (Recommended for Disaster Recovery)
+Ensure `postgres` and `qdrant` containers are healthy (`docker compose up -d postgres qdrant`), then run:
+```bash
+./scripts/restore-backup.sh --backup-dir /path/to/ark-backup-YYYYMMDDTHHMMSSZ
+```
+If you are restoring on a clean host, restart the application services afterward so cached state reloads cleanly:
+```bash
+docker compose up -d
+```
+
+### 3. Restore via Admin Console
+For online rollback while `ark-admin` is running, select a verified bundle in **Backup & Company_Common Sync → Restore Full Backup Bundle** and click **Verify & Restore Backup** (calls `POST /admin-console/api/backups/restore`).
+
+### 4. Post-Restore Verification
+1. Check container health: `docker compose ps`
+2. Verify PostgreSQL row counts:
+   ```bash
+   docker exec ark-postgres psql -U ark_webui -d ark_admin -c "SELECT count(*) FROM projects;"
+   ```
+3. Verify Qdrant collections report `"status":"ok"` and expected point counts:
+   ```bash
+   curl -sf -H "api-key: ${QDRANT_API_KEY}" http://127.0.0.1:6333/collections
+   ```
+4. Sign in to `https://<your-ark-domain>/` and run a test query against a restored project assistant.
 
 For day-to-day usage after installation, see the **[User & Operations Guide](USER_GUIDE.md)**.

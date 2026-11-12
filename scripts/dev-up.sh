@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 NET_NAME="ark-dev-net"
+CONTROL_NET="ark-dev-control"
 STATE_DIR="${REPO_ROOT}/.dev-state"
 PG_PASS="ark-dev-pg-pass"
 KC_PASS="ark-dev-kc-pass"
@@ -37,7 +38,7 @@ stop_stack() {
     ark-dev-tei-rerank \
     ark-dev-qdrant \
     ark-dev-postgres >/dev/null 2>&1 || true
-  docker network rm "${NET_NAME}" >/dev/null 2>&1 || true
+  docker network rm "${NET_NAME}" "${CONTROL_NET}" >/dev/null 2>&1 || true
   rm -rf "${STATE_DIR}"
   log "ARK dev stack stopped."
 }
@@ -54,6 +55,7 @@ fi
 stop_stack >/dev/null 2>&1 || true
 
 COOKIE_SECRET="$(python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+PROXY_AUTH_SECRET="$(python3 -c 'import os,secrets; print(secrets.token_hex(32))')"
 mkdir -p "${STATE_DIR}/backups" "${STATE_DIR}/audit" "${STATE_DIR}/keycloak"
 cp "${REPO_ROOT}/config/keycloak/ark-realm.json" "${STATE_DIR}/keycloak/ark-realm.json"
 sed -i "s|https://ark\.local|https://localhost:8443|g" "${STATE_DIR}/keycloak/ark-realm.json"
@@ -61,8 +63,9 @@ sed -i "s|https://ark\.local|https://localhost:8443|g" "${STATE_DIR}/keycloak/ar
 log "Building ark-admin:latest..."
 docker build -q -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
 
-log "Creating network '${NET_NAME}'..."
+log "Creating networks '${NET_NAME}' and '${CONTROL_NET}'..."
 docker network create "${NET_NAME}" >/dev/null
+docker network create --internal "${CONTROL_NET}" >/dev/null
 
 log "Starting PostgreSQL, Qdrant, and Mock Inference (vLLM + TEI Embed + TEI Rerank)..."
 docker run -d --name ark-dev-postgres --network "${NET_NAME}" --network-alias postgres \
@@ -174,16 +177,18 @@ docker run -d --name ark-dev-ark-admin --network "${NET_NAME}" --network-alias a
   -e KEYCLOAK_INTERNAL_URL="http://keycloak:8080/auth" \
   -e ARK_BACKUP_DIR="/backups" \
   -e ARK_AUDIT_LOG_FILE="/var/log/ark/audit.jsonl" \
+  -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
   -v "${STATE_DIR}/backups:/backups" \
   -v "${STATE_DIR}/audit:/var/log/ark" \
   ark-admin:latest >/dev/null
+docker network connect --alias ark-admin-control "${CONTROL_NET}" ark-dev-ark-admin >/dev/null
 
 if [[ "${FULL_STACK}" == true ]]; then
   log "Starting Apache Tika & Open WebUI (pulling images if not cached)..."
   mkdir -p "${STATE_DIR}/open-webui"
   docker run -d --name ark-dev-tika --network "${NET_NAME}" --network-alias tika \
     -e DO_NOT_TRACK=1 \
-    apache/tika:latest-full >/dev/null
+    apache/tika:3.1.0.0-full >/dev/null
 
   docker run -d --name ark-dev-open-webui --network "${NET_NAME}" --network-alias open-webui \
     -e OFFLINE_MODE=true \
@@ -233,8 +238,10 @@ fi
 docker run -d --name ark-dev-caddy --network "${NET_NAME}" --network-alias caddy \
   -p 127.0.0.1:8443:443 \
   -e ARK_DOMAIN="localhost" \
+  -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
   -v "${REPO_ROOT}/config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
   caddy:2-alpine >/dev/null
+docker network connect "${CONTROL_NET}" ark-dev-caddy >/dev/null
 
 cat <<EOF
 

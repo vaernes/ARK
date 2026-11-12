@@ -29,6 +29,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import psycopg
 import requests
@@ -40,7 +41,16 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 
 from audit import AuditLogger
+from backup_utils import (
+    dump_postgres_gzip,
+    restore_postgres_gzip,
+    sha256_file,
+    validate_backup_dir,
+    validate_backup_name,
+    verify_backup_manifest,
+)
 from connectors import CONNECTOR_RUNNERS, embed_texts
+from security import authorize_proxy_request, normalize_groups
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +80,7 @@ KEYCLOAK_URL = os.environ.get("KEYCLOAK_INTERNAL_URL", "http://keycloak:8080")
 EMBED_VECTOR_SIZE = int(os.environ.get("EMBED_VECTOR_SIZE", "1024"))
 DEFAULT_BACKUP_DIR = os.environ.get("ARK_BACKUP_DIR", "/backups")
 AUDIT_LOG_FILE = Path(os.environ.get("ARK_AUDIT_LOG_FILE", "/var/log/ark/audit.jsonl"))
+PROXY_AUTH_SECRET = os.environ.get("ARK_PROXY_AUTH_SECRET", "")
 
 # Postgres connection parameters for pg_dump
 PG_HOST = os.environ.get("POSTGRES_HOST", "postgres")
@@ -83,6 +94,31 @@ rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 app = FastAPI(title="ARK Control Plane & Project API Gateway", docs_url="/admin-console/docs", openapi_url="/admin-console/openapi.json")
 app.mount("/admin-console/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 app.mount("/portal/static", StaticFiles(directory=str(APP_DIR / "static")), name="portal-static")
+
+
+@app.middleware("http")
+async def enforce_proxy_auth(request: Request, call_next: Any) -> Any:
+    allowed, status_code, detail = authorize_proxy_request(
+        request.url.path,
+        request.headers,
+        PROXY_AUTH_SECRET,
+    )
+    if not allowed:
+        logger.warning("Blocked unauthorized request to %s: %s", request.url.path, detail)
+        try:
+            actor_hint = (request.headers.get("X-Forwarded-Email") or request.headers.get("X-Forwarded-User") or "unknown").strip() or "unknown"
+            audit.record(
+                "auth.denied",
+                actor=actor_hint,
+                status="denied",
+                details={"path": request.url.path, "reason": detail},
+            )
+        except Exception:
+            pass
+        return JSONResponse(status_code=status_code, content={"detail": detail})
+    if detail:
+        request.state.ark_actor = detail
+    return await call_next(request)
 
 
 def init_db() -> None:
@@ -160,12 +196,14 @@ def on_startup() -> None:
 
 
 def get_actor(request: Request) -> str:
-    return request.headers.get("X-Forwarded-Email") or request.headers.get("X-Forwarded-User") or "admin"
+    actor = (request.headers.get("X-Forwarded-Email") or request.headers.get("X-Forwarded-User") or "").strip()
+    if not actor:
+        raise HTTPException(status_code=401, detail="Missing authenticated user identity.")
+    return actor
 
 
 def get_user_groups(request: Request) -> set[str]:
-    raw = request.headers.get("X-Forwarded-Groups", "")
-    return {g.strip().lstrip("/") for g in raw.split(",") if g.strip()}
+    return normalize_groups(request.headers.get("X-Forwarded-Groups", ""))
 
 
 def user_has_project_access(groups: set[str], slug: str, group_name: str) -> bool:
@@ -329,6 +367,12 @@ class CreateKeyRequest(BaseModel):
 
 class BackupSettingRequest(BaseModel):
     backup_dir: str = Field(min_length=1)
+
+
+class RestoreBackupRequest(BaseModel):
+    backup_name: str = Field(min_length=1, max_length=128)
+    restore_databases: bool = True
+    restore_qdrant: bool = True
 
 
 class CreateConnectorRequest(BaseModel):
@@ -765,8 +809,12 @@ def get_backup_setting() -> dict[str, str]:
 @app.post("/admin-console/api/settings/backup")
 def update_backup_setting(req: BackupSettingRequest, request: Request) -> dict[str, str]:
     actor = get_actor(request)
-    target = req.backup_dir.strip()
-    Path(target).mkdir(parents=True, exist_ok=True)
+    try:
+        validated = validate_backup_dir(req.backup_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    target = str(validated)
+    validated.mkdir(parents=True, exist_ok=True)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -782,29 +830,225 @@ def update_backup_setting(req: BackupSettingRequest, request: Request) -> dict[s
 @app.post("/admin-console/api/backups/run")
 def run_backup(request: Request) -> dict[str, Any]:
     actor = get_actor(request)
-    backup_root = Path(get_backup_setting()["backup_dir"])
+    try:
+        backup_root = validate_backup_dir(get_backup_setting()["backup_dir"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = backup_root / f"ark-backup-{stamp}"
     dest.mkdir(parents=True, exist_ok=True)
 
-    env = os.environ.copy()
-    env["PGPASSWORD"] = PG_PASSWORD
+    try:
+        dumped_dbs: list[str] = []
+        db_entries: list[dict[str, Any]] = []
+        for db_name in ("openwebui", "keycloak", "ark_admin"):
+            out_file = dest / f"{db_name}.sql.gz"
+            entry = dump_postgres_gzip(
+                db_name=db_name,
+                out_file=out_file,
+                pg_host=PG_HOST,
+                pg_port=PG_PORT,
+                pg_user=PG_USER,
+                pg_password=PG_PASSWORD,
+            )
+            dumped_dbs.append(str(out_file))
+            db_entries.append(entry)
 
-    dumped_dbs: list[str] = []
-    for db_name in ("openwebui", "keycloak", "ark_admin"):
-        out_file = dest / f"{db_name}.sql.gz"
-        cmd = f"pg_dump -h {PG_HOST} -p {PG_PORT} -U {PG_USER} {db_name} | gzip > {out_file}"
-        subprocess.run(["bash", "-c", cmd], env=env, check=True)
-        dumped_dbs.append(str(out_file))
+        qdrant = get_qdrant()
+        qdrant_headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+        snapshots: list[str] = []
+        snapshot_entries: list[dict[str, Any]] = []
+        qdrant_dir = dest / "qdrant"
+        qdrant_dir.mkdir(parents=True, exist_ok=True)
+        for col in qdrant.get_collections().collections:
+            snap = qdrant.create_snapshot(collection_name=col.name)
+            col_dir = qdrant_dir / col.name
+            col_dir.mkdir(parents=True, exist_ok=True)
+            snap_dest = col_dir / snap.name
+            snap_url = (
+                f"{QDRANT_URL.rstrip('/')}/collections/{quote(col.name, safe='')}"
+                f"/snapshots/{quote(snap.name, safe='')}"
+            )
+            with requests.get(snap_url, headers=qdrant_headers, stream=True, timeout=300) as resp:
+                resp.raise_for_status()
+                with snap_dest.open("wb") as out_fh:
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        if chunk:
+                            out_fh.write(chunk)
+            snapshots.append(f"{col.name}:{snap.name}")
+            snapshot_entries.append(
+                {
+                    "collection": col.name,
+                    "name": snap.name,
+                    "path": f"qdrant/{col.name}/{snap.name}",
+                    "bytes": snap_dest.stat().st_size,
+                    "sha256": sha256_file(snap_dest),
+                }
+            )
 
-    qdrant = get_qdrant()
-    snapshots: list[str] = []
-    for col in qdrant.get_collections().collections:
-        snap = qdrant.create_snapshot(collection_name=col.name)
-        snapshots.append(f"{col.name}:{snap.name}")
+        manifest = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "databases": db_entries,
+            "qdrant_snapshots": snapshot_entries,
+        }
+        manifest_path = dest / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except Exception as exc:
+        audit.record("backup.run", actor=actor, status="error", details={"destination": str(dest), "error": str(exc)})
+        raise HTTPException(status_code=500, detail=f"Backup failed: {exc}") from exc
 
-    audit.record("backup.run", actor=actor, details={"destination": str(dest), "databases": dumped_dbs, "qdrant_snapshots": snapshots})
-    return {"status": "ok", "destination": str(dest), "databases": dumped_dbs, "qdrant_snapshots": snapshots}
+    audit.record(
+        "backup.run",
+        actor=actor,
+        details={
+            "destination": str(dest),
+            "manifest": str(manifest_path),
+            "databases": dumped_dbs,
+            "qdrant_snapshots": snapshots,
+        },
+    )
+    return {
+        "status": "ok",
+        "backup_name": dest.name,
+        "destination": str(dest),
+        "manifest": str(manifest_path),
+        "databases": dumped_dbs,
+        "qdrant_snapshots": snapshots,
+    }
+
+
+@app.get("/admin-console/api/backups")
+def list_backups() -> list[dict[str, Any]]:
+    try:
+        backup_root = validate_backup_dir(get_backup_setting()["backup_dir"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not backup_root.is_dir():
+        return []
+
+    bundles: list[dict[str, Any]] = []
+    for entry in sorted(backup_root.iterdir(), key=lambda p: p.name, reverse=True):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        manifest_path = entry / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                bundles.append(
+                    {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "created_at": manifest.get("created_at"),
+                        "databases": [d.get("database") for d in manifest.get("databases", [])],
+                        "qdrant_snapshots": [s.get("collection") for s in manifest.get("qdrant_snapshots", [])],
+                        "has_manifest": True,
+                    }
+                )
+            except Exception:
+                bundles.append(
+                    {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "created_at": None,
+                        "databases": [],
+                        "qdrant_snapshots": [],
+                        "has_manifest": False,
+                    }
+                )
+    return bundles
+
+
+@app.post("/admin-console/api/backups/restore")
+def restore_backup(req: RestoreBackupRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    try:
+        backup_root = validate_backup_dir(get_backup_setting()["backup_dir"])
+        safe_name = validate_backup_name(req.backup_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    backup_dir = (backup_root / safe_name).resolve()
+    if backup_root not in backup_dir.parents or not backup_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Backup bundle '{safe_name}' not found.")
+
+    try:
+        manifest = verify_backup_manifest(backup_dir)
+    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+        audit.record("backup.restore", actor=actor, status="error", details={"backup_name": safe_name, "error": str(exc)})
+        raise HTTPException(status_code=400, detail=f"Backup integrity verification failed: {exc}") from exc
+
+    restored_collections: list[str] = []
+    restored_databases: list[str] = []
+    qdrant_headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+
+    try:
+        if req.restore_qdrant:
+            for snap_entry in manifest.get("qdrant_snapshots", []):
+                col_name = snap_entry["collection"]
+                snap_file = (backup_dir / snap_entry["path"]).resolve()
+                with snap_file.open("rb") as fh:
+                    resp = requests.post(
+                        f"{QDRANT_URL.rstrip('/')}/collections/{quote(col_name, safe='')}/snapshots/upload?priority=snapshot",
+                        headers=qdrant_headers,
+                        files={"snapshot": (snap_file.name, fh)},
+                        timeout=300,
+                    )
+                if not resp.ok:
+                    raise RuntimeError(f"Qdrant snapshot restore failed for '{col_name}': HTTP {resp.status_code} {resp.text}")
+                col_healthy = False
+                for _ in range(10):
+                    check = requests.get(
+                        f"{QDRANT_URL.rstrip('/')}/collections/{quote(col_name, safe='')}",
+                        headers=qdrant_headers,
+                        timeout=15,
+                    )
+                    if check.ok:
+                        payload = check.json()
+                        col_status = payload.get("result", {}).get("status")
+                        if payload.get("status") == "ok" and col_status in {"green", "yellow"}:
+                            col_healthy = True
+                            break
+                    time.sleep(0.5)
+                if not col_healthy:
+                    raise RuntimeError(f"Qdrant collection '{col_name}' failed post-restore health check.")
+                restored_collections.append(col_name)
+
+        if req.restore_databases:
+            for db_entry in manifest.get("databases", []):
+                db_name = db_entry["database"]
+                dump_file = (backup_dir / db_entry["file"]).resolve()
+                restore_postgres_gzip(
+                    db_name=db_name,
+                    dump_file=dump_file,
+                    pg_host=PG_HOST,
+                    pg_port=PG_PORT,
+                    pg_user=PG_USER,
+                    pg_password=PG_PASSWORD,
+                )
+                restored_databases.append(db_name)
+    except Exception as exc:
+        try:
+            audit.record("backup.restore", actor=actor, status="error", details={"backup_name": safe_name, "error": str(exc)})
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
+
+    audit.record(
+        "backup.restore",
+        actor=actor,
+        details={
+            "backup_name": safe_name,
+            "restored_databases": restored_databases,
+            "restored_collections": restored_collections,
+        },
+    )
+    return {
+        "status": "ok",
+        "backup_name": safe_name,
+        "restored_databases": restored_databases,
+        "restored_collections": restored_collections,
+    }
 
 
 @app.get("/admin-console/api/connectors")

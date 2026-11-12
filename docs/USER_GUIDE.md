@@ -19,11 +19,17 @@ This guide covers day-to-day usage of **ARK (Air-gapped Retrieval & Knowledge)**
 3. **Uploading project files:** In your project's Workspace/Knowledge tab (if granted write access), upload PDFs, Word, Excel, PowerPoint, or text files. ARK extracts text offline via Apache Tika and indexes it into that project's isolated Qdrant collection only.
 
 ### 3. Connecting Office Add-ins, IDEs & Internal Tools
-If your administrator issued a **Project API Key** (`ark_proj_...`) for your team, configure your OpenAI-compatible tool (Office add-in, VS Code Continue/Cline, or Python script) with:
+If your administrator issued a **Project API Key** (`ark_proj_...`) for your team (or you generated a personal key in `/portal/`), configure your OpenAI-compatible tool (Office add-in, VS Code Continue/Cline, or Python script) with:
 
 - **Base URL:** `https://<your-ark-domain>/projects/<project-slug>/v1`
 - **API Key:** `ark_proj_...`
 - **Model:** `<project-slug>-assistant` (or any value—the gateway routes to the project's configured model and RAG context)
+
+**Supported OpenAI-compatible endpoints on `/projects/<project-slug>/v1`:**
+- `GET /models` — returns the project's assistant model metadata (`<project-slug>-assistant`)
+- `POST /chat/completions` — supports both non-streaming (`"stream": false`) and Server-Sent Events streaming (`"stream": true`)
+
+> **Scope Note:** Other OpenAI endpoints (`/embeddings`, `/completions`, `/images/*`, `/audio/*`, `/files/*`, `/assistants/*`) are intentionally not exposed by the project gateway. Direct unauthenticated calls to `/v1/chat/completions` are also blocked (`403 Forbidden`) so RBAC, rate limits, and audit logging are always enforced.
 
 **Example `curl` call:**
 ```bash
@@ -35,7 +41,6 @@ curl https://ark.corp.internal/projects/project-alpha/v1/chat/completions \
     "messages": [{"role": "user", "content": "Summarize the latest safety procedure."}]
   }'
 ```
-> **Note:** Direct unauthenticated calls to `/v1/chat/completions` are blocked (`403 Forbidden`). All API traffic must go through `/projects/<slug>/v1/` or Open WebUI so RBAC and audit logging are enforced.
 
 ---
 
@@ -99,10 +104,11 @@ Click **Add Connector**, then click **Sync** to extract documents via Apache Tik
    - **Admin UI:** Upload `Company_Common.snapshot` in the **Backup & Company_Common Sync** panel, **or**
    - **CLI:** Run `./scripts/sync-company-kb.sh --snapshot /path/to/Company_Common.snapshot`.
 
-### 6. Backups & Changing the Backup Directory
+### 6. Backups, Restore & Changing the Backup Directory
 In the **Backup & Company_Common Sync** panel:
 - **Change Backup Location:** Update **Backup Destination Directory** (e.g., `/backups/nas`) and click **Save Backup Path**.
-- **Run Backup:** Click **Run Full Backup Now** to create compressed `pg_dump` archives (`openwebui.sql.gz`, `keycloak.sql.gz`, `ark_admin.sql.gz`) and Qdrant snapshots for every collection.
+- **Run Backup:** Click **Run Full Backup Now** to create a timestamped bundle (`ark-backup-<UTC>/`) containing compressed `pg_dump` archives (`openwebui.sql.gz`, `keycloak.sql.gz`, `ark_admin.sql.gz`), downloaded Qdrant snapshot files (`qdrant/<collection>/<snapshot>.snapshot`), and a SHA-256 `manifest.json`.
+- **Verify & Restore:** Select a backup bundle under **Restore Full Backup Bundle** and click **Verify & Restore Backup** (or use `./scripts/restore-backup.sh` on the host; see [docs/INSTALL.md](INSTALL.md#8-phase-7--backup-verification--full-stack-restore-disaster-recovery)).
 
 ### 7. Monitoring Health & Audit Logs
 - **Service Health:** Displays live status for `vllm`, `tei_embed`, `tei_rerank`, `qdrant`, `postgres`, `tika`, `open_webui`, and `keycloak`.

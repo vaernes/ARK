@@ -49,7 +49,8 @@
 				redir * /oauth2/start?rd={uri}
 			}
 		}
-		reverse_proxy ark-admin:8090 {
+		reverse_proxy ark-admin-control:8090 {
+			header_up X-Ark-Proxy-Secret {env.ARK_PROXY_AUTH_SECRET}
 			header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
 			header_up X-Forwarded-Email {http.request.header.X-Auth-Request-Email}
 			header_up X-Forwarded-Groups {http.request.header.X-Auth-Request-Groups}
@@ -66,7 +67,8 @@
 				redir * /oauth2/start?rd={uri}
 			}
 		}
-		reverse_proxy ark-admin:8090 {
+		reverse_proxy ark-admin-control:8090 {
+			header_up X-Ark-Proxy-Secret {env.ARK_PROXY_AUTH_SECRET}
 			header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
 			header_up X-Forwarded-Email {http.request.header.X-Auth-Request-Email}
 			header_up X-Forwarded-Groups {http.request.header.X-Auth-Request-Groups}
@@ -77,6 +79,10 @@
 	@project_api path_regexp ^/projects/[^/]+/v1/
 	handle @project_api {
 		reverse_proxy ark-admin:8090 {
+			header_up -X-Ark-Proxy-Secret
+			header_up -X-Forwarded-User
+			header_up -X-Forwarded-Email
+			header_up -X-Forwarded-Groups
 			flush_interval -1
 			transport http {
 				dial_timeout 10s
