@@ -70,13 +70,40 @@ class MockHandler(BaseHTTPRequestHandler):
                 f"[MOCK-LLM] Received: '{user_msg}'. "
                 f"RAG_CONTEXT_INJECTED={has_rag}."
             )
+            model_name = body.get("model", "ark-llm")
+            cmpl_id = f"chatcmpl-mock-{int(time.time())}"
+            created = int(time.time())
+
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                chunk = {
+                    "id": cmpl_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": reply},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                return
+
             self._send_json(
                 200,
                 {
-                    "id": f"chatcmpl-mock-{int(time.time())}",
+                    "id": cmpl_id,
                     "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": body.get("model", "ark-llm"),
+                    "created": created,
+                    "model": model_name,
                     "choices": [
                         {
                             "index": 0,

@@ -13,6 +13,7 @@ artifacts/
 # Local persistent runtime data & volumes
 data/
 volumes/
+.dev-state/
 
 # TLS certificates and keys
 certs/

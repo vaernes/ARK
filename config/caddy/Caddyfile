@@ -23,8 +23,8 @@
 		-Server
 	}
 
-	# 1. Keycloak Identity Broker (/auth)
-	handle /auth* {
+	# 1. Keycloak Identity Broker (/auth/)
+	handle /auth/* {
 		reverse_proxy keycloak:8080 {
 			header_up X-Forwarded-Proto https
 			header_up X-Forwarded-Host {host}

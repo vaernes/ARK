@@ -30,7 +30,7 @@ from typing import Any
 import psycopg
 import requests
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
@@ -54,6 +54,7 @@ VLLM_URL = os.environ.get("VLLM_URL", "http://vllm:8000")
 VLLM_API_KEY = os.environ.get("VLLM_API_KEY", "")
 LLM_SERVED_NAME = os.environ.get("LLM_SERVED_NAME", "ark-llm")
 TEI_EMBED_URL = os.environ.get("TEI_EMBED_URL", "http://tei-embed:80")
+TEI_RERANK_URL = os.environ.get("TEI_RERANK_URL", "http://tei-rerank:80")
 TIKA_URL = os.environ.get("TIKA_URL", "http://tika:9998")
 OPENWEBUI_URL = os.environ.get("OPENWEBUI_INTERNAL_URL", "http://open-webui:8080")
 OPENWEBUI_API_KEY = os.environ.get("OPENWEBUI_API_KEY", "")
@@ -198,11 +199,11 @@ def health_dashboard() -> dict[str, Any]:
     checks = {
         "vllm": f"{VLLM_URL}/health",
         "tei_embed": f"{TEI_EMBED_URL}/health",
-        "tei_rerank": "http://tei-rerank:80/health",
+        "tei_rerank": f"{TEI_RERANK_URL}/health",
         "qdrant": f"{QDRANT_URL}/readyz",
         "tika": f"{TIKA_URL}/tika",
         "open_webui": f"{OPENWEBUI_URL}/health",
-        "keycloak": f"{KEYCLOAK_URL}/health/ready",
+        "keycloak": f"{KEYCLOAK_URL.rstrip('/')}/realms/ark/.well-known/openid-configuration",
     }
     results: dict[str, str] = {}
     for name, url in checks.items():
@@ -354,6 +355,38 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
         details={"rag_enabled": req.rag_enabled, "webui_status": webui_status},
     )
     return {"slug": slug, "name": display, "collection_name": collection if req.rag_enabled else None, "rag_enabled": req.rag_enabled, "webui_status": webui_status}
+
+
+@app.delete("/admin-console/api/projects/{slug}")
+def delete_project(slug: str, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM projects WHERE slug = %s RETURNING name, collection_name, rag_enabled",
+                (slug,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    display, collection_name, rag_enabled = row
+    qdrant_deleted = False
+    if rag_enabled and collection_name and collection_name != "Company_Common":
+        try:
+            get_qdrant().delete_collection(collection_name=collection_name)
+            qdrant_deleted = True
+        except Exception as exc:
+            logger.warning("Qdrant collection cleanup failed for '%s': %s", collection_name, exc)
+
+    audit.record(
+        "project.delete",
+        actor=actor,
+        project_slug=slug,
+        details={"name": display, "collection_name": collection_name, "qdrant_deleted": qdrant_deleted},
+    )
+    return {"status": "deleted", "slug": slug, "qdrant_deleted": qdrant_deleted}
 
 
 @app.get("/admin-console/api/keys")
@@ -600,10 +633,31 @@ def project_models(slug: str, auth: dict[str, Any] = Depends(authenticate_projec
     return {"object": "list", "data": [{"id": auth["model_id"], "object": "model", "owned_by": f"ark-{slug}"}]}
 
 
+def rerank_contexts(query: str, candidates: list[dict[str, str]], top_n: int = 4) -> list[str]:
+    """Rerank retrieved Qdrant chunks via TEI Reranker, falling back to vector order."""
+    if not candidates:
+        return []
+    ordered = candidates
+    if len(candidates) > 1:
+        try:
+            resp = requests.post(
+                f"{TEI_RERANK_URL.rstrip('/')}/rerank",
+                json={"query": query, "texts": [c["text"] for c in candidates]},
+                timeout=15,
+            )
+            if resp.ok:
+                ranked = sorted(resp.json(), key=lambda r: r.get("score", 0.0), reverse=True)
+                ordered = [candidates[r["index"]] for r in ranked if 0 <= r.get("index", -1) < len(candidates)]
+        except Exception as exc:
+            logger.warning("TEI rerank fallback to vector order: %s", exc)
+    return [f"[{c['col']} | {c['src']}]\n{c['text']}" for c in ordered[:top_n]]
+
+
 @app.post("/projects/{slug}/v1/chat/completions")
-async def project_chat_completions(slug: str, request: Request, auth: dict[str, Any] = Depends(authenticate_project_key)) -> JSONResponse:
+async def project_chat_completions(slug: str, request: Request, auth: dict[str, Any] = Depends(authenticate_project_key)) -> Any:
     body = await request.json()
     messages = list(body.get("messages") or [])
+    stream = bool(body.get("stream", False))
 
     context_blocks: list[str] = []
     if auth["rag_enabled"] and messages:
@@ -611,27 +665,51 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
         if isinstance(last_user, str) and last_user.strip():
             query_vec = embed_texts(TEI_EMBED_URL, [last_user])[0]
             qdrant = get_qdrant()
+            candidates: list[dict[str, str]] = []
             for col in ("Company_Common", auth["collection_name"]):
                 if not col:
                     continue
                 try:
-                    hits = qdrant.query_points(collection_name=col, query=query_vec, limit=4).points
+                    hits = qdrant.query_points(collection_name=col, query=query_vec, limit=6).points
                     for hit in hits:
                         payload = hit.payload or {}
                         text = payload.get("text", "")
                         src = payload.get("filename", col)
                         if text:
-                            context_blocks.append(f"[{col} | {src}]\n{text}")
+                            candidates.append({"col": col, "src": src, "text": text})
                 except Exception as exc:
                     logger.warning("Qdrant search failed on '%s': %s", col, exc)
+            context_blocks = rerank_contexts(last_user, candidates, top_n=4)
 
     sys_content = auth["system_prompt"]
     if context_blocks:
         sys_content += "\n\nRetrieved Context:\n" + "\n---\n".join(context_blocks)
 
     forwarded_messages = [{"role": "system", "content": sys_content}] + [m for m in messages if m.get("role") != "system"]
-    vllm_payload = {**body, "model": LLM_SERVED_NAME, "messages": forwarded_messages, "stream": False}
+    vllm_payload = {**body, "model": LLM_SERVED_NAME, "messages": forwarded_messages, "stream": stream}
     vllm_headers = {"Authorization": f"Bearer {VLLM_API_KEY}", "Content-Type": "application/json"}
+
+    if stream:
+        resp = requests.post(f"{VLLM_URL}/v1/chat/completions", headers=vllm_headers, json=vllm_payload, stream=True, timeout=180)
+        audit.record(
+            "api.chat_completion",
+            actor=f"key:{auth['key_label']}",
+            project_slug=slug,
+            status="success" if resp.ok else f"http_{resp.status_code}",
+            details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": True},
+        )
+        if not resp.ok:
+            return JSONResponse(status_code=resp.status_code, content=resp.json())
+
+        def event_stream():
+            try:
+                for line in resp.iter_lines(decode_unicode=False):
+                    if line:
+                        yield line + b"\n\n"
+            finally:
+                resp.close()
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     resp = requests.post(f"{VLLM_URL}/v1/chat/completions", headers=vllm_headers, json=vllm_payload, timeout=180)
     audit.record(
@@ -639,6 +717,6 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
         actor=f"key:{auth['key_label']}",
         project_slug=slug,
         status="success" if resp.ok else f"http_{resp.status_code}",
-        details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks)},
+        details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": False},
     )
     return JSONResponse(status_code=resp.status_code, content=resp.json())

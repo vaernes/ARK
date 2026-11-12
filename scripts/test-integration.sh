@@ -41,6 +41,7 @@ cleanup() {
     ark-test-keycloak \
     ark-test-vllm \
     ark-test-tei-embed \
+    ark-test-tei-rerank \
     ark-test-qdrant \
     ark-test-postgres >/dev/null 2>&1 || true
   docker network rm "${NET_NAME}" >/dev/null 2>&1 || true
@@ -83,6 +84,10 @@ main() {
     -v "${REPO_ROOT}/tests:/tests:ro" \
     python:3.12-slim-bookworm python3 /tests/mock_inference.py 80 >/dev/null
 
+  docker run -d --name ark-test-tei-rerank --network "${NET_NAME}" --network-alias tei-rerank \
+    -v "${REPO_ROOT}/tests:/tests:ro" \
+    python:3.12-slim-bookworm python3 /tests/mock_inference.py 80 >/dev/null
+
   log "Waiting for PostgreSQL readiness..."
   for _ in $(seq 1 30); do
     if docker exec ark-test-postgres pg_isready -U ark_webui -d ark_admin >/dev/null 2>&1; then
@@ -102,14 +107,14 @@ main() {
     -e KC_HEALTH_ENABLED=true \
     -v "${TMP_ROOT}/keycloak:/opt/keycloak/data/import:ro" \
     quay.io/keycloak/keycloak:26.0 \
-    start --import-realm --http-enabled=true --http-relative-path=/auth --hostname=https://localhost:8443/auth --hostname-strict=false --proxy-headers=xforwarded >/dev/null
+    start --import-realm --http-enabled=true --http-relative-path=/auth --hostname=https://localhost:8443/auth --hostname-strict=false --hostname-backchannel-dynamic=true --proxy-headers=xforwarded >/dev/null
 
-  log "Waiting for Keycloak readiness (up to 60s)..."
-  for i in $(seq 1 60); do
+  log "Waiting for Keycloak readiness (up to 120s)..."
+  for i in $(seq 1 120); do
     if docker exec ark-test-keycloak bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e "GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && grep -q "200 OK" <&3' >/dev/null 2>&1; then
       break
     fi
-    if [[ "$i" -eq 60 ]]; then
+    if [[ "$i" -eq 120 ]]; then
       docker logs --tail 30 ark-test-keycloak >&2 || true
       fail "Keycloak did not become ready in time."
     fi
@@ -133,6 +138,7 @@ main() {
     --redirect-url=https://localhost:8443/oauth2/callback \
     --http-address=0.0.0.0:4180 \
     --email-domain=* \
+    --insecure-oidc-allow-unverified-email=true \
     --allowed-group=ark-admins \
     --oidc-groups-claim=groups \
     --set-xauthrequest=true \
@@ -153,6 +159,7 @@ main() {
     -e VLLM_API_KEY="${VLLM_KEY}" \
     -e LLM_SERVED_NAME="ark-llm" \
     -e TEI_EMBED_URL="http://tei-embed:80" \
+    -e TEI_RERANK_URL="http://tei-rerank:80" \
     -e TIKA_URL="http://tika:9998" \
     -e OPENWEBUI_INTERNAL_URL="http://open-webui:8080" \
     -e KEYCLOAK_INTERNAL_URL="http://keycloak:8080/auth" \
@@ -252,6 +259,38 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   [[ "${cross_code}" == "403" ]] || fail "Expected 403 for cross-project API key, got ${cross_code}"
   pass "Cross-project API key rejected (HTTP 403)."
 
+  # 5b. Test SSE streaming on Project_Alpha
+  local stream_resp
+  stream_resp=$(curl -ks -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
+    -H "Authorization: Bearer ${alpha_key}" \
+    -H "Content-Type: application/json" \
+    -d '{"messages":[{"role":"user","content":"Stream test"}],"stream":true}')
+  if ! echo "${stream_resp}" | grep -q "data: \[DONE\]"; then
+    fail "Expected SSE stream ending with data: [DONE], got: ${stream_resp}"
+  fi
+  pass "Project_Alpha SSE streaming returned chunks and [DONE]."
+
+  # 5c. Test API key revocation and project deletion
+  docker exec ark-test-ark-admin python3 -c "
+import requests
+keys = requests.get('http://localhost:8090/admin-console/api/keys').json()
+clean_id = next(k['id'] for k in keys if k['project_slug'] == 'clean-sandbox')
+requests.delete(f'http://localhost:8090/admin-console/api/keys/{clean_id}').raise_for_status()
+"
+  local revoked_code
+  revoked_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/clean-sandbox/v1/chat/completions" \
+    -H "Authorization: Bearer ${clean_key}" \
+    -H "Content-Type: application/json" \
+    -d '{"messages":[{"role":"user","content":"After revoke"}]}')
+  [[ "${revoked_code}" == "403" ]] || fail "Expected 403 for revoked API key, got ${revoked_code}"
+  pass "Revoked API key rejected (HTTP 403)."
+
+  docker exec ark-test-ark-admin python3 -c "
+import requests
+requests.delete('http://localhost:8090/admin-console/api/projects/clean-sandbox').raise_for_status()
+"
+  pass "Deleted Clean_Sandbox project via API."
+
   # 6. Test Backup Runner
   log "6/7 Testing full PostgreSQL + Qdrant backup..."
   docker exec ark-test-ark-admin python3 -c "
@@ -271,7 +310,9 @@ import requests
 logs = requests.get('http://localhost:8090/admin-console/api/audit?limit=20').json()
 events = {l['event_type'] for l in logs}
 assert 'project.create' in events
+assert 'project.delete' in events
 assert 'apikey.create' in events
+assert 'apikey.revoke' in events
 assert 'api.chat_completion' in events
 assert 'api.auth_failed' in events
 assert 'backup.run' in events

@@ -311,6 +311,7 @@ services:
       - --http-relative-path=/auth
       - --hostname=https://${ARK_DOMAIN:-ark.local}/auth
       - --hostname-strict=false
+      - --hostname-backchannel-dynamic=true
       - --proxy-headers=xforwarded
     environment:
       KC_DB: postgres
@@ -357,6 +358,7 @@ services:
       - --redirect-url=https://${ARK_DOMAIN:-ark.local}/oauth2/callback
       - --http-address=0.0.0.0:4180
       - --email-domain=*
+      - --insecure-oidc-allow-unverified-email=true
       - --allowed-group=ark-admins
       - --oidc-groups-claim=groups
       - --set-xauthrequest=true
