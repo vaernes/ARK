@@ -225,7 +225,9 @@ if [[ "${FULL_STACK}" == true ]]; then
     -e TIKA_SERVER_URL="http://tika:9998" \
     -v "${STATE_DIR}/open-webui:/app/backend/data" \
     -v "${REPO_ROOT}/admin/static/ark-logo.svg:/app/backend/open_webui/static/favicon.svg:ro" \
-    ghcr.io/open-webui/open-webui:v0.5.10 >/dev/null
+    -v "${REPO_ROOT}/config/open-webui/custom.css:/app/backend/open_webui/static/custom.css:ro" \
+    ghcr.io/open-webui/open-webui:v0.5.10 \
+    bash -c 'grep -q "/static/custom.css" /app/build/index.html || sed -i "s|</head>|<link rel=\"stylesheet\" href=\"/static/custom.css\" /></head>|" /app/build/index.html; exec bash start.sh' >/dev/null
 fi
 
 docker run -d --name ark-dev-caddy --network "${NET_NAME}" --network-alias caddy \

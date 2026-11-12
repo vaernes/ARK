@@ -1,0 +1,121 @@
+/* ==========================================================================
+   ARK (Air-Gapped Retrieval & Knowledge) — Open WebUI Custom Theme
+   Strict Air-Gap: 100% local CSS, zero external fonts or URLs.
+   Palette:
+     Deep Void:    #0A0E17
+     Steel Shield: #1E293B
+     Signal Amber: #F55A00
+     Tech Cyan:    #00E5FF
+     Glint White:  #E2E8F0
+     Armor Gray:   #64748B
+   ========================================================================== */
+
+:root,
+html.dark,
+html.light {
+  --ark-void: #0A0E17;
+  --ark-shield: #1E293B;
+  --ark-shield-alt: #141C2B;
+  --ark-border: #2E3D52;
+  --ark-amber: #F55A00;
+  --ark-cyan: #00E5FF;
+  --ark-text: #E2E8F0;
+  --ark-gray: #64748B;
+
+  --color-gray-50: #F1F5F9;
+  --color-gray-100: #E2E8F0;
+  --color-gray-200: #CBD5E1;
+  --color-gray-300: #94A3B8;
+  --color-gray-400: #64748B;
+  --color-gray-500: #475569;
+  --color-gray-600: #334155;
+  --color-gray-700: #2E3D52;
+  --color-gray-800: #1E293B;
+  --color-gray-850: #141C2B;
+  --color-gray-900: #0A0E17;
+  --color-gray-950: #0A0E17;
+}
+
+html,
+body {
+  background-color: var(--ark-void) !important;
+  color: var(--ark-text) !important;
+}
+
+/* Ensure light-mode classes also render in ARK Deep Void / Steel Shield */
+.bg-white,
+.bg-gray-50,
+.bg-gray-100,
+.dark\:bg-gray-900,
+.dark\:bg-gray-950 {
+  background-color: var(--ark-void) !important;
+}
+
+.bg-gray-200,
+.dark\:bg-gray-800 {
+  background-color: var(--ark-shield) !important;
+}
+
+.text-gray-900,
+.text-gray-800,
+.text-gray-700,
+.text-black {
+  color: var(--ark-text) !important;
+}
+
+/* Sidebar & Navigation Panels */
+nav,
+#sidebar,
+aside {
+  background-color: var(--ark-shield-alt) !important;
+  border-color: var(--ark-border) !important;
+}
+
+/* Chat Input & Composer */
+#chat-input-container,
+form textarea,
+.bg-gray-850,
+.dark\:bg-gray-850 {
+  background-color: var(--ark-shield) !important;
+  border-color: var(--ark-border) !important;
+  color: var(--ark-text) !important;
+}
+
+/* Primary Buttons & Send / SSO CTA */
+button[type="submit"],
+.bg-black,
+.dark\:bg-white {
+  background-color: var(--ark-cyan) !important;
+  color: var(--ark-void) !important;
+  font-weight: 700 !important;
+  border-color: var(--ark-cyan) !important;
+}
+
+button[type="submit"]:hover {
+  opacity: 0.9;
+}
+
+/* Focus & Active Highlights */
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--ark-cyan) !important;
+  outline-color: var(--ark-cyan) !important;
+}
+
+a:hover {
+  color: var(--ark-cyan);
+}
+
+/* Code blocks & citations */
+pre,
+code {
+  background-color: var(--ark-shield-alt) !important;
+  border-color: var(--ark-border) !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar-thumb {
+  background: var(--ark-border) !important;
+  border-radius: 6px;
+}

@@ -285,6 +285,11 @@ services:
       - ./data/open-webui:/app/backend/data
       - ./certs:/certs:ro
       - ./admin/static/ark-logo.svg:/app/backend/open_webui/static/favicon.svg:ro
+      - ./config/open-webui/custom.css:/app/backend/open_webui/static/custom.css:ro
+    command:
+      - bash
+      - -c
+      - 'grep -q "/static/custom.css" /app/build/index.html || sed -i "s|</head>|<link rel=\"stylesheet\" href=\"/static/custom.css\" /></head>|" /app/build/index.html; exec bash start.sh'
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 20s
