@@ -145,6 +145,11 @@ main() {
     --cookie-secure=true \
     --skip-provider-button=true >/dev/null
 
+  mkdir -p "${TMP_ROOT}/models/Qwen--Qwen2.5-14B-Instruct" "${TMP_ROOT}/models/Qwen--Qwen2.5-32B-Instruct"
+  echo '{"model_type":"qwen2","architectures":["Qwen2ForCausalLM"]}' > "${TMP_ROOT}/models/Qwen--Qwen2.5-14B-Instruct/config.json"
+  echo '{"model_type":"qwen2","architectures":["Qwen2ForCausalLM"]}' > "${TMP_ROOT}/models/Qwen--Qwen2.5-32B-Instruct/config.json"
+  touch "${TMP_ROOT}/models/Qwen--Qwen2.5-14B-Instruct/model.safetensors" "${TMP_ROOT}/models/Qwen--Qwen2.5-32B-Instruct/model.safetensors"
+
   log "Starting ark-admin..."
   docker run -d --name ark-test-ark-admin --network "${NET_NAME}" --network-alias ark-admin \
     -e ARK_ADMIN_DB_URL="postgresql://ark_webui:${PG_PASS}@postgres:5432/ark_admin" \
@@ -157,6 +162,7 @@ main() {
     -e VLLM_URL="http://vllm:8000" \
     -e VLLM_API_KEY="${VLLM_KEY}" \
     -e LLM_SERVED_NAME="ark-llm" \
+    -e ARK_MODELS_DIR="/models" \
     -e TEI_EMBED_URL="http://tei-embed:80" \
     -e TEI_RERANK_URL="http://tei-rerank:80" \
     -e TIKA_URL="http://tika:9998" \
@@ -166,6 +172,7 @@ main() {
     -e ARK_AUDIT_LOG_FILE="/var/log/ark/audit.jsonl" \
     -v "${TMP_ROOT}/backups:/backups" \
     -v "${TMP_ROOT}/audit:/var/log/ark" \
+    -v "${TMP_ROOT}/models:/models" \
     ark-admin:latest >/dev/null
 
   log "Starting Caddy reverse proxy on 127.0.0.1:8443..."
@@ -290,8 +297,36 @@ requests.delete('http://localhost:8090/admin-console/api/projects/clean-sandbox'
 "
   pass "Deleted Clean_Sandbox project via API."
 
-  # 6. Test Backup Runner
-  log "6/7 Testing full PostgreSQL + Qdrant backup..."
+  # 6. Test LLM & Model Management APIs
+  log "6/8 Testing LLM & Model Management APIs..."
+  docker exec ark-test-ark-admin python3 -c "
+import requests
+m = requests.get('http://localhost:8090/admin-console/api/models', timeout=10)
+m.raise_for_status()
+info = m.json()
+assert info['vllm_live']['reachable'] is True, info
+assert 'ark-llm' in info['vllm_live']['models'], info
+dirs = {x['dir'] for x in info['local_models']}
+assert 'Qwen--Qwen2.5-14B-Instruct' in dirs and 'Qwen--Qwen2.5-32B-Instruct' in dirs, dirs
+
+r_def = requests.post('http://localhost:8090/admin-console/api/models/default', json={'model_name': 'ark-llm-v2'})
+r_def.raise_for_status()
+assert r_def.json()['default_llm_model'] == 'ark-llm-v2'
+requests.post('http://localhost:8090/admin-console/api/models/default', json={'model_name': 'ark-llm'}).raise_for_status()
+
+r_proj = requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/model', json={'llm_model': 'ark-llm-custom'})
+r_proj.raise_for_status()
+assert r_proj.json()['effective_llm_model'] == 'ark-llm-custom'
+requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/model', json={'llm_model': ''}).raise_for_status()
+
+r_plan = requests.post('http://localhost:8090/admin-console/api/models/switch-plan', json={'model_dir': 'Qwen--Qwen2.5-32B-Instruct', 'model_type': 'llm'})
+r_plan.raise_for_status()
+assert './scripts/update-llm.sh --type llm --model-dir Qwen--Qwen2.5-32B-Instruct' in r_plan.json()['command']
+"
+  pass "LLM & Model Management endpoints verified."
+
+  # 7. Test Backup Runner
+  log "7/8 Testing full PostgreSQL + Qdrant backup..."
   docker exec ark-test-ark-admin python3 -c "
 import requests
 r = requests.post('http://localhost:8090/admin-console/api/backups/run', timeout=60)
@@ -302,14 +337,17 @@ assert len(data['qdrant_snapshots']) >= 2, data
 "
   pass "Backup created 3 pg_dump archives and Qdrant snapshots."
 
-  # 7. Test Audit Logs
-  log "7/7 Verifying audit logs..."
+  # 8. Test Audit Logs
+  log "8/8 Verifying audit logs..."
   docker exec ark-test-ark-admin python3 -c "
 import requests
-logs = requests.get('http://localhost:8090/admin-console/api/audit?limit=20').json()
+logs = requests.get('http://localhost:8090/admin-console/api/audit?limit=30').json()
 events = {l['event_type'] for l in logs}
 assert 'project.create' in events
 assert 'project.delete' in events
+assert 'project.model_update' in events
+assert 'model.default_update' in events
+assert 'model.switch_plan' in events
 assert 'apikey.create' in events
 assert 'apikey.revoke' in events
 assert 'api.chat_completion' in events

@@ -406,6 +406,11 @@ services:
       VLLM_URL: "http://vllm:8000"
       VLLM_API_KEY: "${VLLM_API_KEY}"
       LLM_SERVED_NAME: "${LLM_SERVED_NAME:-ark-llm}"
+      LLM_MODEL_ID: "${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
+      LLM_MODEL_DIR: "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
+      EMBED_MODEL_DIR: "${EMBED_MODEL_DIR:-BAAI--bge-m3}"
+      RERANK_MODEL_DIR: "${RERANK_MODEL_DIR:-BAAI--bge-reranker-v2-m3}"
+      ARK_MODELS_DIR: "/models"
       TEI_EMBED_URL: "http://tei-embed:80"
       TIKA_URL: "http://tika:9998"
       OPENWEBUI_INTERNAL_URL: "http://open-webui:8080"
@@ -421,6 +426,7 @@ services:
     volumes:
       - ${ARK_BACKUP_DIR:-./data/backups}:/backups
       - ./data/audit:/var/log/ark
+      - ./artifacts/models:/models
       - ./certs:/certs:ro
     networks:
       - ark-net

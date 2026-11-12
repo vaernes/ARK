@@ -9,7 +9,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       postgresql-client \
       curl \
-      ca-certificates && \
+      ca-certificates \
+      zstd && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

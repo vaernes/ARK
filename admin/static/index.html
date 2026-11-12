@@ -133,8 +133,10 @@
       </select>
       <label>System Prompt (optional)</label>
       <textarea id="proj-prompt" rows="2" placeholder="Custom instructions..."></textarea>
+      <label>LLM Model Override (optional, blank = global default)</label>
+      <input id="proj-llm" placeholder="ark-llm" />
       <button onclick="createProject()">Deploy Project</button>
-      <table id="proj-table"><thead><tr><th>Slug</th><th>Mode</th><th>Gateway Endpoint</th><th>Action</th></tr></thead><tbody></tbody></table>
+      <table id="proj-table"><thead><tr><th>Slug</th><th>Mode</th><th>LLM</th><th>Gateway Endpoint</th><th>Action</th></tr></thead><tbody></tbody></table>
     </div>
 
     <!-- API Keys -->
@@ -184,6 +186,26 @@
       <table id="conn-table"><thead><tr><th>Project</th><th>Type</th><th>Status</th><th>Action</th></tr></thead><tbody></tbody></table>
     </div>
 
+    <!-- LLM & Model Management -->
+    <div class="card admin-accent">
+      <h2>LLM &amp; Model Management</h2>
+      <div id="vllm-live-info" style="font-size:0.82rem;color:var(--gray);margin-bottom:8px;">Loading vLLM status...</div>
+      <label>Default Gateway LLM (<code>/projects/&lt;slug&gt;/v1</code>)</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="default-llm-model" placeholder="ark-llm" style="flex:1;" />
+        <button class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveDefaultLlm()">Save Default</button>
+      </div>
+      <table id="model-table">
+        <thead><tr><th>Directory</th><th>Arch</th><th>Size</th><th>Role</th><th>Action</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Stage Offline Model Archive (.tar.zst, .tar.gz, .tar)</label>
+      <input id="model-archive-file" type="file" accept=".tar,.gz,.tgz,.zst,.tzst" />
+      <button onclick="uploadModelArchive()">Upload &amp; Stage Model</button>
+      <pre id="model-ops-output" style="display:none"></pre>
+    </div>
+
     <!-- Audit Logs -->
     <div class="card admin-accent">
       <h2>Security &amp; Audit Events (Local + SIEM)</h2>
@@ -209,8 +231,8 @@
     });
 
     async function refreshAll() {
-      const [health, projects, keys, backupCfg, conns, audits] = await Promise.all([
-        api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/connectors'), api('/audit?limit=15')
+      const [health, projects, keys, backupCfg, conns, audits, modelsInfo] = await Promise.all([
+        api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/connectors'), api('/audit?limit=15'), api('/models')
       ]);
 
       document.getElementById('proj-count').textContent = projects.length;
@@ -219,7 +241,7 @@
         .join('');
 
       document.querySelector('#proj-table tbody').innerHTML = projects.map(p =>
-        `<tr><td>${p.slug}</td><td><span class="badge ${p.rag_enabled ? 'rag' : 'clean'}">${p.rag_enabled ? 'RAG' : 'Clean'}</span></td><td><code>/projects/${p.slug}/v1</code></td><td><button class="danger" onclick="deleteProject('${p.slug}')">Delete</button></td></tr>`
+        `<tr><td>${p.slug}</td><td><span class="badge ${p.rag_enabled ? 'rag' : 'clean'}">${p.rag_enabled ? 'RAG' : 'Clean'}</span></td><td><code>${p.effective_llm_model || '-'}</code></td><td><code>/projects/${p.slug}/v1</code></td><td style="white-space:nowrap;"><button style="margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;" onclick="setProjectLlm('${p.slug}', '${p.llm_model || ''}')">LLM</button><button class="danger" onclick="deleteProject('${p.slug}')">Delete</button></td></tr>`
       ).join('');
 
       const opts = projects.map(p => `<option value="${p.slug}">${p.name} (${p.slug})</option>`).join('');
@@ -239,6 +261,19 @@
       document.querySelector('#audit-table tbody').innerHTML = audits.map(a =>
         `<tr><td>${a.created_at.slice(11,19)}</td><td>${a.event_type}</td><td>${a.actor}</td><td>${a.project_slug || '-'}</td><td><span class="badge ${a.status === 'success' ? 'ok' : 'err'}">${a.status}</span></td></tr>`
       ).join('');
+
+      const live = modelsInfo.vllm_live || {};
+      const liveModels = (live.models || []).join(', ') || 'none';
+      document.getElementById('vllm-live-info').innerHTML =
+        `vLLM: <span class="badge ${live.reachable ? 'ok' : 'err'}">${live.reachable ? 'online' : 'unreachable'}</span> ` +
+        `Served: <code>${liveModels}</code> &bull; Configured: <code>${modelsInfo.configured.llm_model_dir}</code>`;
+      document.getElementById('default-llm-model').value = modelsInfo.default_llm_model || '';
+      document.querySelector('#model-table tbody').innerHTML = (modelsInfo.local_models || []).map(m => {
+        const arch = (m.architectures && m.architectures[0]) || m.model_type || '-';
+        const roleBadge = m.active_role ? `<span class="badge ok">${m.active_role}</span>` : '<span style="color:var(--gray)">staged</span>';
+        const delBtn = m.active_role ? '' : `<button class="danger" onclick="deleteLocalModel('${m.dir}')">Del</button>`;
+        return `<tr><td><code>${m.dir}</code></td><td>${arch}</td><td>${m.size_gib} GiB (${m.weight_files}w)</td><td>${roleBadge}</td><td style="white-space:nowrap;"><button style="margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;" onclick="planModelSwitch('${m.dir}')">Switch CLI</button>${delBtn}</td></tr>`;
+      }).join('');
     }
 
     async function createProject() {
@@ -247,8 +282,19 @@
         body: JSON.stringify({
           name: document.getElementById('proj-name').value,
           rag_enabled: document.getElementById('proj-rag').value === 'true',
-          system_prompt: document.getElementById('proj-prompt').value
+          system_prompt: document.getElementById('proj-prompt').value,
+          llm_model: document.getElementById('proj-llm').value
         })
+      });
+      refreshAll();
+    }
+
+    async function setProjectLlm(slug, current) {
+      const next = prompt(`Set LLM model for '${slug}' (leave blank to use global default):`, current || '');
+      if (next === null) return;
+      await api(`/projects/${encodeURIComponent(slug)}/model`, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ llm_model: next })
       });
       refreshAll();
     }
@@ -319,6 +365,51 @@
       const res = await api(`/connectors/${id}/sync`, { method: 'POST' });
       showOps(res);
       refreshAll();
+    }
+
+    async function saveDefaultLlm() {
+      const res = await api('/models/default', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ model_name: document.getElementById('default-llm-model').value })
+      });
+      showModelOps(res);
+      refreshAll();
+    }
+
+    async function planModelSwitch(modelDir) {
+      const res = await api('/models/switch-plan', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ model_dir: modelDir, model_type: 'llm' })
+      });
+      showModelOps({
+        note: 'Run on the ARK host to switch vLLM weights & recreate container:',
+        command: res.command,
+        rollback: res.rollback_command
+      });
+      refreshAll();
+    }
+
+    async function deleteLocalModel(modelDir) {
+      if (!confirm(`Delete local model directory '${modelDir}'?`)) return;
+      const res = await api(`/models/${encodeURIComponent(modelDir)}`, { method: 'DELETE' });
+      showModelOps(res);
+      refreshAll();
+    }
+
+    async function uploadModelArchive() {
+      const f = document.getElementById('model-archive-file').files[0];
+      if (!f) return alert('Select a model archive (.tar.zst, .tar.gz, .tar) first.');
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await api('/models/upload', { method: 'POST', body: fd });
+      showModelOps(res);
+      refreshAll();
+    }
+
+    function showModelOps(obj) {
+      const out = document.getElementById('model-ops-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(obj, null, 2);
     }
 
     function showOps(obj) {
