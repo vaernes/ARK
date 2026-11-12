@@ -1,0 +1,61 @@
+name: Bug Report
+description: Report a bug in ARK (ark-stack)
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue. Please do **not** include secrets, API keys, or private internal hostnames.
+  - type: input
+    id: version
+    attributes:
+      label: ARK Version
+      description: Output of `cat VERSION` or `/admin-console/api/version`
+      placeholder: "2026.11.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Deployment Mode
+      options:
+        - Air-gapped GPU Host (`docker-compose.yml`)
+        - GPU-less Test / Dev Stack (`test-integration.sh` / `dev-up.sh`)
+        - HQ Offline Bundler (`bundle-offline.sh`)
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      options:
+        - ark-admin / Control Plane / User Portal
+        - Caddy / OAuth2-Proxy / Keycloak SSO
+        - vLLM / TEI Inference & Model Management
+        - Qdrant / RAG / Document Connectors
+        - Backup & Restore
+        - Offline Bundler / Installer Scripts
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs (sanitized)
+      render: shell

@@ -4,6 +4,8 @@
 
 # ARK (Air-gapped Retrieval & Knowledge)
 
+**Version:** `2026.11.0` ([`VERSION`](VERSION) · [CalVer](https://calver.org/)) · **License:** [Apache-2.0](LICENSE) · **Changelog:** [CHANGELOG.md](CHANGELOG.md) · **Security:** [SECURITY.md](SECURITY.md)
+
 ARK (`ark-stack`) is a 100% open-source, Linux-based Infrastructure-as-Code (IaC) appliance for deploying high-concurrency local LLM inference, enterprise SSO, and multi-tenant RAG across **strictly air-gapped (offline)** offices.
 
 | Color | Hex | Usage |
@@ -61,6 +63,13 @@ flowchart LR
 
 ```text
 ark-stack/
+├── VERSION                          # Canonical CalVer release version (YYYY.MM.PATCH)
+├── LICENSE                          # Apache License 2.0
+├── NOTICE                           # Attribution notice
+├── CHANGELOG.md                     # Release history
+├── SECURITY.md                      # Supported versions & vulnerability disclosure policy
+├── CONTRIBUTING.md                  # Development workflow & air-gap engineering rules
+├── CODE_OF_CONDUCT.md               # Contributor Covenant v2.1
 ├── README.md
 ├── .gitignore
 ├── .env.example
@@ -71,11 +80,18 @@ ark-stack/
 │   ├── requirements.txt
 │   ├── app.py
 │   ├── audit.py
+│   ├── backup_utils.py
 │   ├── connectors.py
-│   └── static/index.html
+│   ├── security.py
+│   ├── version.py
+│   └── static/
+│       ├── index.html
+│       ├── portal.html
+│       └── ark-logo.svg
 ├── config/
 │   ├── caddy/Caddyfile              # Local HTTPS proxy, forward_auth, & API routing
 │   ├── keycloak/ark-realm.json      # Declarative OIDC realm & clients
+│   ├── open-webui/custom.css        # Air-gapped ARK branding theme for Open WebUI
 │   ├── postgres/init.sql            # Multi-DB init (openwebui, keycloak, ark_admin)
 │   └── qdrant/config.yaml           # Production Qdrant config (telemetry disabled)
 ├── docs/
@@ -86,12 +102,17 @@ ark-stack/
 │   ├── bootstrap_ark.py             # CLI project provisioner
 │   └── sync_ad_groups.py            # Optional direct AD -> Open WebUI group sync
 ├── scripts/
+│   ├── bump-version.sh              # CalVer release bump helper
 │   ├── bundle-offline.sh            # HQ: pulls/builds images & downloads HF models
+│   ├── dev-up.sh                    # Local GPU-less interactive dev stack
 │   ├── install-offline.sh           # Office: verifies checksums, loads & starts ARK
+│   ├── restore-backup.sh            # Disaster-recovery verify & restore CLI
 │   ├── sync-company-kb.sh           # Imports Company_Common Qdrant snapshots
-│   └── test-integration.sh          # Automated GPU-less integration test suite
+│   ├── test-integration.sh          # Automated GPU-less integration test suite
+│   └── update-llm.sh                # Atomic offline LLM/embed/rerank updater
 └── tests/
-    └── mock_inference.py            # Stdlib mock vLLM & TEI server for testing
+    ├── mock_inference.py            # Stdlib mock vLLM & TEI server for testing
+    └── test_admin_unit.py           # Unit tests (security, backups, version, UI XSS)
 ```
 
 ---
@@ -125,3 +146,11 @@ If `docker compose` is installed, you can start the stack with mock inference us
 cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
 ```
+
+---
+
+## 4. Versioning, Licensing & Governance
+
+- **Versioning:** ARK follows **CalVer (`YYYY.MM.PATCH`)** with [`VERSION`](VERSION) as the single source of truth. Run `./scripts/bump-version.sh YYYY.MM.PATCH` to update all build defaults consistently, and see [CHANGELOG.md](CHANGELOG.md) for release notes.
+- **License:** Distributed under the [Apache License, Version 2.0](LICENSE) (see also [NOTICE](NOTICE)).
+- **Security & Contributions:** See [SECURITY.md](SECURITY.md) for private vulnerability reporting and [CONTRIBUTING.md](CONTRIBUTING.md) / [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for contributor guidelines.

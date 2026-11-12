@@ -56,8 +56,17 @@ main() {
   cp "${REPO_ROOT}/config/keycloak/ark-realm.json" "${TMP_ROOT}/keycloak/ark-realm.json"
   sed -i "s|https://ark\.local|https://localhost:8443|g" "${TMP_ROOT}/keycloak/ark-realm.json"
 
-  log "Building ark-admin image..."
-  docker build -q -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+  ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
+  GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+  BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  log "Building ark-admin image (ARK v${ARK_VERSION})..."
+  docker build -q \
+    --build-arg "ARK_VERSION=${ARK_VERSION}" \
+    --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
+    --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
+    -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+  img_ver=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' ark-admin:latest)
+  [[ "${img_ver}" == "${ARK_VERSION}" ]] || fail "Expected OCI image version label '${ARK_VERSION}', got '${img_ver}'"
 
   log "Creating isolated Docker networks '${NET_NAME}' and '${CONTROL_NET}'..."
   docker network create "${NET_NAME}" >/dev/null
@@ -233,7 +242,35 @@ r = requests.get('http://localhost:8090/admin-console/api/projects', headers={
 print(r.status_code)
 ")
   [[ "${non_admin_code}" == "403" ]] || fail "Expected 403 for non-admin user on /admin-console/api/projects, got ${non_admin_code}"
-  pass "Admin SSO forward_auth, peer bypass block (403), and ark-admins RBAC verified."
+
+  docker exec ark-test-ark-admin python3 -c "
+import requests
+H_ADMIN = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+H_USER = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'jdoe',
+    'X-Forwarded-Groups': 'project-alpha',
+}
+v_admin = requests.get('http://localhost:8090/admin-console/api/version', headers=H_ADMIN, timeout=5)
+v_admin.raise_for_status()
+va = v_admin.json()
+assert va['version'] == '${ARK_VERSION}', va
+assert va['license'] == 'Apache-2.0', va
+assert va['scheme'] == 'CalVer', va
+
+v_portal = requests.get('http://localhost:8090/portal/api/version', headers=H_USER, timeout=5)
+v_portal.raise_for_status()
+assert v_portal.json()['version'] == '${ARK_VERSION}', v_portal.json()
+
+h = requests.get('http://localhost:8090/admin-console/api/health', headers=H_ADMIN, timeout=10)
+h.raise_for_status()
+assert h.json()['version'] == '${ARK_VERSION}', h.json()
+"
+  pass "Admin SSO forward_auth, peer bypass block (403), ark-admins RBAC, and version endpoints verified."
 
   # 3. Test raw /v1 bypass blocking
   log "3/8 Testing raw /v1/* bypass block..."
@@ -411,6 +448,7 @@ assert len(data['qdrant_snapshots']) >= 2, data
 dest = Path(data['destination'])
 assert (dest / 'manifest.json').is_file(), 'manifest.json missing'
 manifest = verify_backup_manifest(dest)
+assert manifest.get('ark_version') == '${ARK_VERSION}', manifest
 assert len(manifest['databases']) == 3, manifest
 assert len(manifest['qdrant_snapshots']) >= 2, manifest
 for s in manifest['qdrant_snapshots']:

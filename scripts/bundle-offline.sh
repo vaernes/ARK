@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo '0.0.0-dev')"
 
 ENV_FILE="${REPO_ROOT}/.env"
 ARTIFACTS_DIR="${REPO_ROOT}/artifacts"
@@ -34,6 +35,7 @@ Options:
       --package-models    Also archive ./artifacts/models into models.tar.zst + sha256
       --skip-images       Skip pulling and saving Docker images
       --skip-models       Skip downloading Hugging Face models
+  -V, --version           Print ARK version and exit
   -h, --help              Show this help message and exit
 EOF
 }
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --package-models)    PACKAGE_MODELS=true; shift ;;
     --skip-images)       SKIP_IMAGES=true; shift ;;
     --skip-models)       SKIP_MODELS=true; shift ;;
+    -V|--version)        printf 'ARK v%s\n' "${ARK_VERSION}"; exit 0 ;;
     -h|--help)           usage; exit 0 ;;
     *)                   err "Unknown argument: $1" ;;
   esac
@@ -163,8 +166,15 @@ main() {
       fi
     done
 
-    log "Building local ark-admin image: ${ARK_ADMIN_IMAGE}"
-    docker build -t "${ARK_ADMIN_IMAGE}" "${REPO_ROOT}/admin"
+    log "Building local ark-admin image: ${ARK_ADMIN_IMAGE} (ARK v${ARK_VERSION})"
+    local git_commit build_date
+    git_commit="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+    build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    docker build \
+      --build-arg "ARK_VERSION=${ARK_VERSION}" \
+      --build-arg "ARK_GIT_COMMIT=${git_commit}" \
+      --build-arg "ARK_BUILD_DATE=${build_date}" \
+      -t "${ARK_ADMIN_IMAGE}" "${REPO_ROOT}/admin"
 
     local images=("${pull_images[@]}" "${ARK_ADMIN_IMAGE}")
 
@@ -202,7 +212,34 @@ main() {
     log "Skipping Hugging Face model downloads (--skip-models)."
   fi
 
-  log "Offline bundling complete. Transfer ${ARTIFACTS_DIR} and repository files to the air-gapped host."
+  local bundle_manifest="${ARTIFACTS_DIR}/ark-bundle.json"
+  local git_commit
+  git_commit="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+  python3 - "${bundle_manifest}" "${ARK_VERSION}" "${git_commit}" "${LLM_MODEL_ID}" "${LLM_MODEL_DIR}" "${EMBED_MODEL_ID}" "${EMBED_MODEL_DIR}" "${RERANK_MODEL_ID}" "${RERANK_MODEL_DIR}" <<'PYEOF'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+out_path = Path(sys.argv[1])
+payload = {
+    "product": "ARK (Air-gapped Retrieval & Knowledge)",
+    "ark_version": sys.argv[2],
+    "license": "Apache-2.0",
+    "git_commit": sys.argv[3],
+    "bundled_at": datetime.now(timezone.utc).isoformat(),
+    "models": {
+        "llm": {"id": sys.argv[4], "dir": sys.argv[5]},
+        "embed": {"id": sys.argv[6], "dir": sys.argv[7]},
+        "rerank": {"id": sys.argv[8], "dir": sys.argv[9]},
+    },
+}
+out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PYEOF
+  (cd "${ARTIFACTS_DIR}" && sha256sum "$(basename "${bundle_manifest}")" > "$(basename "${bundle_manifest}").sha256")
+  log "Bundle metadata written: ${bundle_manifest}"
+
+  log "Offline bundling complete (ARK v${ARK_VERSION}). Transfer ${ARTIFACTS_DIR} and repository files to the air-gapped host."
 }
 
 main "$@"

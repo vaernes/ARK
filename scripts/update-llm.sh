@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo '0.0.0-dev')"
 ENV_FILE="${REPO_ROOT}/.env"
 MODELS_ROOT="${REPO_ROOT}/artifacts/models"
 BACKUP_ENV_DIR="${REPO_ROOT}/data/backups/env"
@@ -54,6 +55,7 @@ Options:
   --rollback                  Restore the most recent .env backup and recreate service
   --no-restart                Stage weights and update .env without recreating container
   --dry-run                   Validate inputs and print planned changes only
+  -V, --version               Print ARK version and exit
   -h, --help                  Show this help message
 
 Examples:
@@ -81,6 +83,7 @@ parse_args() {
       --rollback)      ROLLBACK=true; shift ;;
       --no-restart)    NO_RESTART=true; shift ;;
       --dry-run)       DRY_RUN=true; shift ;;
+      -V|--version)    printf 'ARK v%s\n' "${ARK_VERSION}"; exit 0 ;;
       -h|--help)       usage; exit 0 ;;
       *)               err "Unknown option: $1 (use --help for usage)" ;;
     esac

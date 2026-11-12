@@ -93,6 +93,7 @@
       </div>
     </div>
     <div class="nav-strip">
+      <div class="pill">ARK <strong id="ark-version">...</strong></div>
       <div class="pill">User: <strong id="me-user">...</strong></div>
       <div class="pill">Groups: <strong id="me-groups">-</strong></div>
       <a class="nav-link" href="/">Open WebUI Chat</a>
@@ -131,6 +132,10 @@
     </div>
   </div>
 
+  <footer id="ark-footer" style="margin-top:22px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
+    ARK User Portal &bull; Apache-2.0 License
+  </footer>
+
   <script>
     const showError = (msg) => {
       const el = document.getElementById('ui-alert');
@@ -165,7 +170,10 @@
     }
 
     async function refresh() {
-      const [me, projects, keys] = await Promise.all([api('/me'), api('/projects'), api('/keys')]);
+      const [ver, me, projects, keys] = await Promise.all([api('/version'), api('/me'), api('/projects'), api('/keys')]);
+      const verLabel = `v${ver.version}`;
+      document.getElementById('ark-version').textContent = verLabel;
+      document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel} • ${ver.license} License • Strict Air-Gap Mode`;
       document.getElementById('me-user').textContent = me.user;
       document.getElementById('me-groups').textContent = me.groups.length ? me.groups.join(', ') : 'none';
       if (me.is_admin) {

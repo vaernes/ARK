@@ -60,8 +60,15 @@ mkdir -p "${STATE_DIR}/backups" "${STATE_DIR}/audit" "${STATE_DIR}/keycloak"
 cp "${REPO_ROOT}/config/keycloak/ark-realm.json" "${STATE_DIR}/keycloak/ark-realm.json"
 sed -i "s|https://ark\.local|https://localhost:8443|g" "${STATE_DIR}/keycloak/ark-realm.json"
 
-log "Building ark-admin:latest..."
-docker build -q -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo '0.0.0-dev')"
+GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+log "Building ark-admin:latest (ARK v${ARK_VERSION})..."
+docker build -q \
+  --build-arg "ARK_VERSION=${ARK_VERSION}" \
+  --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
+  --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
+  -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
 
 log "Creating networks '${NET_NAME}' and '${CONTROL_NET}'..."
 docker network create "${NET_NAME}" >/dev/null

@@ -51,6 +51,7 @@ from backup_utils import (
 )
 from connectors import CONNECTOR_RUNNERS, embed_texts
 from security import authorize_proxy_request, normalize_groups
+from version import get_ark_version, get_version_info
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,10 +89,16 @@ PG_PORT = os.environ.get("POSTGRES_PORT", "5432")
 PG_USER = os.environ.get("POSTGRES_USER", "ark_webui")
 PG_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 
+ARK_VERSION = get_ark_version()
 audit = AuditLogger(db_dsn=DB_DSN, log_file=AUDIT_LOG_FILE)
 rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 
-app = FastAPI(title="ARK Control Plane & Project API Gateway", docs_url="/admin-console/docs", openapi_url="/admin-console/openapi.json")
+app = FastAPI(
+    title="ARK Control Plane & Project API Gateway",
+    version=ARK_VERSION,
+    docs_url="/admin-console/docs",
+    openapi_url="/admin-console/openapi.json",
+)
 app.mount("/admin-console/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 app.mount("/portal/static", StaticFiles(directory=str(APP_DIR / "static")), name="portal-static")
 
@@ -402,6 +409,11 @@ def portal_me(request: Request) -> dict[str, Any]:
     return {"user": actor, "groups": groups, "is_admin": "ark-admins" in groups}
 
 
+@app.get("/portal/api/version")
+def portal_version() -> dict[str, Any]:
+    return get_version_info()
+
+
 @app.get("/portal/api/projects")
 def portal_projects(request: Request) -> list[dict[str, Any]]:
     groups = get_user_groups(request)
@@ -525,7 +537,12 @@ def health_dashboard() -> dict[str, Any]:
     except Exception:
         results["postgres"] = "unreachable"
 
-    return {"services": results, "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {"version": ARK_VERSION, "services": results, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/admin-console/api/version")
+def admin_version() -> dict[str, Any]:
+    return get_version_info()
 
 
 @app.get("/admin-console/api/projects")
@@ -888,6 +905,7 @@ def run_backup(request: Request) -> dict[str, Any]:
             )
 
         manifest = {
+            "ark_version": ARK_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "databases": db_entries,
             "qdrant_snapshots": snapshot_entries,

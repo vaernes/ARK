@@ -1,0 +1,122 @@
+name: ARK Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to validate (defaults to v<VERSION>)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches VERSION and CHANGELOG.md
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${{ inputs.tag }}" ]]; then
+            TAG_VERSION="${{ inputs.tag }}"
+            TAG_VERSION="${TAG_VERSION#v}"
+          else
+            TAG_VERSION="${VERSION}"
+          fi
+
+          echo "Repository VERSION: ${VERSION}"
+          echo "Release tag version: ${TAG_VERSION}"
+          if [[ "${TAG_VERSION}" != "${VERSION}" ]]; then
+            echo "ERROR: Tag version (${TAG_VERSION}) does not match VERSION (${VERSION})."
+            exit 1
+          fi
+
+          if ! grep -q "## \[${VERSION}\]" CHANGELOG.md; then
+            echo "ERROR: CHANGELOG.md is missing section '## [${VERSION}]'."
+            exit 1
+          fi
+
+      - name: Shell syntax & unit tests
+        run: |
+          bash -n scripts/*.sh
+          python3 -m unittest discover -s tests -v
+
+      - name: Build ark-admin image with OCI metadata
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          GIT_COMMIT="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          docker build \
+            --build-arg "ARK_VERSION=${VERSION}" \
+            --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
+            --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
+            -t "ark-admin:${VERSION}" ./admin
+          docker image inspect --format '{{json .Config.Labels}}' "ark-admin:${VERSION}"
+
+      - name: Package release archive and SHA-256 checksums
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          STAGE_DIR="dist/ark-${VERSION}"
+          mkdir -p dist "${STAGE_DIR}"
+          cp -a \
+            VERSION LICENSE NOTICE CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md \
+            README.md AGENTS.md .env.example docker-compose.yml docker-compose.test.yml \
+            admin config docs provisioning scripts tests \
+            "${STAGE_DIR}/"
+          find "${STAGE_DIR}" -name '__pycache__' -type d -prune -exec rm -rf {} +
+          tar -C dist -czf "dist/ark-${VERSION}.tar.gz" "ark-${VERSION}"
+          (cd dist && sha256sum "ark-${VERSION}.tar.gz" > "ark-${VERSION}.tar.gz.sha256")
+
+          python3 - "dist/ark-${VERSION}-manifest.json" "${VERSION}" "$(git rev-parse HEAD)" <<'PYEOF'
+          import json, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          out = {
+              "product": "ARK (Air-gapped Retrieval & Knowledge)",
+              "version": sys.argv[2],
+              "scheme": "CalVer",
+              "license": "Apache-2.0",
+              "git_commit": sys.argv[3],
+              "released_at": datetime.now(timezone.utc).isoformat(),
+              "archive": f"ark-{sys.argv[2]}.tar.gz",
+          }
+          Path(sys.argv[1]).write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+          PYEOF
+          (cd dist && sha256sum "ark-${VERSION}-manifest.json" >> "SHA256SUMS" && sha256sum "ark-${VERSION}.tar.gz" >> "SHA256SUMS")
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          python3 - "${VERSION}" <<'PYEOF' > dist/RELEASE_NOTES.md
+          import re, sys
+          from pathlib import Path
+
+          ver = sys.argv[1]
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, flags=re.M | re.S)
+          if m:
+              print(m.group(1).strip())
+          else:
+              print(f"Release v{ver}")
+          PYEOF
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: dist/RELEASE_NOTES.md
+          generate_release_notes: true
+          files: |
+            dist/ark-*.tar.gz
+            dist/ark-*.tar.gz.sha256
+            dist/ark-*-manifest.json
+            dist/SHA256SUMS

@@ -23,11 +23,12 @@ jobs:
           python3 - <<'EOF'
           import pathlib, re, sys
 
-          html = pathlib.Path("admin/static/index.html").read_text()
-          external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', html, re.I)
-          if external_urls:
-              print("ERROR: External URLs found in admin/static/index.html:", external_urls)
-              sys.exit(1)
+          for html_path in ("admin/static/index.html", "admin/static/portal.html"):
+              html = pathlib.Path(html_path).read_text()
+              external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', html, re.I)
+              if external_urls:
+                  print(f"ERROR: External URLs found in {html_path}:", external_urls)
+                  sys.exit(1)
 
           compose = pathlib.Path("docker-compose.yml").read_text()
           required_flags = [

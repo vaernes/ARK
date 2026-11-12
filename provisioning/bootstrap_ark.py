@@ -364,9 +364,22 @@ def provision_project(cfg: ProvisioningConfig, project_name: str) -> None:
     )
 
 
+def _read_ark_version() -> str:
+    version_file = Path(__file__).resolve().parent.parent / "VERSION"
+    if version_file.is_file():
+        return version_file.read_text(encoding="utf-8").strip() or "0.0.0-dev"
+    return "0.0.0-dev"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Idempotently provision isolated ARK projects across Qdrant and Open WebUI."
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"ARK v{_read_ark_version()}",
     )
     parser.add_argument(
         "--create-project",

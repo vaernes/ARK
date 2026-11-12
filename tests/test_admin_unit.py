@@ -5,11 +5,13 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "admin"))
@@ -25,6 +27,7 @@ from backup_utils import (  # noqa: E402
 )
 from mock_inference import deterministic_embedding  # noqa: E402
 from security import authorize_proxy_request, normalize_groups  # noqa: E402
+from version import get_ark_version, get_version_info  # noqa: E402
 
 
 class TestMockInference(unittest.TestCase):
@@ -242,6 +245,48 @@ class TestUiXssSafety(unittest.TestCase):
         for rel_path in ("admin/static/index.html", "admin/static/portal.html"):
             content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             self.assertNotIn("innerHTML", content, f"{rel_path} must use safe DOM APIs instead of innerHTML")
+            external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', content, re.I)
+            self.assertEqual(external_urls, [], f"{rel_path} must not reference external URLs")
+
+
+class TestVersionAndLicense(unittest.TestCase):
+    def test_version_file_and_metadata_sync(self) -> None:
+        version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertRegex(version, r"^\d{4}\.(0[1-9]|1[0-2])\.\d+(-[0-9A-Za-z.-]+)?$")
+
+        dockerfile = (REPO_ROOT / "admin" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn(f"ARG ARK_VERSION={version}", dockerfile)
+        self.assertIn('org.opencontainers.image.licenses="Apache-2.0"', dockerfile)
+
+        compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(f"${{ARK_VERSION:-{version}}}", compose)
+
+        env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertIn(f"ARK_VERSION={version}", env_example)
+
+        changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(f"## [{version}]", changelog)
+
+        license_text = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("Apache License", license_text)
+        self.assertIn("Version 2.0", license_text)
+        self.assertTrue((REPO_ROOT / "NOTICE").is_file())
+
+    def test_get_version_info_and_env_override(self) -> None:
+        expected = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ARK_VERSION", None)
+            self.assertEqual(get_ark_version(), expected)
+            info = get_version_info()
+            self.assertEqual(info["version"], expected)
+            self.assertEqual(info["license"], "Apache-2.0")
+            self.assertEqual(info["scheme"], "CalVer")
+            self.assertTrue(info["air_gap_mode"])
+
+        with mock.patch.dict(os.environ, {"ARK_VERSION": "2027.01.2", "ARK_GIT_COMMIT": "abc1234"}):
+            info = get_version_info()
+            self.assertEqual(info["version"], "2027.01.2")
+            self.assertEqual(info["git_commit"], "abc1234")
 
 
 if __name__ == "__main__":

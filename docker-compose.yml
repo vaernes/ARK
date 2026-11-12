@@ -381,7 +381,13 @@ services:
     build:
       context: ./admin
       dockerfile: Dockerfile
+      args:
+        ARK_VERSION: ${ARK_VERSION:-2026.11.0}
     image: ${ARK_ADMIN_IMAGE:-ark-admin:latest}
+    labels:
+      org.opencontainers.image.title: "ark-admin"
+      org.opencontainers.image.version: "${ARK_VERSION:-2026.11.0}"
+      org.opencontainers.image.licenses: "Apache-2.0"
     container_name: ark-admin
     restart: unless-stopped
     depends_on:

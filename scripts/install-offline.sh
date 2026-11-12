@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo '0.0.0-dev')"
 
 ARTIFACTS_DIR="${REPO_ROOT}/artifacts"
 IMAGES_ARCHIVE=""
@@ -42,6 +43,7 @@ Options:
       --non-interactive      Do not prompt for domain or backup directory
       --skip-gpu-check       Skip nvidia-smi GPU verification (for testing only)
       --no-start             Load images and prepare volumes without running docker compose up -d
+  -V, --version              Print ARK version and exit
   -h, --help                 Show this help message and exit
 EOF
 }
@@ -58,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --non-interactive)   NON_INTERACTIVE=true; shift ;;
     --skip-gpu-check)    SKIP_GPU_CHECK=true; shift ;;
     --no-start)          NO_START=true; shift ;;
+    -V|--version)        printf 'ARK v%s\n' "${ARK_VERSION}"; exit 0 ;;
     -h|--help)           usage; exit 0 ;;
     *)                   err "Unknown argument: $1" ;;
   esac
@@ -107,12 +110,25 @@ check_gpu() {
 }
 
 main() {
+  log "Starting ARK Offline Installer (ARK v${ARK_VERSION})..."
   require_cmd docker
   require_cmd zstd
   require_cmd sha256sum
   require_cmd df
 
   docker compose version >/dev/null 2>&1 || err "Docker Compose v2 plugin ('docker compose') is required."
+
+  if [[ -f "${ARTIFACTS_DIR}/ark-bundle.json" ]]; then
+    if [[ -f "${ARTIFACTS_DIR}/ark-bundle.json.sha256" ]]; then
+      verify_sha256 "${ARTIFACTS_DIR}/ark-bundle.json"
+    fi
+    local bundle_ver
+    bundle_ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ark_version","unknown"))' "${ARTIFACTS_DIR}/ark-bundle.json" 2>/dev/null || echo "unknown")
+    log "Detected bundle metadata: ARK v${bundle_ver}"
+    if [[ "${bundle_ver}" != "unknown" && "${bundle_ver}" != "${ARK_VERSION}" ]]; then
+      warn "Bundle version (${bundle_ver}) differs from repository VERSION (${ARK_VERSION})."
+    fi
+  fi
 
   check_gpu
   check_disk_space "${REPO_ROOT}" "${MIN_FREE_GB}"
