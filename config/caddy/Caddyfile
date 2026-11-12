@@ -1,0 +1,80 @@
+{
+	# Disable external OCSP stapling and admin endpoint exposure in air-gapped LAN
+	ocsp_stapling off
+	admin off
+}
+
+{$ARK_DOMAIN:ark.local} {
+	# Local internal CA for air-gapped HTTPS termination (no external ACME calls)
+	# For domain-joined workstations using corporate ADCS PKI, replace with:
+	# tls /certs/ark.crt /certs/ark.key
+	tls internal
+
+	# Allow large document uploads (PDFs, Office suites, Qdrant snapshots)
+	request_body {
+		max_size 1024MB
+	}
+
+	# Security headers for enterprise LAN deployment
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# 1. Keycloak Identity Broker (/auth)
+	handle /auth* {
+		reverse_proxy keycloak:8080 {
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	# 2. OAuth2-Proxy SSO Callback & Session Endpoints (/oauth2)
+	handle /oauth2* {
+		reverse_proxy oauth2-proxy:4180 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Uri {uri}
+		}
+	}
+
+	# 3. ARK Control Plane (/admin-console) - Protected by Keycloak SSO (ark-admins group)
+	handle /admin-console* {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Groups
+			@unauthorized status 401
+			handle_response @unauthorized {
+				redir * /oauth2/start?rd={uri}
+			}
+		}
+		reverse_proxy ark-admin:8090 {
+			header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
+			header_up X-Forwarded-Email {http.request.header.X-Auth-Request-Email}
+		}
+	}
+
+	# 4. Per-Project Scoped OpenAI API Gateway (/projects/<slug>/v1/*)
+	handle /projects/*/v1/* {
+		reverse_proxy ark-admin:8090 {
+			flush_interval -1
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 300s
+			}
+		}
+	}
+
+	# 5. Block unauthenticated/unaudited raw vLLM /v1 bypass
+	handle /v1/* {
+		respond "Direct /v1 access is disabled. Use /projects/<slug>/v1/ or Open WebUI /api/chat/completions." 403
+	}
+
+	# 6. RAG UI & Orchestrator -> Open WebUI (Keycloak OIDC SSO + WebSockets)
+	handle {
+		reverse_proxy open-webui:8080 {
+			flush_interval -1
+		}
+	}
+}

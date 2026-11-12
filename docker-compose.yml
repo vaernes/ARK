@@ -1,0 +1,456 @@
+name: ark-stack
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. vLLM: High-concurrency OpenAI-compatible LLM Inference
+  # ----------------------------------------------------------------------------
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4.post1}
+    container_name: ark-vllm
+    restart: unless-stopped
+    shm_size: 16gb
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      DO_NOT_TRACK: "1"
+      OFFLINE_MODE: "true"
+      VLLM_NO_USAGE_STATS: "1"
+      ANONYMIZED_TELEMETRY: "false"
+      HF_HOME: /models/.cache
+    volumes:
+      - ./artifacts/models:/models:ro
+    command:
+      - --model
+      - /models/${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}
+      - --served-model-name
+      - ${LLM_SERVED_NAME:-ark-llm}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --enable-prefix-caching
+      - --max-model-len
+      - "${VLLM_MAX_MODEL_LEN:-16384}"
+      - --gpu-memory-utilization
+      - "${VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
+      - --tensor-parallel-size
+      - "${VLLM_TENSOR_PARALLEL_SIZE:-1}"
+      - --api-key
+      - "${VLLM_API_KEY}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-all}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 2. TEI Embeddings: BAAI/bge-m3
+  # ----------------------------------------------------------------------------
+  tei-embed:
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.6}
+    container_name: ark-tei-embed
+    restart: unless-stopped
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      DO_NOT_TRACK: "1"
+      OFFLINE_MODE: "true"
+    volumes:
+      - ./artifacts/models:/models:ro
+    command:
+      - --model-id
+      - /models/${EMBED_MODEL_DIR:-BAAI--bge-m3}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "64"
+      - --max-batch-tokens
+      - "16384"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 3. TEI Reranker: BAAI/bge-reranker-v2-m3
+  # ----------------------------------------------------------------------------
+  tei-rerank:
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.6}
+    container_name: ark-tei-rerank
+    restart: unless-stopped
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      DO_NOT_TRACK: "1"
+      OFFLINE_MODE: "true"
+    volumes:
+      - ./artifacts/models:/models:ro
+    command:
+      - --model-id
+      - /models/${RERANK_MODEL_DIR:-BAAI--bge-reranker-v2-m3}
+      - --port
+      - "80"
+      - --max-client-batch-size
+      - "32"
+      - --max-batch-tokens
+      - "16384"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 4. Qdrant: Isolated Multi-Tenant Vector Database
+  # ----------------------------------------------------------------------------
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.12.5}
+    container_name: ark-qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY}"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ./config/qdrant/config.yaml:/qdrant/config/production.yaml:ro
+      - ./data/qdrant:/qdrant/storage
+      - ./artifacts/snapshots:/qdrant/snapshots
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && echo -e \"GET /readyz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 5. PostgreSQL 16: High-Concurrency Relational Store for Open WebUI
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: ark-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-ark_webui}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB:-openwebui}"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ark_webui} -d ${POSTGRES_DB:-openwebui}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 6. Apache Tika: Offline Document Parsing Engine
+  # ----------------------------------------------------------------------------
+  tika:
+    image: ${TIKA_IMAGE:-apache/tika:latest-full}
+    container_name: ark-tika
+    restart: unless-stopped
+    environment:
+      DO_NOT_TRACK: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9998/tika || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 7. Open WebUI: Multi-Tenant RAG Orchestrator, UI & RBAC
+  # ----------------------------------------------------------------------------
+  open-webui:
+    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.5.10}
+    container_name: ark-open-webui
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      tika:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+      tei-embed:
+        condition: service_healthy
+      tei-rerank:
+        condition: service_healthy
+    environment:
+      # Hardened Air-Gap & Telemetry
+      OFFLINE_MODE: "true"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      DO_NOT_TRACK: "1"
+      ANONYMIZED_TELEMETRY: "false"
+      SCARF_NO_ANALYTICS: "true"
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_OLLAMA_API: "false"
+      # Database & Auth
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-ark_webui}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-openwebui}"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY}"
+      WEBUI_URL: "${WEBUI_URL:-https://ark.local}"
+      ENABLE_SIGNUP: "${ENABLE_SIGNUP:-false}"
+      ENABLE_LOGIN_FORM: "${ENABLE_LOGIN_FORM:-false}"
+      DEFAULT_USER_ROLE: "${DEFAULT_USER_ROLE:-user}"
+      # Keycloak OIDC SSO (Primary Enterprise Login)
+      ENABLE_OAUTH_SIGNUP: "true"
+      OAUTH_PROVIDER_NAME: "Corporate SSO"
+      OPENID_PROVIDER_URL: "http://keycloak:8080/auth/realms/ark/.well-known/openid-configuration"
+      OAUTH_CLIENT_ID: "open-webui"
+      OAUTH_CLIENT_SECRET: "${OIDC_OPENWEBUI_CLIENT_SECRET}"
+      OAUTH_SCOPES: "openid email profile groups"
+      ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
+      ENABLE_OAUTH_GROUP_CREATION: "true"
+      OAUTH_GROUPS_CLAIM: "groups"
+      OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
+      # Active Directory (LDAPS)
+      ENABLE_LDAP: "${ENABLE_LDAP:-false}"
+      LDAP_SERVER_LABEL: "${LDAP_SERVER_LABEL:-Corporate Active Directory}"
+      LDAP_SERVER_HOST: "${LDAP_SERVER_HOST:-}"
+      LDAP_SERVER_PORT: "${LDAP_SERVER_PORT:-636}"
+      LDAP_USE_TLS: "${LDAP_USE_TLS:-true}"
+      LDAP_VALIDATE_CERT: "${LDAP_VALIDATE_CERT:-true}"
+      LDAP_CA_CERT_FILE: "${LDAP_CA_CERT_FILE:-/certs/ad-ca.crt}"
+      LDAP_ATTRIBUTE_FOR_MAIL: "${LDAP_ATTRIBUTE_FOR_MAIL:-mail}"
+      LDAP_ATTRIBUTE_FOR_USERNAME: "${LDAP_ATTRIBUTE_FOR_USERNAME:-sAMAccountName}"
+      LDAP_SEARCH_BASE: "${LDAP_SEARCH_BASE:-}"
+      LDAP_SEARCH_FILTERS: "${LDAP_SEARCH_FILTERS:-}"
+      LDAP_APP_DN: "${LDAP_APP_DN:-}"
+      LDAP_APP_PASSWORD: "${LDAP_APP_PASSWORD:-}"
+      # LLM Inference (vLLM)
+      OPENAI_API_BASE_URL: "http://vllm:8000/v1"
+      OPENAI_API_KEY: "${VLLM_API_KEY}"
+      # Vector DB (Qdrant)
+      VECTOR_DB: "qdrant"
+      QDRANT_URI: "http://qdrant:6333"
+      QDRANT_API_KEY: "${QDRANT_API_KEY}"
+      # RAG Embeddings & Reranking (TEI)
+      RAG_EMBEDDING_ENGINE: "openai"
+      RAG_EMBEDDING_OPENAI_API_BASE_URL: "http://tei-embed:80/v1"
+      RAG_EMBEDDING_OPENAI_API_KEY: "local-tei"
+      RAG_EMBEDDING_MODEL: "${EMBED_MODEL_ID:-BAAI/bge-m3}"
+      ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_RERANKING_MODEL: "${RERANK_MODEL_ID:-BAAI/bge-reranker-v2-m3}"
+      # Document Extraction (Apache Tika)
+      CONTENT_EXTRACTION_ENGINE: "tika"
+      TIKA_SERVER_URL: "http://tika:9998"
+    volumes:
+      - ./data/open-webui:/app/backend/data
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 8. Keycloak: Enterprise Identity Broker (AD/LDAPS, Kerberos, SAML 2.0)
+  # ----------------------------------------------------------------------------
+  keycloak:
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
+    container_name: ark-keycloak
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - start
+      - --import-realm
+      - --http-enabled=true
+      - --http-relative-path=/auth
+      - --hostname=https://${ARK_DOMAIN:-ark.local}/auth
+      - --hostname-strict=false
+      - --proxy-headers=xforwarded
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: "jdbc:postgresql://postgres:5432/keycloak"
+      KC_DB_USERNAME: "${POSTGRES_USER:-ark_webui}"
+      KC_DB_PASSWORD: "${POSTGRES_PASSWORD}"
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD}"
+      KC_HEALTH_ENABLED: "true"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ./config/keycloak:/opt/keycloak/data/import:ro
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 9. OAuth2-Proxy: Forward-Auth Gateway for ark-admin (ark-admins group)
+  # ----------------------------------------------------------------------------
+  oauth2-proxy:
+    image: ${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.7.1}
+    container_name: ark-oauth2-proxy
+    restart: unless-stopped
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    command:
+      - --provider=oidc
+      - --skip-oidc-discovery=true
+      - --oidc-issuer-url=https://${ARK_DOMAIN:-ark.local}/auth/realms/ark
+      - --login-url=https://${ARK_DOMAIN:-ark.local}/auth/realms/ark/protocol/openid-connect/auth
+      - --redeem-url=http://keycloak:8080/auth/realms/ark/protocol/openid-connect/token
+      - --oidc-jwks-url=http://keycloak:8080/auth/realms/ark/protocol/openid-connect/certs
+      - --profile-url=http://keycloak:8080/auth/realms/ark/protocol/openid-connect/userinfo
+      - --client-id=oauth2-proxy
+      - --client-secret=${OIDC_OAUTH2_PROXY_CLIENT_SECRET}
+      - --cookie-secret=${OAUTH2_PROXY_COOKIE_SECRET}
+      - --redirect-url=https://${ARK_DOMAIN:-ark.local}/oauth2/callback
+      - --http-address=0.0.0.0:4180
+      - --email-domain=*
+      - --allowed-group=ark-admins
+      - --oidc-groups-claim=groups
+      - --set-xauthrequest=true
+      - --pass-user-headers=true
+      - --cookie-secure=true
+      - --skip-provider-button=true
+    environment:
+      DO_NOT_TRACK: "1"
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 10. ARK Control Plane & Per-Project API Gateway (ark-admin)
+  # ----------------------------------------------------------------------------
+  ark-admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    image: ${ARK_ADMIN_IMAGE:-ark-admin:latest}
+    container_name: ark-admin
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+      tei-embed:
+        condition: service_healthy
+      tika:
+        condition: service_healthy
+    environment:
+      ARK_ADMIN_DB_URL: "postgresql://${POSTGRES_USER:-ark_webui}:${POSTGRES_PASSWORD}@postgres:5432/ark_admin"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "${POSTGRES_USER:-ark_webui}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: "${QDRANT_API_KEY}"
+      VLLM_URL: "http://vllm:8000"
+      VLLM_API_KEY: "${VLLM_API_KEY}"
+      LLM_SERVED_NAME: "${LLM_SERVED_NAME:-ark-llm}"
+      TEI_EMBED_URL: "http://tei-embed:80"
+      TIKA_URL: "http://tika:9998"
+      OPENWEBUI_INTERNAL_URL: "http://open-webui:8080"
+      OPENWEBUI_API_KEY: "${OPENWEBUI_API_KEY:-}"
+      KEYCLOAK_INTERNAL_URL: "http://keycloak:8080/auth"
+      EMBED_VECTOR_SIZE: "${EMBED_VECTOR_SIZE:-1024}"
+      ARK_BACKUP_DIR: "/backups"
+      ARK_AUDIT_LOG_FILE: "/var/log/ark/audit.jsonl"
+      SIEM_SYSLOG_HOST: "${SIEM_SYSLOG_HOST:-}"
+      SIEM_SYSLOG_PORT: "${SIEM_SYSLOG_PORT:-514}"
+      SIEM_SYSLOG_PROTOCOL: "${SIEM_SYSLOG_PROTOCOL:-udp}"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ${ARK_BACKUP_DIR:-./data/backups}:/backups
+      - ./data/audit:/var/log/ark
+      - ./certs:/certs:ro
+    networks:
+      - ark-net
+
+  # ----------------------------------------------------------------------------
+  # 11. Caddy: Local HTTPS Termination & LAN API/UI Routing
+  # ----------------------------------------------------------------------------
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    container_name: ark-caddy
+    restart: unless-stopped
+    depends_on:
+      open-webui:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      oauth2-proxy:
+        condition: service_started
+      ark-admin:
+        condition: service_started
+      vllm:
+        condition: service_healthy
+      tei-embed:
+        condition: service_healthy
+    environment:
+      ARK_DOMAIN: "${ARK_DOMAIN:-ark.local}"
+      DO_NOT_TRACK: "1"
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
+      - ./certs:/certs:ro
+    networks:
+      - ark-net
+
+networks:
+  ark-net:
+    driver: bridge

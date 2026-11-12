@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARK Control Plane</title>
+  <style>
+    :root { --bg: #0f172a; --card: #1e293b; --border: #334155; --text: #f1f5f9; --muted: #94a3b8; --accent: #38bdf8; --ok: #22c55e; --err: #ef4444; }
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: var(--bg); color: var(--text); padding: 24px; }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
+    h1 { margin: 0; font-size: 1.5rem; }
+    h2 { margin-top: 0; font-size: 1.1rem; color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
+    input, select, textarea { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: #0f172a; color: var(--text); }
+    button { margin-top: 12px; padding: 8px 14px; border: none; border-radius: 6px; background: var(--accent); color: #0f172a; font-weight: 600; cursor: pointer; }
+    button.danger { background: var(--err); color: #fff; padding: 4px 8px; margin: 0; font-size: 0.78rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+    .ok { background: rgba(34,197,94,0.2); color: var(--ok); }
+    .err { background: rgba(239,68,68,0.2); color: var(--err); }
+    pre { background: #0f172a; padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>ARK Enterprise Control Plane</h1>
+      <small style="color: var(--muted)">Air-Gapped Multi-Tenant RAG, API Gateway, Connectors & Audit</small>
+    </div>
+    <button onclick="refreshAll()">Refresh All</button>
+  </header>
+
+  <div class="grid">
+    <!-- Health -->
+    <div class="card">
+      <h2>Service Health</h2>
+      <div id="health-list">Loading...</div>
+    </div>
+
+    <!-- Projects -->
+    <div class="card">
+      <h2>Create Project (RAG or Clean)</h2>
+      <label>Project Name</label>
+      <input id="proj-name" placeholder="Project_Alpha" />
+      <label>Mode</label>
+      <select id="proj-rag">
+        <option value="true">RAG-Enabled (Qdrant + Company_Common + Project KB)</option>
+        <option value="false">Clean Project (Isolated vLLM / No RAG)</option>
+      </select>
+      <label>System Prompt (optional)</label>
+      <textarea id="proj-prompt" rows="2" placeholder="Custom instructions..."></textarea>
+      <button onclick="createProject()">Create Project</button>
+      <table id="proj-table"><thead><tr><th>Slug</th><th>Mode</th><th>Gateway Endpoint</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <!-- API Keys -->
+    <div class="card">
+      <h2>Project API Keys (Office / IDEs)</h2>
+      <label>Project</label>
+      <select id="key-proj"></select>
+      <label>Key Label</label>
+      <input id="key-label" placeholder="Word Add-in / CI Script" />
+      <label>Rate Limit (RPM)</label>
+      <input id="key-rpm" type="number" value="60" />
+      <button onclick="createKey()">Issue API Key</button>
+      <pre id="key-output" style="display:none"></pre>
+      <table id="key-table"><thead><tr><th>Project</th><th>Label</th><th>Prefix</th><th>Action</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <!-- Backup & Snapshot -->
+    <div class="card">
+      <h2>Backup & Company_Common Sync</h2>
+      <label>Backup Destination Directory</label>
+      <input id="backup-dir" />
+      <button onclick="saveBackupDir()">Save Backup Path</button>
+      <button onclick="runBackup()" style="margin-left:8px;">Run Full Backup Now</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Upload Company_Common.snapshot</label>
+      <input id="snap-file" type="file" accept=".snapshot" />
+      <button onclick="uploadSnapshot()">Upload & Recover Snapshot</button>
+      <pre id="ops-output" style="display:none"></pre>
+    </div>
+
+    <!-- Connectors -->
+    <div class="card">
+      <h2>Document Connectors (M-Files / SharePoint / SMB)</h2>
+      <label>Project</label>
+      <select id="conn-proj"></select>
+      <label>Connector Type</label>
+      <select id="conn-type">
+        <option value="sharepoint">SharePoint On-Prem (NTLM)</option>
+        <option value="mfiles">M-Files (REST API)</option>
+        <option value="smb_folder">Mounted SMB / NFS Folder</option>
+      </select>
+      <label>Name</label>
+      <input id="conn-name" placeholder="Engineering Docs" />
+      <label>JSON Config</label>
+      <textarea id="conn-config" rows="3">{"path": "/mnt/shares/project_alpha"}</textarea>
+      <button onclick="createConnector()">Add Connector</button>
+      <table id="conn-table"><thead><tr><th>Project</th><th>Type</th><th>Status</th><th>Action</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <!-- Audit Logs -->
+    <div class="card">
+      <h2>Recent Audit Events (Local + SIEM)</h2>
+      <table id="audit-table"><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Project</th><th>Status</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <script>
+    const api = (path, opts = {}) => fetch('/admin-console/api' + path, opts).then(async r => {
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    });
+
+    async function refreshAll() {
+      const [health, projects, keys, backupCfg, conns, audits] = await Promise.all([
+        api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/connectors'), api('/audit?limit=15')
+      ]);
+
+      document.getElementById('health-list').innerHTML = Object.entries(health.services)
+        .map(([k, v]) => `<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>${k}</span><span class="badge ${v === 'healthy' ? 'ok' : 'err'}">${v}</span></div>`)
+        .join('');
+
+      document.querySelector('#proj-table tbody').innerHTML = projects.map(p =>
+        `<tr><td>${p.slug}</td><td>${p.rag_enabled ? 'RAG' : 'Clean'}</td><td><code>/projects/${p.slug}/v1</code></td></tr>`
+      ).join('');
+
+      const opts = projects.map(p => `<option value="${p.slug}">${p.name} (${p.slug})</option>`).join('');
+      document.getElementById('key-proj').innerHTML = opts;
+      document.getElementById('conn-proj').innerHTML = opts;
+
+      document.querySelector('#key-table tbody').innerHTML = keys.filter(k => !k.revoked).map(k =>
+        `<tr><td>${k.project_slug}</td><td>${k.label}</td><td><code>${k.key_prefix}...</code></td><td><button class="danger" onclick="revokeKey(${k.id})">Revoke</button></td></tr>`
+      ).join('');
+
+      document.getElementById('backup-dir').value = backupCfg.backup_dir;
+
+      document.querySelector('#conn-table tbody').innerHTML = conns.map(c =>
+        `<tr><td>${c.project_slug}</td><td>${c.connector_type}</td><td>${c.last_status || 'pending'}</td><td><button onclick="syncConn(${c.id})" style="margin:0;padding:4px 8px;font-size:0.78rem;">Sync</button></td></tr>`
+      ).join('');
+
+      document.querySelector('#audit-table tbody').innerHTML = audits.map(a =>
+        `<tr><td>${a.created_at.slice(11,19)}</td><td>${a.event_type}</td><td>${a.actor}</td><td>${a.project_slug || '-'}</td><td>${a.status}</td></tr>`
+      ).join('');
+    }
+
+    async function createProject() {
+      await api('/projects', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          name: document.getElementById('proj-name').value,
+          rag_enabled: document.getElementById('proj-rag').value === 'true',
+          system_prompt: document.getElementById('proj-prompt').value
+        })
+      });
+      refreshAll();
+    }
+
+    async function createKey() {
+      const res = await api('/keys', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          project_slug: document.getElementById('key-proj').value,
+          label: document.getElementById('key-label').value,
+          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10)
+        })
+      });
+      const out = document.getElementById('key-output');
+      out.style.display = 'block';
+      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key;
+      refreshAll();
+    }
+
+    async function revokeKey(id) {
+      await api(`/keys/${id}`, { method: 'DELETE' });
+      refreshAll();
+    }
+
+    async function saveBackupDir() {
+      const res = await api('/settings/backup', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ backup_dir: document.getElementById('backup-dir').value })
+      });
+      showOps(res);
+    }
+
+    async function runBackup() {
+      const res = await api('/backups/run', { method: 'POST' });
+      showOps(res);
+      refreshAll();
+    }
+
+    async function uploadSnapshot() {
+      const f = document.getElementById('snap-file').files[0];
+      if (!f) return alert('Select a .snapshot file first.');
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await api('/snapshots/upload', { method: 'POST', body: fd });
+      showOps(res);
+    }
+
+    async function createConnector() {
+      await api('/connectors', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          project_slug: document.getElementById('conn-proj').value,
+          connector_type: document.getElementById('conn-type').value,
+          name: document.getElementById('conn-name').value,
+          config: JSON.parse(document.getElementById('conn-config').value)
+        })
+      });
+      refreshAll();
+    }
+
+    async function syncConn(id) {
+      const res = await api(`/connectors/${id}/sync`, { method: 'POST' });
+      showOps(res);
+      refreshAll();
+    }
+
+    function showOps(obj) {
+      const out = document.getElementById('ops-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(obj, null, 2);
+    }
+
+    refreshAll();
+  </script>
+</body>
+</html>

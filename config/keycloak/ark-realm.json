@@ -1,0 +1,90 @@
+{
+  "realm": "ark",
+  "enabled": true,
+  "displayName": "ARK Enterprise SSO",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "sslRequired": "external",
+  "groups": [
+    {
+      "name": "ark-admins",
+      "path": "/ark-admins"
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "groups",
+      "description": "Group membership claims for Open WebUI and ark-admin RBAC",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "open-webui",
+      "name": "ARK Open WebUI",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "ark-openwebui-oidc-secret-change-me",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "https://ark.local/oauth/oidc/callback"
+      ],
+      "webOrigins": [
+        "https://ark.local"
+      ],
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email",
+        "groups"
+      ]
+    },
+    {
+      "clientId": "oauth2-proxy",
+      "name": "ARK Admin Auth Proxy",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "ark-oauth2-proxy-secret-change-me",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "https://ark.local/oauth2/callback"
+      ],
+      "webOrigins": [
+        "https://ark.local"
+      ],
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email",
+        "groups"
+      ]
+    }
+  ]
+}
