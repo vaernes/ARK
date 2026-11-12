@@ -56,7 +56,8 @@
 	}
 
 	# 4. Per-Project Scoped OpenAI API Gateway (/projects/<slug>/v1/*)
-	handle /projects/*/v1/* {
+	@project_api path_regexp ^/projects/[^/]+/v1/
+	handle @project_api {
 		reverse_proxy ark-admin:8090 {
 			flush_interval -1
 			transport http {

@@ -1,32 +1,46 @@
 # ARK (Air-gapped Retrieval & Knowledge)
 
-ARK (`ark-stack`) is a 100% open-source, Linux-based Infrastructure-as-Code (IaC) appliance for deploying high-concurrency local LLM inference and multi-tenant RAG across **strictly air-gapped (offline)** offices.
+ARK (`ark-stack`) is a 100% open-source, Linux-based Infrastructure-as-Code (IaC) appliance for deploying high-concurrency local LLM inference, enterprise SSO, and multi-tenant RAG across **strictly air-gapped (offline)** offices.
+
+- **[Installation & Setup Guide](docs/INSTALL.md)** — HQ bundling, offline server installation, Keycloak/AD SSO, TLS, and initial setup.
+- **[User & Operations Guide](docs/USER_GUIDE.md)** — Day-to-day usage for end users (WebUI chat, Office/IDE APIs) and administrators (`ark-admin`, connectors, backups, and audits).
 
 ---
 
-## 1. Architecture Overview
+## 1. Project Overview & Architecture
 
 ```mermaid
 flowchart LR
-    Users["Office Users (Browser)"] -->|HTTPS :443| Caddy["Caddy Reverse Proxy\n(ark.local / TLS Internal CA)"]
-    DevTools["LAN Dev Tools & Services"] -->|HTTPS /v1/*| Caddy
+    Users["Office Users (Browser)"] -->|HTTPS :443| Caddy["Caddy Reverse Proxy\n(TLS & Routing)"]
+    DevTools["Office / IDE / Scripts"] -->|"/projects/&lt;slug&gt;/v1/*"| Caddy
 
-    Caddy -->|"/"| OpenWebUI["Open WebUI\n(RAG Orchestrator & RBAC)"]
-    Caddy -->|"/v1/chat/completions"| vLLM["vLLM\n(OpenAI /v1 LLM Inference)"]
-    Caddy -->|"/v1/embeddings"| TEIEmbed["TEI Embeddings\n(BAAI/bge-m3)"]
+    Caddy -->|"/auth/*"| Keycloak["Keycloak\n(AD/LDAPS, Kerberos, SAML)"]
+    Caddy -->|"/admin-console/*"| OAuthProxy["OAuth2-Proxy\n(ark-admins gate)"]
+    OAuthProxy --> ArkAdmin["ark-admin\n(Control Plane & API Gateway)"]
+    Caddy -->|"/projects/*/v1/*"| ArkAdmin
+    Caddy -->|"/"| OpenWebUI["Open WebUI\n(OIDC SSO, RAG Chat & RBAC)"]
+
+    ArkAdmin --> vLLM["vLLM\n(LLM Inference)"]
+    ArkAdmin --> TEIEmbed["TEI Embeddings\n(BAAI/bge-m3)"]
+    ArkAdmin --> Qdrant["Qdrant Vector DB\n(Isolated Collections)"]
+    ArkAdmin --> Postgres["PostgreSQL 16\n(State, Keys & Audit)"]
+    ArkAdmin --> Tika["Apache Tika\n(M-Files / SharePoint / SMB)"]
 
     OpenWebUI --> vLLM
     OpenWebUI --> TEIEmbed
     OpenWebUI --> TEIRerank["TEI Reranker\n(BAAI/bge-reranker-v2-m3)"]
-    OpenWebUI --> Qdrant["Qdrant Vector DB\n(Isolated Collections)"]
-    OpenWebUI --> Postgres["PostgreSQL 16\n(Sessions & RBAC)"]
-    OpenWebUI --> Tika["Apache Tika\n(PDF/Office Extraction)"]
+    OpenWebUI --> Qdrant
+    OpenWebUI --> Postgres
+    OpenWebUI --> Tika
 ```
 
-### Key Design Guarantees
-- **Strict Air-Gap Compliance:** Zero external network calls. `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `DO_NOT_TRACK=1`, `OFFLINE_MODE=true`, `QDRANT__TELEMETRY_DISABLED=true`, `ANONYMIZED_TELEMETRY=false`, and `VLLM_NO_USAGE_STATS=1` are enforced across containers.
-- **Data Compartmentalization:** Each project (`Project_Alpha`, `Project_Beta`, etc.) receives an isolated Qdrant collection, a dedicated Open WebUI RBAC group (`project-alpha`), and a locked Workspace Assistant bound to `Company_Common` (read-only) + its own project collection.
-- **High-Concurrency Production Stack:** Continuous batching and prefix caching in `vLLM`, GPU-accelerated `TEI` embeddings/reranking, `PostgreSQL 16` for concurrent session/RBAC state, and `Qdrant` with on-disk payloads.
+### Core Capabilities
+- **Strict Air-Gap Compliance:** Zero external network calls. `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `DO_NOT_TRACK=1`, `OFFLINE_MODE=true`, `QDRANT__TELEMETRY_DISABLED=true`, and `VLLM_NO_USAGE_STATS=1` are enforced across the stack.
+- **Unified Enterprise SSO:** **Keycloak** federates on-prem Active Directory (LDAPS), Kerberos, and SAML 2.0 into OIDC for both **Open WebUI** and **ark-admin** (via `oauth2-proxy`).
+- **Multi-Tenant Data Compartmentalization:** Each project receives an isolated Qdrant collection, RBAC group, and locked Workspace Assistant—or can be created as a **clean (non-RAG) project**.
+- **Scoped Per-Project API Gateway:** Office add-ins, IDE plugins, and scripts authenticate via `/projects/<slug>/v1/chat/completions` using project-scoped `ark_proj_*` keys with rate limits and audit logging. Unauthenticated raw `/v1/*` access is blocked at Caddy (`403`).
+- **Document Connectors:** Built-in offline ingestion from **M-Files**, **SharePoint On-Prem**, and **SMB/NFS folders** via Apache Tika and TEI.
+- **Local + SIEM Audit & Configurable Backups:** Every admin action and API call is logged to PostgreSQL (`ark_admin.audit_logs`), `./data/audit/audit.jsonl`, and optional Syslog SIEM. Backup paths are configurable at install time and in the Admin UI.
 
 ---
 
@@ -37,143 +51,64 @@ ark-stack/
 ├── README.md
 ├── .gitignore
 ├── .env.example
-├── docker-compose.yml
+├── docker-compose.yml               # Production multi-container GPU stack
+├── docker-compose.test.yml          # GPU-less test override (mock vLLM & TEI)
+├── admin/                           # ark-admin Control Plane & Project API Gateway
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── app.py
+│   ├── audit.py
+│   ├── connectors.py
+│   └── static/index.html
 ├── config/
-│   ├── caddy/Caddyfile
-│   ├── qdrant/config.yaml
-│   └── postgres/init.sql
+│   ├── caddy/Caddyfile              # Local HTTPS proxy, forward_auth, & API routing
+│   ├── keycloak/ark-realm.json      # Declarative OIDC realm & clients
+│   ├── postgres/init.sql            # Multi-DB init (openwebui, keycloak, ark_admin)
+│   └── qdrant/config.yaml           # Production Qdrant config (telemetry disabled)
+├── docs/
+│   ├── INSTALL.md                   # HQ bundling & air-gapped installation runbook
+│   └── USER_GUIDE.md                # End-user & administrator operations guide
 ├── provisioning/
 │   ├── requirements.txt
-│   └── bootstrap_ark.py
-└── scripts/
-    ├── bundle-offline.sh
-    ├── install-offline.sh
-    └── sync-company-kb.sh
+│   ├── bootstrap_ark.py             # CLI project provisioner
+│   └── sync_ad_groups.py            # Optional direct AD -> Open WebUI group sync
+├── scripts/
+│   ├── bundle-offline.sh            # HQ: pulls/builds images & downloads HF models
+│   ├── install-offline.sh           # Office: verifies checksums, loads & starts ARK
+│   ├── sync-company-kb.sh           # Imports Company_Common Qdrant snapshots
+│   └── test-integration.sh          # Automated GPU-less integration test suite
+└── tests/
+    └── mock_inference.py            # Stdlib mock vLLM & TEI server for testing
 ```
 
 ---
 
-## 3. HQ Bundling Guide (Connected Environment)
+## 3. Running for Testing (No GPU Required)
 
-Run this on a connected Linux workstation or build server with Docker, `zstd`, and `huggingface_hub[cli]` (`hf` or `huggingface-cli`) installed.
+You can validate the full integration—PostgreSQL, Qdrant, Keycloak SSO, `oauth2-proxy`, `ark-admin`, Caddy routing, per-project APIs, backups, and audit logging—on any Linux workstation without an NVIDIA GPU or model weights.
 
-1. **Review image tags and model IDs:**
-   ```bash
-   cp .env.example .env
-   # Edit .env if you want to pin different model IDs or image tags
-   ```
-
-2. **Pull Docker images, download Hugging Face models, and generate SHA-256 checksums:**
-   ```bash
-   ./scripts/bundle-offline.sh --package-models
-   ```
-   This produces:
-   - `./artifacts/ark-images.tar.zst` (+ `.sha256`)
-   - `./artifacts/models/<MODEL_DIR>`
-   - `./artifacts/ark-models.tar.zst` (+ `.sha256`) when `--package-models` is passed
-
-3. **Transfer to physical media** (encrypted drive / approved transfer diode) along with the `ark-stack` repository.
-
----
-
-## 4. Offline Office Installation Runbook (Air-Gapped Linux GPU Server)
-
-### Prerequisites
-- Linux host with **NVIDIA GPU**, NVIDIA drivers, and `nvidia-container-toolkit`
-- Docker Engine + Docker Compose v2 (`docker compose`)
-- `zstd`, `curl`, `sha256sum`, and Python 3.10+ (for provisioning)
-- Local DNS or `/etc/hosts` entry pointing `ark.local` (or your `ARK_DOMAIN`) to the server's LAN IP
-
-### Deployment Steps
-1. **Configure site secrets:**
-   ```bash
-   cp .env.example .env
-   # Generate strong random values for VLLM_API_KEY, QDRANT_API_KEY, POSTGRES_PASSWORD, WEBUI_SECRET_KEY
-   ```
-
-2. **Verify checksums, load images, unpack models, and start ARK:**
-   ```bash
-   ./scripts/install-offline.sh
-   ```
-   The installer verifies `nvidia-smi`, checks free disk space, validates `.sha256` checksums, runs `docker load`, verifies local model directories in `./artifacts/models/`, creates `./data/*` volumes, and runs `docker compose up -d`.
-
-3. **Verify all services are healthy:**
-   ```bash
-   docker compose ps
-   ```
-
-4. **Trust Caddy's Internal Root CA on LAN clients:**
-   Caddy terminates HTTPS using `tls internal`. Export the generated root certificate after first startup and distribute it to office workstations:
-   ```bash
-   docker cp ark-caddy:/data/caddy/pki/authorities/local/root.crt ./ark-root-ca.crt
-   ```
-
----
-
-## 5. Multi-Tenant Project Provisioning
-
-1. **Create the initial Open WebUI Admin account** at `https://ark.local` and generate an Admin API Key under **Settings → Account → API Keys**. Add it to `.env` as `OPENWEBUI_API_KEY`.
-
-2. **Install Python dependencies** (from an offline wheelhouse or pre-installed environment):
-   ```bash
-   pip install -r provisioning/requirements.txt
-   ```
-
-3. **Provision an isolated project:**
-   ```bash
-   python3 provisioning/bootstrap_ark.py --create-project "Project_Alpha"
-   ```
-   *(Pass `--insecure` if the host OS has not yet imported `ark-root-ca.crt`.)*
-
-   This idempotently creates:
-   - Qdrant collections: `Company_Common` and `Project_Alpha`
-   - Open WebUI RBAC group: `project-alpha`
-   - Open WebUI Knowledge Bases: `Company_Common` (read-only) and `Project_Alpha` (restricted to `project-alpha`)
-   - Workspace Assistant model: `Project Alpha Assistant` (`project-alpha-assistant`) bound to both Knowledge Bases and locked to `project-alpha`.
-
----
-
-## 6. Syncing `Company_Common` Snapshots from HQ
-
-To update the shared read-only `Company_Common` collection from a Qdrant snapshot exported at HQ:
-
+### Option A: Automated Integration Test Suite (Works Without `docker compose`)
+Run [scripts/test-integration.sh](scripts/test-integration.sh):
 ```bash
-./scripts/sync-company-kb.sh --snapshot /path/to/Company_Common.snapshot
+./scripts/test-integration.sh
 ```
-If `Company_Common.snapshot.sha256` is alongside the snapshot, the script verifies integrity before uploading and recovering the collection via Qdrant's local API.
+This spins up an isolated `ark-test-net` environment using [tests/mock_inference.py](tests/mock_inference.py) and verifies:
+1. Keycloak OIDC discovery through Caddy (`/auth/realms/ark/.well-known/openid-configuration`).
+2. `oauth2-proxy` SSO redirect on `/admin-console/` (`HTTP 302`).
+3. Raw `/v1/*` bypass block (`HTTP 403`).
+4. Creation of both a RAG project (`Project_Alpha`) and a clean non-RAG project (`Clean_Sandbox`).
+5. Per-project `/projects/<slug>/v1/chat/completions` routing, Qdrant RAG context injection, and cross-project API key rejection (`HTTP 403`).
+6. Full `pg_dump` + Qdrant snapshot backup execution.
+7. PostgreSQL audit log recording.
 
----
+To leave the test containers running so you can inspect endpoints manually:
+```bash
+./scripts/test-integration.sh --keep
+```
 
-## 7. LAN OpenAI-Compatible API Endpoints
-
-Internal developer tools and IDE extensions on the office LAN can call ARK directly through Caddy:
-
-- **Chat Completions (`vLLM`):**
-  ```bash
-  curl https://ark.local/v1/chat/completions \
-    -H "Authorization: Bearer ${VLLM_API_KEY}" \
-    -H "Content-Type: application/json" \
-    -d '{"model": "ark-llm", "messages": [{"role": "user", "content": "Hello"}]}'
-  ```
-
-- **Embeddings (`TEI BAAI/bge-m3`):**
-  ```bash
-  curl https://ark.local/v1/embeddings \
-    -H "Content-Type: application/json" \
-    -d '{"input": "Air-gapped retrieval test"}'
-  ```
-
----
-
-## 8. On-Prem Active Directory (LDAPS) Integration
-
-1. **Place your AD Root CA certificate** at `./certs/ad-ca.crt` (mounted read-only to `/certs/ad-ca.crt` inside Open WebUI).
-2. **Configure AD settings in `.env`:**
-   - Set `ENABLE_LDAP=true`, `LDAP_SERVER_HOST`, `LDAP_SEARCH_BASE`, `LDAP_APP_DN`, and `LDAP_APP_PASSWORD`.
-   - Keep `ENABLE_SIGNUP=false` so only domain accounts can sign in using `sAMAccountName`.
-3. **Sync AD Security Groups to Open WebUI RBAC:**
-   Create AD security groups prefixed with `ARK-` (e.g., `ARK-Project-Alpha`), then run or schedule:
-   ```bash
-   python3 provisioning/sync_ad_groups.py
-   ```
-   This resolves nested AD group memberships via LDAPS and updates the corresponding Open WebUI project groups (`project-alpha`).
+### Option B: Docker Compose Test Override
+If `docker compose` is installed, you can start the stack with mock inference using [docker-compose.test.yml](docker-compose.test.yml):
+```bash
+cp .env.example .env
+docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+```
