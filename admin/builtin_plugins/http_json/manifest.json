@@ -1,0 +1,25 @@
+{
+  "id": "http_json",
+  "name": "Internal REST / JSON Feed",
+  "version": "1.0.0",
+  "ark_protocol": "1",
+  "runtime": "python3",
+  "entrypoint": "run.py",
+  "builtin": true,
+  "supports_incremental": true,
+  "secret_fields": ["bearer_token"],
+  "description": "Fetches JSON records from an internal REST endpoint and maps fields to ARK documents.",
+  "config_schema": {
+    "type": "object",
+    "required": ["url", "id_field", "text_field"],
+    "properties": {
+      "url": { "type": "string", "title": "Endpoint URL" },
+      "items_path": { "type": "string", "title": "JSON Items Path (dot-separated, optional)", "default": "" },
+      "id_field": { "type": "string", "title": "Document ID Field", "default": "id" },
+      "title_field": { "type": "string", "title": "Title / Filename Field", "default": "title" },
+      "text_field": { "type": "string", "title": "Text Content Field", "default": "content" },
+      "bearer_token": { "type": "string", "title": "Bearer Token (optional)", "format": "password" },
+      "verify_tls": { "type": "boolean", "title": "Verify TLS Certificate", "default": true }
+    }
+  }
+}

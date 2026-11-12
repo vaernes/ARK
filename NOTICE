@@ -1,0 +1,9 @@
+ARK (Air-gapped Retrieval & Knowledge)
+Copyright 2026 ARK Contributors
+
+This product includes software developed for the ARK (ark-stack) project
+(https://github.com/vaernes/ARK).
+
+Licensed under the Apache License, Version 2.0. See LICENSE for full terms.
+Third-party container images and model weights orchestrated by ARK remain
+subject to their respective upstream licenses.

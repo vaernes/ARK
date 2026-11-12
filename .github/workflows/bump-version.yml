@@ -1,0 +1,138 @@
+name: ARK Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Target CalVer version (e.g. 2026.11.1); leave empty to auto-bump"
+        required: false
+        type: string
+      bump_type:
+        description: "Auto-bump rule when 'version' is empty"
+        required: false
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - calver-month
+      create_tag:
+        description: "Create annotated tag v<version> and publish GitHub Release"
+        required: false
+        default: true
+        type: boolean
+      open_pr:
+        description: "Open a pull request instead of committing directly to the branch"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.commit.outputs.version }}
+      tag_name: ${{ steps.commit.outputs.tag_name }}
+      should_release: ${{ steps.commit.outputs.should_release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version across repository and README.md
+        id: bump
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          OLD_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            ./scripts/bump-version.sh --update-changelog "${INPUT_VERSION}"
+          else
+            ./scripts/bump-version.sh --update-changelog --bump "${INPUT_BUMP_TYPE}"
+          fi
+          NEW_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ "${NEW_VERSION}" == "${OLD_VERSION}" ]]; then
+            echo "ERROR: New version (${NEW_VERSION}) matches existing VERSION (${OLD_VERSION})." >&2
+            exit 1
+          fi
+          echo "old_version=${OLD_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "new_version=${NEW_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify shell syntax & unit tests
+        run: |
+          bash -n scripts/*.sh
+          python3 -m unittest discover -s tests -v
+
+      - name: Commit, push, and optionally tag
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_VERSION: ${{ steps.bump.outputs.old_version }}
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          CREATE_TAG: ${{ inputs.create_tag }}
+          OPEN_PR: ${{ inputs.open_pr }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            VERSION \
+            README.md \
+            CHANGELOG.md \
+            admin/version.py \
+            admin/Dockerfile \
+            llm-admin/Dockerfile \
+            llm-admin/app.py \
+            docker-compose.yml \
+            docker-compose.llm.yml \
+            .env.example
+
+          if git diff --cached --quiet; then
+            echo "ERROR: No version changes staged." >&2
+            exit 1
+          fi
+
+          TAG_NAME="v${NEW_VERSION}"
+          SHOULD_RELEASE="false"
+
+          if [[ "${OPEN_PR}" == "true" ]]; then
+            PR_BRANCH="chore/bump-version-${NEW_VERSION}"
+            git checkout -b "${PR_BRANCH}"
+            git commit -m "chore(release): bump version to ${NEW_VERSION}"
+            git push -u origin "${PR_BRANCH}"
+            gh pr create \
+              --base "${GITHUB_REF_NAME}" \
+              --head "${PR_BRANCH}" \
+              --title "chore(release): bump version to ${NEW_VERSION}" \
+              --body "Automated version bump from \`${OLD_VERSION}\` to \`${NEW_VERSION}\` (updates \`VERSION\`, \`README.md\`, \`CHANGELOG.md\`, and build/compose defaults)."
+          else
+            if [[ "${CREATE_TAG}" == "true" ]] && git ls-remote --exit-code --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
+              echo "ERROR: Tag '${TAG_NAME}' already exists on origin." >&2
+              exit 1
+            fi
+            git commit -m "chore(release): bump version to ${NEW_VERSION}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            if [[ "${CREATE_TAG}" == "true" ]]; then
+              git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
+              git push origin "refs/tags/${TAG_NAME}"
+              SHOULD_RELEASE="true"
+            fi
+          fi
+
+          echo "version=${NEW_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "should_release=${SHOULD_RELEASE}" >> "${GITHUB_OUTPUT}"
+
+  release:
+    name: Publish Release
+    needs: bump
+    if: ${{ needs.bump.outputs.should_release == 'true' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      ref: ${{ needs.bump.outputs.tag_name }}
+      tag: ${{ needs.bump.outputs.tag_name }}

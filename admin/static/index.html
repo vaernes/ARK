@@ -1,0 +1,1600 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARK — Air-Gapped Retrieval &amp; Knowledge Control Plane</title>
+  <link rel="icon" type="image/svg+xml" href="/admin-console/static/ark-logo.svg" />
+  <style>
+    :root {
+      --void: #0A0E17;
+      --shield: #1E293B;
+      --shield-alt: #141C2B;
+      --border: #2E3D52;
+      --amber: #F55A00;
+      --amber-soft: rgba(245, 90, 0, 0.16);
+      --cyan: #00E5FF;
+      --cyan-soft: rgba(0, 229, 255, 0.14);
+      --text: #E2E8F0;
+      --gray: #64748B;
+      --muted: #94A3B8;
+      --ok: #22C55E;
+      --err: #EF4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      background: var(--void);
+      color: var(--text);
+      padding: 24px;
+      min-height: 100vh;
+    }
+
+    /* Header & Offline Status Banner */
+    .topbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 20px;
+      margin-bottom: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand img {
+      width: 44px;
+      height: 48px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      letter-spacing: 0.08em;
+      color: var(--text);
+    }
+
+    .brand small {
+      display: block;
+      color: var(--gray);
+      font-size: 0.78rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .status-strip {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .offline-banner {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--amber-soft);
+      border: 1px solid var(--amber);
+      color: #FFB38A;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .projects-pill {
+      background: var(--void);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      color: var(--text);
+    }
+
+    .projects-pill strong {
+      color: var(--cyan);
+      margin-left: 6px;
+    }
+
+    /* Grid & Steel Shield Cards */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(390px, 1fr));
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      min-width: 0;
+      overflow-x: auto;
+    }
+
+    .card.admin-accent {
+      border-top: 3px solid var(--amber);
+    }
+
+    .card.rag-accent {
+      border-top: 3px solid var(--cyan);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 0.98rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card.admin-accent h2 {
+      color: var(--amber);
+    }
+
+    .card.rag-accent h2 {
+      color: var(--cyan);
+    }
+
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--gray);
+      margin: 10px 0 4px;
+      font-weight: 600;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 9px 11px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--void);
+      color: var(--text);
+      font-size: 0.88rem;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--cyan);
+    }
+
+    button {
+      margin-top: 12px;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 7px;
+      background: var(--cyan);
+      color: var(--void);
+      font-weight: 700;
+      font-size: 0.84rem;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+
+    button:hover {
+      opacity: 0.9;
+    }
+
+    button.amber {
+      background: var(--amber);
+      color: #fff;
+    }
+
+    button.danger {
+      background: var(--err);
+      color: #fff;
+      padding: 4px 9px;
+      margin: 0;
+      font-size: 0.75rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 0.8rem;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 6px 6px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    table code {
+      word-break: break-word;
+    }
+
+    th {
+      color: var(--gray);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.05em;
+    }
+
+    code {
+      background: var(--void);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--cyan);
+      font-size: 0.8rem;
+    }
+
+    .badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .ok {
+      background: rgba(34, 197, 94, 0.18);
+      color: var(--ok);
+    }
+
+    .err {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--err);
+    }
+
+    .rag {
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+    }
+
+    .clean {
+      background: var(--amber-soft);
+      color: #FFB38A;
+      border: 1px solid rgba(245, 90, 0, 0.4);
+    }
+
+    pre {
+      background: var(--void);
+      border: 1px solid var(--border);
+      padding: 10px;
+      border-radius: 7px;
+      overflow-x: auto;
+      font-size: 0.78rem;
+      color: var(--text);
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/admin-console/static/ark-logo.svg" alt="ARK Shield Logo" />
+      <div>
+        <h1>ARK CONTROL PLANE</h1>
+        <small>Air-Gapped Retrieval &amp; Knowledge</small>
+      </div>
+    </div>
+    <div class="status-strip">
+      <div class="projects-pill">ARK <strong id="ark-version">...</strong></div>
+      <div class="projects-pill">PROJECTS DEPLOYED <strong id="proj-count">0</strong></div>
+      <div class="offline-banner">&#9888; Strict Air-Gap &bull; Offline Mode</div>
+      <a href="/"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Open
+        WebUI</a>
+      <a href="/create/"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Create
+        Studio</a>
+      <a href="/portal/"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">User
+        Portal</a>
+      <a href="/oauth2/sign_out"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--gray);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Sign
+        Out</a>
+      <button style="margin-top:0" onclick="refreshAll()">Refresh</button>
+    </div>
+  </header>
+
+  <div id="ui-alert"
+    style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:16px; font-size:0.85rem;">
+  </div>
+
+  <div class="grid">
+    <!-- Health -->
+    <div class="card admin-accent">
+      <h2>Infrastructure Health</h2>
+      <div id="health-list">Loading...</div>
+    </div>
+
+    <!-- Projects -->
+    <div class="card rag-accent">
+      <h2>Create Project (RAG or Clean)</h2>
+      <label>Project Name</label>
+      <input id="proj-name" placeholder="Project_Alpha" />
+      <label>Isolation Mode</label>
+      <select id="proj-rag" onchange="toggleCreateProjectRagFields()">
+        <option value="true">RAG-Enabled (Isolated Qdrant Project KB)</option>
+        <option value="false">Clean Project (Isolated LLM / No RAG)</option>
+      </select>
+      <label>Attach RAG From Other Projects (optional, comma-separated slugs)</label>
+      <input id="proj-extra-rag" placeholder="e.g. shared-kb, security-policies" />
+      <label>System Prompt (optional)</label>
+      <textarea id="proj-prompt" rows="2" placeholder="Custom instructions..."></textarea>
+      <label>LLM Model Override (optional, blank = global default)</label>
+      <input id="proj-llm" placeholder="ark-llm" />
+      <button onclick="createProject()">Deploy Project</button>
+      <table id="proj-table">
+        <thead>
+          <tr>
+            <th>Slug</th>
+            <th>Mode</th>
+            <th>LLM</th>
+            <th>Users</th>
+            <th>Gateway Endpoint</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Project User Access -->
+    <div id="project-access-card" class="card admin-accent">
+      <h2>Project User Access</h2>
+      <p style="margin-top:0;font-size:0.82rem;color:var(--muted);">
+        Control which users can access each project in the User Portal (<code>/portal</code>) and Open WebUI.
+        Users in the matching SSO group (<code>&lt;slug&gt;</code>) or <code>ark-admins</code> also have access.
+      </p>
+      <label>Project</label>
+      <select id="access-proj" onchange="loadProjectMembers()"></select>
+      <label>User Email or Username</label>
+      <input id="access-user" list="known-users-list" placeholder="alice@corp.internal or jdoe" />
+      <datalist id="known-users-list"></datalist>
+      <label>Role</label>
+      <select id="access-role">
+        <option value="member">member</option>
+        <option value="editor">editor</option>
+        <option value="viewer">viewer</option>
+      </select>
+      <button onclick="grantProjectAccess()">Grant Access</button>
+      <div id="access-status" style="margin-top:8px;font-size:0.82rem;color:var(--muted);"></div>
+      <table id="access-table">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Role</th>
+            <th>Granted By</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- API Keys -->
+    <div class="card admin-accent">
+      <h2>Project API Keys (Office / IDEs)</h2>
+      <label>Project</label>
+      <select id="key-proj"></select>
+      <label>Key Label</label>
+      <input id="key-label" placeholder="Word Add-in / CI Script" />
+      <label>Rate Limit (RPM)</label>
+      <input id="key-rpm" type="number" value="60" />
+      <label>Key Scopes</label>
+      <div style="display:flex;gap:14px;align-items:center;margin:4px 0 8px;font-size:0.84rem;">
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-chat" type="checkbox" checked style="width:auto;" /> chat
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-images" type="checkbox" style="width:auto;" /> images
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
+        </label>
+      </div>
+      <button class="amber" onclick="createKey()">Issue Scoped Key</button>
+      <pre id="key-output" style="display:none"></pre>
+      <table id="key-table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Label</th>
+            <th>Scopes</th>
+            <th>Prefix</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Backup & Snapshot -->
+    <div class="card admin-accent">
+      <h2>Backup &amp; Project KB Snapshot Sync</h2>
+      <label>Backup Destination Directory</label>
+      <input id="backup-dir" />
+      <button class="amber" onclick="saveBackupDir()">Save Backup Path</button>
+      <button onclick="runBackup()" style="margin-left:8px;">Run Full Backup Now</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Restore Full Backup Bundle</label>
+      <select id="restore-backup-select"></select>
+      <button class="danger" style="margin-top:10px;padding:8px 14px;font-size:0.84rem;"
+        onclick="restoreSelectedBackup()">Verify &amp; Restore Backup</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Project Knowledge Base Snapshot</label>
+      <select id="snap-proj" onchange="updateSnapshotDownloadLink()"></select>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          Project Snapshot</button>
+          <a id="download-proj-snap" href="#"
+            style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--cyan);padding:8px 12px;border-radius:6px;font-size:0.84rem;font-weight:600;">Download
+            .snapshot</a>
+      </div>
+      <label>Upload Project .snapshot</label>
+      <input id="snap-file" type="file" accept=".snapshot" />
+      <button onclick="uploadSnapshot()">Upload &amp; Recover Snapshot</button>
+      <pre id="ops-output" style="display:none"></pre>
+    </div>
+
+    <!-- Flexible Data Ingestion (Plugins / ARK Pipelines / Scripts / Push Upload) -->
+    <div class="card rag-accent">
+      <h2>Data Ingestion (Plugins, Pipelines &amp; Scripts)</h2>
+      <label>Target RAG Project</label>
+      <select id="conn-proj"></select>
+      <label>Source Mode</label>
+      <select id="ingest-kind" onchange="renderIngestMode()">
+        <option value="plugin">Connector Plugin</option>
+        <option value="pipeline_yaml">ARK Pipeline (YAML)</option>
+        <option value="script">Custom Python Script (/ingest-scripts)</option>
+      </select>
+      <label>Source Name</label>
+      <input id="conn-name" placeholder="Engineering Docs / Wiki Sync" />
+
+      <div id="ingest-plugin-wrap">
+        <label>Plugin</label>
+        <select id="conn-type" onchange="renderPluginFields()"></select>
+        <div id="plugin-dynamic-fields"></div>
+      </div>
+
+      <div id="ingest-pipeline-wrap" style="display:none;">
+        <label>ARK Pipeline Spec (<code>ark-ingest/v1</code> YAML)</label>
+        <textarea id="pipeline-yaml" rows="8" placeholder="apiVersion: ark-ingest/v1&#10;..."></textarea>
+      </div>
+
+      <div id="ingest-script-wrap" style="display:none;">
+        <label>Script File (<code>/ingest-scripts/*.py</code>)</label>
+        <select id="ingest-script-select"></select>
+        <label>Script Config JSON</label>
+        <textarea id="script-config" rows="3">{}</textarea>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+        <div>
+          <label>Sync Mode</label>
+          <select id="ingest-sync-mode">
+            <option value="incremental">Incremental</option>
+            <option value="full_mirror">Full Mirror (Prune)</option>
+          </select>
+        </div>
+        <div>
+          <label>Chunking</label>
+          <select id="ingest-chunk-strategy">
+            <option value="chars">Chars (1200/200)</option>
+            <option value="markdown">Markdown Headings</option>
+            <option value="lines">Line Blocks</option>
+            <option value="none">Whole Doc</option>
+          </select>
+        </div>
+        <div>
+          <label>Schedule</label>
+          <select id="ingest-schedule">
+            <option value="">Manual</option>
+            <option value="@15m">Every 15m</option>
+            <option value="@hourly">Hourly</option>
+            <option value="@daily">Daily</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="createIngestSource()">Add Ingest Source</button>
+        <button class="amber" onclick="dryRunIngestSource()">Dry Run (Preview 5)</button>
+      </div>
+      <pre id="ingest-preview-output" style="display:none"></pre>
+
+      <table id="conn-table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Source</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div id="edit-source-box"
+        style="display:none;margin:10px 0;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--void);">
+        <strong style="font-size:0.86rem;color:var(--cyan);">Edit Ingest Source <span
+            id="edit-source-title"></span></strong>
+        <input id="edit-source-id" type="hidden" />
+        <label>Source Name</label>
+        <input id="edit-source-name" />
+        <div class="row">
+          <div>
+            <label>Sync Mode</label>
+            <select id="edit-source-sync-mode">
+              <option value="incremental">incremental (hash-dedup)</option>
+              <option value="full">full (re-index)</option>
+            </select>
+          </div>
+          <div>
+            <label>Schedule (Cron / 15m / 1h)</label>
+            <input id="edit-source-schedule" placeholder="*/30 * * * * or blank" />
+          </div>
+        </div>
+        <label>Enabled</label>
+        <select id="edit-source-enabled">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+        <div id="edit-source-pipeline-wrap" style="display:none;">
+          <label>Pipeline YAML</label>
+          <textarea id="edit-source-pipeline" rows="6" style="font-family:monospace;font-size:0.78rem;"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button class="amber" style="margin-top:0;" onclick="saveSourceEdit()">Save Source</button>
+          <button style="margin-top:0;" onclick="cancelSourceEdit()">Cancel</button>
+        </div>
+      </div>
+
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Direct File Upload to Project</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="direct-upload-file" type="file" style="flex:1;" />
+        <button style="margin-top:0;white-space:nowrap;" onclick="uploadProjectFile()">Upload &amp; Index</button>
+      </div>
+
+      <label style="margin-top:14px;">Recent Ingest Jobs</label>
+      <table id="ingest-jobs-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Project</th>
+            <th>Trigger</th>
+            <th>Status</th>
+            <th>Summary</th>
+            <th>Logs</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Indexed Documents Inspector (Selected Target Project)</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;">
+        <button style="margin-top:0;" onclick="loadProjectIndexedDocs()">View Indexed Docs</button>
+        <button style="margin-top:0;" onclick="resetProjectIndex(false)">Reset Cache</button>
+        <button class="danger" style="padding:7px 11px;font-size:0.8rem;" onclick="resetProjectIndex(true)">Reset Cache
+          + Vectors</button>
+      </div>
+      <div id="indexed-docs-status" style="font-size:0.8rem;color:var(--muted);margin-top:6px;"></div>
+      <table id="indexed-docs-table" style="display:none;margin-top:8px;">
+        <thead>
+          <tr>
+            <th>Doc ID</th>
+            <th>Filename</th>
+            <th>Chunks</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- LLM Backend Connection & Gateway -->
+    <div class="card admin-accent">
+      <h2>LLM Backend Connection &amp; Gateway</h2>
+      <div id="vllm-live-info" style="font-size:0.82rem;color:var(--gray);margin-bottom:8px;">Loading LLM backend
+        status...</div>
+      <div id="embed-model-warning"
+        style="display:none;margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(245,90,0,0.14);border:1px solid var(--amber);color:#FCD34D;font-size:0.83rem;">
+      </div>
+      <div id="llm-backend-console-ref"
+        style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:rgba(0,229,255,0.08);border:1px solid var(--cyan);font-size:0.84rem;">
+        ARK LLM Backend Console:
+        <a id="llm-backend-console-link" href="#" target="_blank" rel="noopener noreferrer"
+          style="color:var(--cyan);font-weight:700;margin-left:6px;">Open LLM Backend Config Page &rarr;</a>
+      </div>
+      <label>Default Gateway LLM (<code>/projects/&lt;slug&gt;/v1</code>)</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="default-llm-model" placeholder="ark-llm" style="flex:1;" />
+        <button class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveDefaultLlm()">Save Default</button>
+      </div>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>LLM Backend Provider</label>
+      <select id="llm-backend-type" onchange="toggleBackendAdminField()">
+        <option value="ark_llm">ARK LLM Backend (vLLM Server)</option>
+        <option value="third_party">3rd-Party OpenAI-Compatible API</option>
+      </select>
+      <label>OpenAI API Base URL (including <code>/v1</code>)</label>
+      <input id="llm-api-base-url" placeholder="http://vllm:8000/v1" />
+      <label>API Key (leave blank to keep existing)</label>
+      <input id="llm-api-key" type="password" placeholder="Optional / unchanged" />
+      <label>Custom Health URL (optional, blank = <code>/models</code>)</label>
+      <input id="llm-health-url" placeholder="Leave blank for OpenAI /models check" />
+      <div id="llm-backend-admin-wrap">
+        <label>ARK LLM Backend Config Page URL</label>
+        <input id="llm-backend-admin-url" placeholder="http://localhost:8095" />
+      </div>
+      <button class="amber" onclick="saveLlmBackend()">Save LLM Backend Settings</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label style="color:var(--cyan);">Image Generation Backend (<code>/create</code> &amp; <code>/v1/images/generations</code>)</label>
+      <label>Image OpenAI API Base URL (including <code>/v1</code>)</label>
+      <input id="image-api-base-url" placeholder="http://vllm:8000/v1" />
+      <label>Default Image Model ID</label>
+      <input id="image-default-model" placeholder="ark-image" />
+      <label>Image API Key (leave blank to keep existing)</label>
+      <input id="image-api-key" type="password" placeholder="Optional / unchanged" />
+      <button class="amber" onclick="saveImageBackend()">Save Image Backend Settings</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Local Air-Gapped Models (<code>/models</code>)</label>
+      <table id="local-models-table">
+        <thead>
+          <tr>
+            <th>Directory</th>
+            <th>Type</th>
+            <th>Weights / Size</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <label style="margin-top:12px;">Upload Offline Model Archive (<code>.tar.gz</code> / <code>.tar</code> /
+        <code>.zip</code>)</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="model-archive-file" type="file" accept=".tar,.tar.gz,.tgz,.zip" style="flex:1;" />
+        <button style="margin-top:0;white-space:nowrap;" onclick="uploadModelArchive()">Upload Model</button>
+      </div>
+      <pre id="model-ops-output" style="display:none"></pre>
+    </div>
+
+    <!-- Audit Logs -->
+    <div class="card admin-accent">
+      <h2>Security &amp; Audit Events (Local + SIEM)</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <div>
+          <label>Project Filter</label>
+          <select id="audit-project-filter" onchange="refreshAll()">
+            <option value="">All Projects</option>
+          </select>
+        </div>
+        <div>
+          <label>Event Filter</label>
+          <input id="audit-event-filter" placeholder="e.g. api.chat_completion" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+        <select id="audit-limit" onchange="refreshAll()" style="width:auto;min-width:90px;">
+          <option value="15" selected>15 rows</option>
+          <option value="50">50 rows</option>
+          <option value="200">200 rows</option>
+        </select>
+        <button style="margin-top:0;" onclick="refreshAll()">Apply</button>
+        <button class="amber" style="margin-top:0;" onclick="exportAuditJson()">Export JSON</button>
+      </div>
+      <table id="audit-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Event</th>
+            <th>Actor</th>
+            <th>Project</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer id="ark-footer"
+    style="margin-top:22px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
+    ARK Control Plane &bull; Apache-2.0 License
+  </footer>
+
+  <script>
+    const showError = (msg) => {
+      const el = document.getElementById('ui-alert');
+      el.textContent = msg;
+      el.style.display = msg ? 'block' : 'none';
+    };
+
+    const api = (path, opts = {}) => fetch('/admin-console/api' + path, opts).then(async r => {
+      if (!r.ok) {
+        const text = await r.text();
+        showError('API Error: ' + text);
+        throw new Error(text);
+      }
+      showError('');
+      return r.json();
+    });
+
+    function el(tag, attrs = {}, children = []) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'className') node.className = v;
+        else if (k === 'style') node.setAttribute('style', v);
+        else if (k === 'text') node.textContent = v;
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
+        else node.setAttribute(k, v);
+      }
+      for (const child of Array.isArray(children) ? children : [children]) {
+        if (child === null || child === undefined) continue;
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
+    let loadedPlugins = [];
+    let loadedSources = [];
+    let loadedAudits = [];
+    const DEFAULT_PIPELINE_YAML = [
+      'apiVersion: ark-ingest/v1',
+      'name: sample-http-sync',
+      'sync_mode: incremental',
+      'source:',
+      '  type: http_json',
+      '  url: "http://internal-service.local/api/docs"',
+      'transform:',
+      '  doc_id: "doc/{{ item.id }}"',
+      '  filename: "{{ item.title | slugify }}.md"',
+      '  template: |',
+      '    # {{ item.title }}',
+      '    {{ item.body }}',
+      'chunking:',
+      '  strategy: markdown',
+      '  chunk_size: 1200',
+      '  overlap: 200',
+    ].join('\n');
+
+    async function refreshAll() {
+      const auditParams = new URLSearchParams();
+      const auditLimitEl = document.getElementById('audit-limit');
+      auditParams.set('limit', (auditLimitEl && auditLimitEl.value) || '15');
+      const auditProjEl = document.getElementById('audit-project-filter');
+      if (auditProjEl && auditProjEl.value) auditParams.set('project_slug', auditProjEl.value);
+      const auditEvtEl = document.getElementById('audit-event-filter');
+      if (auditEvtEl && auditEvtEl.value.trim()) auditParams.set('event_type', auditEvtEl.value.trim());
+
+      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, imageBackend, knownUsers] = await Promise.all([
+        api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
+        api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?' + auditParams.toString()), api('/models'), api('/llm-backend'),
+        api('/image-backend'), api('/users')
+      ]);
+
+      loadedSources = sources || [];
+      loadedAudits = audits || [];
+
+      const verLabel = `v${ver.version}`;
+      document.getElementById('ark-version').textContent = verLabel;
+      const commitSuffix = ver.git_commit && ver.git_commit !== 'unknown' ? ` (${ver.git_commit.slice(0, 7)})` : '';
+      document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel}${commitSuffix} • ${ver.license} License • Strict Air-Gap Mode`;
+      document.getElementById('proj-count').textContent = projects.length;
+      document.getElementById('health-list').replaceChildren(
+        ...Object.entries(health.services).map(([k, v]) =>
+          el('div', { style: 'display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(46,61,82,0.45);' }, [
+            el('span', { text: k }),
+            el('span', { className: `badge ${v === 'healthy' ? 'ok' : 'err'}`, text: v })
+          ])
+        )
+      );
+
+      document.querySelector('#proj-table tbody').replaceChildren(
+        ...projects.map(p =>
+          el('tr', {}, [
+            el('td', { text: p.slug }),
+            el('td', {}, el('span', {
+              className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`,
+              text: p.rag_enabled
+                ? ((p.extra_rag_projects && p.extra_rag_projects.length)
+                  ? `RAG (+${p.extra_rag_projects.join(', ')})`
+                  : 'RAG')
+                : 'Clean'
+            })),
+            el('td', {}, el('code', { text: p.effective_llm_model || '-' })),
+            el('td', { text: String(p.member_count ?? 0) }),
+            el('td', {}, el('code', { text: `/projects/${p.slug}/v1` })),
+            el('td', { style: 'display:flex;gap:4px;flex-wrap:wrap;' }, [
+              el('button', {
+                style: 'margin:0;padding:4px 7px;font-size:0.74rem;',
+                text: 'Access',
+                onClick: () => focusProjectAccess(p.slug)
+              }),
+              ...(p.rag_enabled ? [el('button', {
+                style: 'margin:0;padding:4px 7px;font-size:0.74rem;',
+                text: 'RAG',
+                onClick: () => setProjectRagLinks(p.slug, p.extra_rag_projects || [])
+              })] : []),
+              el('button', {
+                style: 'margin:0;padding:4px 7px;font-size:0.74rem;',
+                text: 'LLM',
+                onClick: () => setProjectLlm(p.slug, p.llm_model || '')
+              }),
+              el('button', {
+                className: 'danger',
+                style: 'padding:4px 7px;font-size:0.74rem;',
+                text: 'Delete',
+                onClick: () => deleteProject(p.slug)
+              })
+            ])
+          ])
+        )
+      );
+
+      const makeProjOpts = () => projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }));
+      document.getElementById('key-proj').replaceChildren(...makeProjOpts());
+      const ragProjs = projects.filter(p => p.rag_enabled);
+      const makeRagProjOpts = () => (
+        ragProjs.length
+          ? ragProjs.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
+          : [el('option', { value: '', text: '(No RAG projects)' })]
+      );
+      const snapSelect = document.getElementById('snap-proj');
+      const prevSnap = snapSelect.value;
+      snapSelect.replaceChildren(...makeRagProjOpts());
+      if (prevSnap && ragProjs.some(p => p.slug === prevSnap)) snapSelect.value = prevSnap;
+      updateSnapshotDownloadLink();
+      const connProjSel = document.getElementById('conn-proj');
+      const prevConnProj = connProjSel.value;
+      connProjSel.replaceChildren(...makeRagProjOpts());
+      if (prevConnProj && ragProjs.some(p => p.slug === prevConnProj)) {
+        connProjSel.value = prevConnProj;
+      }
+
+      if (auditProjEl) {
+        const prevAuditProj = auditProjEl.value;
+        auditProjEl.replaceChildren(
+          el('option', { value: '', text: 'All Projects' }),
+          ...makeProjOpts()
+        );
+        if (prevAuditProj && projects.some(p => p.slug === prevAuditProj)) {
+          auditProjEl.value = prevAuditProj;
+        }
+      }
+
+      const accessProjSel = document.getElementById('access-proj');
+      const prevAccessProj = accessProjSel.value;
+      accessProjSel.replaceChildren(...makeProjOpts());
+      if (prevAccessProj && projects.some(p => p.slug === prevAccessProj)) {
+        accessProjSel.value = prevAccessProj;
+      }
+      document.getElementById('known-users-list').replaceChildren(
+        ...(knownUsers || []).map(u => el('option', { value: u.identifier, text: u.source }))
+      );
+      await loadProjectMembers();
+
+      document.querySelector('#key-table tbody').replaceChildren(
+        ...keys.filter(k => !k.revoked).map(k =>
+          el('tr', {}, [
+            el('td', { text: k.project_slug }),
+            el('td', { text: k.label }),
+            el('td', {}, el('code', { text: (k.scopes || ['chat']).join(', ') })),
+            el('td', {}, el('code', { text: `${k.key_prefix}...` })),
+            el('td', {}, el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeKey(k.id) }))
+          ])
+        )
+      );
+
+      document.getElementById('backup-dir').value = backupCfg.backup_dir;
+      const backupOpts = backups.length
+        ? backups.map(b => el('option', { value: b.name, text: `${b.name} (${(b.databases || []).length} DBs, ${(b.qdrant_snapshots || []).length} Qdrant)` }))
+        : [el('option', { value: '', text: 'No backup bundles found' })];
+      document.getElementById('restore-backup-select').replaceChildren(...backupOpts);
+
+      loadedPlugins = pluginMeta.plugins || [];
+      const connTypeSel = document.getElementById('conn-type');
+      const prevPlugin = connTypeSel.value;
+      connTypeSel.replaceChildren(
+        ...loadedPlugins.map(p => el('option', { value: p.id, text: `${p.name} (${p.id})` }))
+      );
+      if (prevPlugin && loadedPlugins.some(p => p.id === prevPlugin)) connTypeSel.value = prevPlugin;
+      renderPluginFields();
+
+      const scriptSel = document.getElementById('ingest-script-select');
+      const scripts = pluginMeta.scripts || [];
+      scriptSel.replaceChildren(
+        ...(scripts.length
+          ? scripts.map(s => el('option', { value: s, text: s }))
+          : [el('option', { value: '', text: 'No .py scripts in /ingest-scripts' })])
+      );
+      const pipeEl = document.getElementById('pipeline-yaml');
+      if (!pipeEl.value.trim()) pipeEl.value = DEFAULT_PIPELINE_YAML;
+
+      document.querySelector('#conn-table tbody').replaceChildren(
+        ...loadedSources.map(s =>
+          el('tr', {}, [
+            el('td', { text: s.project_slug }),
+            el('td', { text: `${s.name} (${s.plugin_id || s.source_kind})` }),
+            el('td', { text: (s.enabled === false ? 'disabled / ' : '') + (s.last_status || 'pending') }),
+            el('td', { style: 'white-space:nowrap;' }, [
+              el('button', { style: 'margin:0 4px 0 0;padding:4px 9px;font-size:0.75rem;', text: 'Edit', onClick: () => editSource(s.id) }),
+              el('button', { style: 'margin:0 4px 0 0;padding:4px 9px;font-size:0.75rem;', text: 'Sync', onClick: () => syncSource(s.id) }),
+              el('button', { className: 'danger', text: 'Del', onClick: () => deleteSource(s.id) })
+            ])
+          ])
+        )
+      );
+
+      document.querySelector('#ingest-jobs-table tbody').replaceChildren(
+        ...jobs.map(j => {
+          const st = j.stats || {};
+          const summary = st.docs_seen !== undefined
+            ? `${st.docs_upserted || 0} up, ${st.docs_skipped || 0} skip, ${st.docs_deleted || 0} del`
+            : (j.log_excerpt || '-').slice(0, 40);
+          return el('tr', {}, [
+            el('td', { text: String(j.id) }),
+            el('td', { text: j.project_slug }),
+            el('td', { text: j.trigger_type }),
+            el('td', {}, el('span', { className: `badge ${j.status === 'succeeded' ? 'ok' : (j.status === 'failed' ? 'err' : 'rag')}`, text: j.status })),
+            el('td', { text: summary }),
+            el('td', {}, el('button', { style: 'margin:0;padding:4px 8px;font-size:0.74rem;', text: 'Logs', onClick: () => showJobLog(j) }))
+          ]);
+        })
+      );
+
+      document.querySelector('#audit-table tbody').replaceChildren(
+        ...loadedAudits.map(a =>
+          el('tr', {}, [
+            el('td', { text: (a.created_at || '').slice(11, 19) }),
+            el('td', { text: a.event_type }),
+            el('td', { text: a.actor }),
+            el('td', { text: a.project_slug || '-' }),
+            el('td', {}, el('span', { className: `badge ${a.status === 'success' ? 'ok' : 'err'}`, text: a.status }))
+          ])
+        )
+      );
+
+      const live = modelsInfo.llm_live || modelsInfo.vllm_live || {};
+      const liveModels = (live.models || []).join(', ') || 'none';
+      const endpoint = (modelsInfo.configured && modelsInfo.configured.llm_api_base_url) || '-';
+      document.getElementById('vllm-live-info').replaceChildren(
+        document.createTextNode('LLM Backend: '),
+        el('span', { className: `badge ${live.reachable ? 'ok' : 'err'}`, text: live.reachable ? 'online' : 'unreachable' }),
+        document.createTextNode(' Endpoint: '),
+        el('code', { text: endpoint }),
+        document.createTextNode(' \u2022 Served: '),
+        el('code', { text: liveModels })
+      );
+
+      const warnEl = document.getElementById('embed-model-warning');
+      if (modelsInfo.embed_model_warning) {
+        warnEl.textContent = modelsInfo.embed_model_warning;
+        warnEl.style.display = 'block';
+      } else {
+        warnEl.style.display = 'none';
+        warnEl.textContent = '';
+      }
+
+      document.getElementById('default-llm-model').value = modelsInfo.default_llm_model || '';
+
+      const localModels = modelsInfo.local_models || [];
+      const localBody = document.querySelector('#local-models-table tbody');
+      if (localModels.length) {
+        localBody.replaceChildren(
+          ...localModels.map(m =>
+            el('tr', {}, [
+              el('td', {}, el('code', { text: m.dir })),
+              el('td', { text: m.model_type || '-' }),
+              el('td', { text: `${m.weight_files ?? 0} files (${m.size_gib ?? 0} GiB)` }),
+              el('td', {}, el('span', {
+                className: `badge ${m.active ? 'ok' : (m.has_config ? 'rag' : 'err')}`,
+                text: m.active ? 'active' : (m.has_config ? 'ready' : 'incomplete')
+              })),
+              el('td', { style: 'white-space:nowrap;' }, [
+                el('button', { style: 'margin:0 4px 0 0;padding:4px 8px;font-size:0.74rem;', text: 'Plan', onClick: () => switchPlanModel(m.dir, m.model_type) }),
+                el('button', { className: 'danger', text: 'Del', onClick: () => deleteLocalModel(m.dir) })
+              ])
+            ])
+          )
+        );
+      } else {
+        localBody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 5, style: 'color:var(--muted)', text: 'No local model directories found under /models.' }))
+        );
+      }
+
+      const refBox = document.getElementById('llm-backend-console-ref');
+      const refLink = document.getElementById('llm-backend-console-link');
+      if (llmBackend.backend_type === 'ark_llm' && llmBackend.backend_admin_url) {
+        refLink.href = llmBackend.backend_admin_url;
+        refBox.style.display = 'block';
+      } else {
+        refBox.style.display = 'none';
+      }
+      document.getElementById('llm-backend-type').value = llmBackend.backend_type || 'ark_llm';
+      document.getElementById('llm-api-base-url').value = llmBackend.api_base_url || '';
+      document.getElementById('llm-api-key').value = '';
+      document.getElementById('llm-api-key').placeholder = llmBackend.api_key_set ? 'Configured (leave blank to keep)' : 'Optional (no API key set)';
+      document.getElementById('llm-health-url').value = llmBackend.health_url === `${llmBackend.api_base_url}/models` ? '' : (llmBackend.health_url || '');
+      document.getElementById('llm-backend-admin-url').value = llmBackend.backend_admin_url || '';
+      toggleBackendAdminField();
+
+      if (imageBackend) {
+        document.getElementById('image-api-base-url').value = imageBackend.api_base_url || '';
+        document.getElementById('image-default-model').value = imageBackend.default_model || 'ark-image';
+        document.getElementById('image-api-key').value = '';
+        document.getElementById('image-api-key').placeholder = imageBackend.api_key_set ? 'Configured (leave blank to keep)' : 'Optional (no API key set)';
+      }
+    }
+
+    function toggleCreateProjectRagFields() {
+      const isRag = document.getElementById('proj-rag').value === 'true';
+      const extraInput = document.getElementById('proj-extra-rag');
+      extraInput.disabled = !isRag;
+      if (!isRag) extraInput.value = '';
+    }
+
+    async function createProject() {
+      const rawExtra = document.getElementById('proj-extra-rag').value || '';
+      const extraRagProjects = rawExtra
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      await api('/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: document.getElementById('proj-name').value,
+          rag_enabled: document.getElementById('proj-rag').value === 'true',
+          extra_rag_projects: extraRagProjects,
+          system_prompt: document.getElementById('proj-prompt').value,
+          llm_model: document.getElementById('proj-llm').value
+        })
+      });
+      document.getElementById('proj-extra-rag').value = '';
+      toggleCreateProjectRagFields();
+      refreshAll();
+    }
+
+    async function setProjectLlm(slug, current) {
+      const next = prompt(`Set LLM model for '${slug}' (leave blank to use global default):`, current || '');
+      if (next === null) return;
+      await api(`/projects/${encodeURIComponent(slug)}/model`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ llm_model: next })
+      });
+      refreshAll();
+    }
+
+    async function setProjectRagLinks(slug, currentList) {
+      const next = prompt(
+        `Linked external RAG project slugs for '${slug}' (comma-separated, leave blank to clear):`,
+        (currentList || []).join(', ')
+      );
+      if (next === null) return;
+      const links = next.split(',').map(s => s.trim()).filter(Boolean);
+      await api(`/projects/${encodeURIComponent(slug)}/rag-projects`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extra_rag_projects: links })
+      });
+      refreshAll();
+    }
+
+    async function deleteProject(slug) {
+      if (!confirm(`Delete project '${slug}' and its API keys/Qdrant collection?`)) return;
+      await api(`/projects/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      refreshAll();
+    }
+
+    async function loadProjectMembers() {
+      const slug = document.getElementById('access-proj').value;
+      const tbody = document.querySelector('#access-table tbody');
+      if (!slug) {
+        tbody.replaceChildren(el('tr', {}, el('td', { colSpan: 4, text: 'No project selected.' })));
+        return;
+      }
+      const members = await api(`/projects/${encodeURIComponent(slug)}/members`);
+      if (!members.length) {
+        tbody.replaceChildren(el('tr', {}, el('td', { colSpan: 4, text: 'No explicit user grants for this project.' })));
+        return;
+      }
+      tbody.replaceChildren(
+        ...members.map(m =>
+          el('tr', {}, [
+            el('td', {}, el('code', { text: m.user_identifier })),
+            el('td', { text: m.role }),
+            el('td', { text: m.granted_by }),
+            el('td', {}, el('button', {
+              className: 'danger',
+              text: 'Revoke',
+              onClick: () => revokeProjectAccess(slug, m.user_identifier)
+            }))
+          ])
+        )
+      );
+    }
+
+    async function grantProjectAccess() {
+      const slug = document.getElementById('access-proj').value;
+      const user = document.getElementById('access-user').value.trim();
+      const role = document.getElementById('access-role').value;
+      if (!slug || !user) return;
+      const res = await api(`/projects/${encodeURIComponent(slug)}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_identifier: user, role })
+      });
+      document.getElementById('access-user').value = '';
+      document.getElementById('access-status').textContent = `Granted ${res.role} access to ${res.user_identifier} on ${slug} (WebUI sync: ${res.webui_sync}).`;
+      refreshAll();
+    }
+
+    async function revokeProjectAccess(slug, userIdentifier) {
+      if (!confirm(`Revoke '${userIdentifier}' access from '${slug}'?`)) return;
+      const res = await api(`/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(userIdentifier)}`, {
+        method: 'DELETE'
+      });
+      document.getElementById('access-status').textContent = `Revoked ${userIdentifier} from ${slug} (WebUI sync: ${res.webui_sync}, revoked keys: ${res.revoked_keys ?? 0}).`;
+      refreshAll();
+    }
+
+    function focusProjectAccess(slug) {
+      const sel = document.getElementById('access-proj');
+      sel.value = slug;
+      loadProjectMembers();
+      document.getElementById('project-access-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    async function createKey() {
+      const scopes = [];
+      if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
+      if (document.getElementById('key-scope-images').checked) scopes.push('images');
+      if (document.getElementById('key-scope-ingest').checked) scopes.push('ingest');
+      const res = await api('/keys', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_slug: document.getElementById('key-proj').value,
+          label: document.getElementById('key-label').value,
+          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10),
+          scopes: scopes.length ? scopes : ['chat']
+        })
+      });
+      const out = document.getElementById('key-output');
+      out.style.display = 'block';
+      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key + '\nScopes: ' + (res.scopes || []).join(', ');
+      refreshAll();
+    }
+
+    async function revokeKey(id) {
+      await api(`/keys/${id}`, { method: 'DELETE' });
+      refreshAll();
+    }
+
+    async function saveBackupDir() {
+      const res = await api('/settings/backup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backup_dir: document.getElementById('backup-dir').value })
+      });
+      showOps(res);
+    }
+
+    async function runBackup() {
+      const res = await api('/backups/run', { method: 'POST' });
+      showOps(res);
+      refreshAll();
+    }
+
+    async function restoreSelectedBackup() {
+      const name = document.getElementById('restore-backup-select').value;
+      if (!name) return alert('No backup bundle selected.');
+      if (!confirm(`Verify checksums and restore databases and Qdrant snapshots from '${name}'? This will overwrite current state.`)) return;
+      const res = await api('/backups/restore', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backup_name: name, restore_databases: true, restore_qdrant: true })
+      });
+      showOps(res);
+      refreshAll();
+    }
+
+      function updateSnapshotDownloadLink() {
+        const slug = document.getElementById('snap-proj').value;
+        const link = document.getElementById('download-proj-snap');
+        if (!slug) {
+          link.href = '#';
+          link.onclick = (e) => {
+            e.preventDefault();
+            alert('Select a RAG-enabled project first.');
+          };
+          return;
+        }
+        link.href = `/admin-console/api/projects/${encodeURIComponent(slug)}/snapshot/download`;
+        link.onclick = null;
+      }
+
+      async function exportProjectSnapshot() {
+        const slug = document.getElementById('snap-proj').value;
+        if (!slug) return alert('Select a RAG-enabled project first.');
+        const res = await api(`/projects/${encodeURIComponent(slug)}/snapshot/export`, { method: 'POST' });
+        updateSnapshotDownloadLink();
+        showOps(res);
+      }
+
+      async function uploadSnapshot() {
+        const slug = document.getElementById('snap-proj').value;
+        if (!slug) return alert('Select a RAG-enabled project first.');
+        const f = document.getElementById('snap-file').files[0];
+        if (!f) return alert('Select a .snapshot file first.');
+        const fd = new FormData();
+        fd.append('file', f);
+        const res = await api(`/projects/${encodeURIComponent(slug)}/snapshot/upload`, { method: 'POST', body: fd });
+        showOps(res);
+      }
+
+      function renderIngestMode() {
+        const kind = document.getElementById('ingest-kind').value;
+        document.getElementById('ingest-plugin-wrap').style.display = kind === 'plugin' ? 'block' : 'none';
+        document.getElementById('ingest-pipeline-wrap').style.display = kind === 'pipeline_yaml' ? 'block' : 'none';
+        document.getElementById('ingest-script-wrap').style.display = kind === 'script' ? 'block' : 'none';
+      }
+
+      function renderPluginFields() {
+        const pid = document.getElementById('conn-type').value;
+        const plugin = loadedPlugins.find(p => p.id === pid);
+        const container = document.getElementById('plugin-dynamic-fields');
+        if (!plugin) {
+          container.replaceChildren();
+          return;
+        }
+        const props = (plugin.config_schema && plugin.config_schema.properties) || {};
+        const secrets = new Set(plugin.secret_fields || []);
+        const nodes = [];
+        for (const [key, spec] of Object.entries(props)) {
+          nodes.push(el('label', { text: spec.title || key }));
+          if (spec.type === 'boolean') {
+            const sel = el('select', { 'data-plugin-field': key }, [
+              el('option', { value: 'true', text: 'true' }),
+              el('option', { value: 'false', text: 'false' })
+            ]);
+            sel.value = spec.default === false ? 'false' : 'true';
+            nodes.push(sel);
+          } else {
+            const inpType = (secrets.has(key) || spec.format === 'password') ? 'password' : (spec.type === 'integer' ? 'number' : 'text');
+            const inp = el('input', {
+              type: inpType,
+              'data-plugin-field': key,
+              'data-field-type': spec.type || 'string',
+              placeholder: spec.description || '',
+              value: spec.default !== undefined ? String(spec.default) : ''
+            });
+            nodes.push(inp);
+          }
+        }
+        container.replaceChildren(...nodes);
+      }
+
+      function collectPluginConfig() {
+        const cfg = {};
+        document.querySelectorAll('#plugin-dynamic-fields [data-plugin-field]').forEach(node => {
+          const key = node.getAttribute('data-plugin-field');
+          const ftype = node.getAttribute('data-field-type');
+          if (node.tagName === 'SELECT') cfg[key] = node.value === 'true';
+          else if (ftype === 'integer') cfg[key] = parseInt(node.value || '0', 10);
+          else cfg[key] = node.value;
+        });
+        return cfg;
+      }
+
+      function buildIngestPayload() {
+        const kind = document.getElementById('ingest-kind').value;
+        const chunkStrategy = document.getElementById('ingest-chunk-strategy').value;
+        return {
+          project_slug: document.getElementById('conn-proj').value,
+          name: document.getElementById('conn-name').value || 'Ingest Source',
+          source_kind: kind,
+          plugin_id: kind === 'plugin' ? document.getElementById('conn-type').value : '',
+          config: kind === 'plugin' ? collectPluginConfig() : (kind === 'script' ? JSON.parse(document.getElementById('script-config').value || '{}') : {}),
+          pipeline_spec: kind === 'pipeline_yaml' ? document.getElementById('pipeline-yaml').value : '',
+          script_name: kind === 'script' ? document.getElementById('ingest-script-select').value : '',
+          chunk_config: { strategy: chunkStrategy, chunk_size: 1200, overlap: 200 },
+          sync_mode: document.getElementById('ingest-sync-mode').value,
+          schedule_cron: document.getElementById('ingest-schedule').value
+        };
+      }
+
+      async function createIngestSource() {
+        await api('/ingest-sources', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildIngestPayload())
+        });
+        refreshAll();
+      }
+
+      async function dryRunIngestSource() {
+        const p = buildIngestPayload();
+        const res = await api('/ingest-sources/dry-run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_kind: p.source_kind,
+            plugin_id: p.plugin_id,
+            config: p.config,
+            pipeline_spec: p.pipeline_spec,
+            script_name: p.script_name,
+            limit: 5
+          })
+        });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+      }
+
+      function editSource(id) {
+        const s = loadedSources.find(x => x.id === id);
+        if (!s) return;
+        document.getElementById('edit-source-id').value = String(s.id);
+        document.getElementById('edit-source-title').textContent = `#${s.id} (${s.project_slug})`;
+        document.getElementById('edit-source-name').value = s.name || '';
+        document.getElementById('edit-source-sync-mode').value = s.sync_mode || 'incremental';
+        document.getElementById('edit-source-schedule').value = s.schedule_cron || '';
+        document.getElementById('edit-source-enabled').value = s.enabled === false ? 'false' : 'true';
+        const pipeWrap = document.getElementById('edit-source-pipeline-wrap');
+        if (s.source_kind === 'pipeline_yaml') {
+          pipeWrap.style.display = 'block';
+          document.getElementById('edit-source-pipeline').value = s.pipeline_spec || '';
+        } else {
+          pipeWrap.style.display = 'none';
+          document.getElementById('edit-source-pipeline').value = '';
+        }
+        const box = document.getElementById('edit-source-box');
+        box.style.display = 'block';
+        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      function cancelSourceEdit() {
+        document.getElementById('edit-source-box').style.display = 'none';
+      }
+
+      async function saveSourceEdit() {
+        const id = parseInt(document.getElementById('edit-source-id').value, 10);
+        if (!id) return;
+        const s = loadedSources.find(x => x.id === id);
+        const payload = {
+          name: document.getElementById('edit-source-name').value,
+          sync_mode: document.getElementById('edit-source-sync-mode').value,
+          schedule_cron: document.getElementById('edit-source-schedule').value,
+          enabled: document.getElementById('edit-source-enabled').value === 'true'
+        };
+        if (s && s.source_kind === 'pipeline_yaml') {
+          payload.pipeline_spec = document.getElementById('edit-source-pipeline').value;
+        }
+        await api(`/ingest-sources/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        cancelSourceEdit();
+        refreshAll();
+      }
+
+      async function syncSource(id) {
+        const res = await api(`/ingest-sources/${id}/sync?async_mode=true`, { method: 'POST' });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+        setTimeout(refreshAll, 1200);
+      }
+
+      async function deleteSource(id) {
+        if (!confirm(`Delete ingest source #${id}?`)) return;
+        const deleteVectors = confirm('Also delete Qdrant vectors indexed by this source?\nOK = Delete vectors too, Cancel = Keep existing vectors');
+        await api(`/ingest-sources/${id}?delete_vectors=${deleteVectors}`, { method: 'DELETE' });
+        refreshAll();
+      }
+
+      function showJobLog(j) {
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify({
+          id: j.id,
+          project_slug: j.project_slug,
+          trigger_type: j.trigger_type,
+          status: j.status,
+          stats: j.stats,
+          log_excerpt: j.log_excerpt
+        }, null, 2);
+      }
+
+      async function loadProjectIndexedDocs() {
+        const slug = document.getElementById('conn-proj').value;
+        if (!slug) return alert('Select a project first.');
+        const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/documents?limit=200`);
+        const docs = res.documents || [];
+        document.getElementById('indexed-docs-status').textContent = `Showing ${docs.length} indexed document(s) in '${slug}'.`;
+        const tbl = document.getElementById('indexed-docs-table');
+        tbl.style.display = 'table';
+        const tbody = tbl.querySelector('tbody');
+        if (!docs.length) {
+          tbody.replaceChildren(
+            el('tr', {}, el('td', { colSpan: 4, style: 'color:var(--muted)', text: 'No indexed documents tracked for this project.' }))
+          );
+          return;
+        }
+        tbody.replaceChildren(
+          ...docs.map(d =>
+            el('tr', {}, [
+              el('td', {}, el('code', { text: d.doc_id })),
+              el('td', { text: d.filename || '-' }),
+              el('td', { text: String(d.chunk_count ?? 0) }),
+              el('td', {}, el('button', {
+                className: 'danger',
+                text: 'Delete',
+                onClick: () => deleteIndexedDoc(slug, d.doc_id, d.source_key)
+              }))
+            ])
+          )
+        );
+      }
+
+      async function deleteIndexedDoc(slug, docId, sourceKey) {
+        if (!confirm(`Delete indexed document '${docId}' from '${slug}'?`)) return;
+        const qs = sourceKey ? `?source_key=${encodeURIComponent(sourceKey)}` : '';
+        await api(`/projects/${encodeURIComponent(slug)}/ingest/documents/${encodeURIComponent(docId)}${qs}`, {
+          method: 'DELETE'
+        });
+        await loadProjectIndexedDocs();
+        refreshAll();
+      }
+
+      async function resetProjectIndex(clearVectors) {
+        const slug = document.getElementById('conn-proj').value;
+        if (!slug) return alert('Select a project first.');
+        const actionMsg = clearVectors
+          ? `Clear deduplication cache AND delete all Qdrant vectors for '${slug}'?`
+          : `Reset content-hash cache (keeping vectors until next re-sync) for '${slug}'?`;
+        if (!confirm(actionMsg)) return;
+        const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/reset?clear_vectors=${Boolean(clearVectors)}`, {
+          method: 'POST'
+        });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+        await loadProjectIndexedDocs();
+        refreshAll();
+      }
+
+      async function uploadProjectFile() {
+        const proj = document.getElementById('conn-proj').value;
+        const f = document.getElementById('direct-upload-file').files[0];
+        if (!proj || !f) return alert('Select a project and a file first.');
+        const fd = new FormData();
+        fd.append('file', f);
+        fd.append('chunk_strategy', document.getElementById('ingest-chunk-strategy').value);
+        const res = await api(`/projects/${encodeURIComponent(proj)}/ingest/files`, { method: 'POST', body: fd });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+        refreshAll();
+      }
+
+      function toggleBackendAdminField() {
+        const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
+        document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
+      }
+
+      async function saveLlmBackend() {
+        const res = await api('/llm-backend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            backend_type: document.getElementById('llm-backend-type').value,
+            api_base_url: document.getElementById('llm-api-base-url').value,
+            api_key: document.getElementById('llm-api-key').value || null,
+            health_url: document.getElementById('llm-health-url').value,
+            backend_admin_url: document.getElementById('llm-backend-admin-url').value,
+          })
+        });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function saveImageBackend() {
+        const res = await api('/image-backend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_base_url: document.getElementById('image-api-base-url').value,
+            default_model: document.getElementById('image-default-model').value || 'ark-image',
+            api_key: document.getElementById('image-api-key').value || null
+          })
+        });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function saveDefaultLlm() {
+        const res = await api('/models/default', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_name: document.getElementById('default-llm-model').value })
+        });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function uploadModelArchive() {
+        const f = document.getElementById('model-archive-file').files[0];
+        if (!f) return alert('Select a model archive (.tar.gz / .tar / .zip) first.');
+        const fd = new FormData();
+        fd.append('file', f);
+        const res = await api('/models/upload', { method: 'POST', body: fd });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function switchPlanModel(modelDir, modelType) {
+        const res = await api('/models/switch-plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_dir: modelDir, model_type: modelType || 'llm' })
+        });
+        showModelOps(res);
+      }
+
+      async function deleteLocalModel(modelDir) {
+        if (!confirm(`Delete local model directory '${modelDir}' from /models?`)) return;
+        const res = await api(`/models/${encodeURIComponent(modelDir)}`, { method: 'DELETE' });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      function exportAuditJson() {
+        const blob = new Blob([JSON.stringify(loadedAudits || [], null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'ark-audit-export.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function showModelOps(obj) {
+        const out = document.getElementById('model-ops-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(obj, null, 2);
+      }
+
+      function showOps(obj) {
+        const out = document.getElementById('ops-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(obj, null, 2);
+      }
+
+      refreshAll();
+  </script>
+</body>
+
+</html>

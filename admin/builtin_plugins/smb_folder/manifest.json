@@ -1,0 +1,30 @@
+{
+  "id": "smb_folder",
+  "name": "Mounted SMB / NFS Folder",
+  "version": "1.0.0",
+  "ark_protocol": "1",
+  "runtime": "python3",
+  "entrypoint": "run.py",
+  "builtin": true,
+  "supports_incremental": true,
+  "secret_fields": [],
+  "description": "Recursively ingests supported documents from a mounted local, SMB, or NFS directory.",
+  "config_schema": {
+    "type": "object",
+    "required": ["path"],
+    "properties": {
+      "path": {
+        "type": "string",
+        "title": "Folder Path",
+        "description": "Mounted directory path inside ark-admin (e.g. /shares/project_alpha)",
+        "default": "/shares/project_alpha"
+      },
+      "extensions": {
+        "type": "string",
+        "title": "Extensions (comma-separated, optional)",
+        "description": "Leave blank for default (.pdf,.docx,.doc,.xlsx,.pptx,.txt,.md,.csv,.html)",
+        "default": ""
+      }
+    }
+  }
+}

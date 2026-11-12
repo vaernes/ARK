@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <clipPath id="ark-shield-clip">
+      <path d="M61.3 7Q64 6 66.7 7L111 23.4Q114 24.5 114 27.7V63C114 92.5 92 112 65.5 121.4Q64 122 62.5 121.4C36 112 14 92.5 14 63V27.7Q14 24.5 17 23.4Z"/>
+    </clipPath>
+    <linearGradient id="ark-rim" x1="18" y1="10" x2="110" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#CBD5E1"/>
+      <stop offset="55%" stop-color="#64748B"/>
+      <stop offset="100%" stop-color="#475569"/>
+    </linearGradient>
+  </defs>
+  <!-- Faceted Steel Shield -->
+  <g clip-path="url(#ark-shield-clip)">
+    <rect x="12" y="4" width="104" height="120" fill="#0A0E17"/>
+    <path d="M64 4H116V124H64V4Z" fill="#1E293B" fill-opacity="0.72"/>
+  </g>
+  <path d="M61.3 7Q64 6 66.7 7L111 23.4Q114 24.5 114 27.7V63C114 92.5 92 112 65.5 121.4Q64 122 62.5 121.4C36 112 14 92.5 14 63V27.7Q14 24.5 17 23.4Z" stroke="url(#ark-rim)" stroke-width="3.8"/>
+  <!-- Architectural 'A' Monogram -->
+  <path d="M60.2 24H67.8L93.4 88H81.2L64 45L46.8 88H34.6L60.2 24Z" fill="#E2E8F0"/>
+  <!-- Air-Gapped Tech Cyan Retrieval Crossbar -->
+  <path d="M58 66.5H70L73.4 75H54.6L58 66.5Z" fill="#00E5FF"/>
+  <!-- Signal Amber Air-Gap Isolation Seal -->
+  <path d="M46 96.5L64 103.7L82 96.5L84 101.5L64 109.5L44 101.5Z" fill="#F55A00"/>
+</svg>

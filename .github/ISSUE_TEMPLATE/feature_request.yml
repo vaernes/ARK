@@ -1,0 +1,26 @@
+name: Feature Request
+description: Propose a new capability or enhancement for ARK
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What operational, security, or RAG problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the desired behavior, API, or UI changes.
+    validations:
+      required: true
+  - type: checkboxes
+    id: airgap
+    attributes:
+      label: Air-Gap Compatibility
+      options:
+        - label: This feature can operate 100% offline with zero external network calls or telemetry.
+          required: true

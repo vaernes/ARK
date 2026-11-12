@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARK — User API Key Portal</title>
+  <link rel="icon" type="image/svg+xml" href="/portal/static/ark-logo.svg" />
+  <style>
+    :root {
+      --void: #0A0E17;
+      --shield: #1E293B;
+      --border: #2E3D52;
+      --amber: #F55A00;
+      --amber-soft: rgba(245, 90, 0, 0.16);
+      --cyan: #00E5FF;
+      --cyan-soft: rgba(0, 229, 255, 0.14);
+      --text: #E2E8F0;
+      --gray: #64748B;
+      --ok: #22C55E;
+      --err: #EF4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      background: var(--void);
+      color: var(--text);
+      padding: 24px;
+      min-height: 100vh;
+    }
+
+    .topbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 20px;
+      margin-bottom: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand img {
+      width: 44px;
+      height: 48px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.3rem;
+      letter-spacing: 0.08em;
+      color: var(--text);
+    }
+
+    .brand small {
+      display: block;
+      color: var(--gray);
+      font-size: 0.78rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .nav-strip {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      background: var(--void);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      color: var(--text);
+    }
+
+    .pill strong {
+      color: var(--cyan);
+    }
+
+    a.nav-link {
+      text-decoration: none;
+      background: var(--void);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    a.nav-link:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+
+    .card.cyan-accent {
+      border-top: 3px solid var(--cyan);
+    }
+
+    .card.amber-accent {
+      border-top: 3px solid var(--amber);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 0.98rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--cyan);
+    }
+
+    .card.amber-accent h2 {
+      color: var(--amber);
+    }
+
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--gray);
+      margin: 10px 0 4px;
+      font-weight: 600;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 9px 11px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--void);
+      color: var(--text);
+      font-size: 0.88rem;
+    }
+
+    input:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--cyan);
+    }
+
+    button {
+      margin-top: 12px;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 7px;
+      background: var(--cyan);
+      color: var(--void);
+      font-weight: 700;
+      font-size: 0.84rem;
+      cursor: pointer;
+    }
+
+    button.amber {
+      background: var(--amber);
+      color: #fff;
+    }
+
+    button.danger {
+      background: var(--err);
+      color: #fff;
+      padding: 4px 9px;
+      margin: 0;
+      font-size: 0.75rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 0.83rem;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      color: var(--gray);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.05em;
+    }
+
+    code {
+      background: var(--void);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--cyan);
+      font-size: 0.8rem;
+    }
+
+    .badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .rag {
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+    }
+
+    .clean {
+      background: var(--amber-soft);
+      color: #FFB38A;
+      border: 1px solid rgba(245, 90, 0, 0.4);
+    }
+
+    pre {
+      background: var(--void);
+      border: 1px solid var(--border);
+      padding: 10px;
+      border-radius: 7px;
+      overflow-x: auto;
+      font-size: 0.78rem;
+      color: var(--text);
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/portal/static/ark-logo.svg" alt="ARK Shield Logo" />
+      <div>
+        <h1>ARK USER PORTAL</h1>
+        <small>Self-Service Project API Keys &amp; Endpoints</small>
+      </div>
+    </div>
+    <div class="nav-strip">
+      <div class="pill">ARK <strong id="ark-version">...</strong></div>
+      <div class="pill">User: <strong id="me-user">...</strong></div>
+      <div class="pill">Groups: <strong id="me-groups">-</strong></div>
+      <a class="nav-link" href="/">Open WebUI Chat</a>
+      <a class="nav-link" href="/create/">Create Studio</a>
+      <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
+      <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
+    </div>
+  </header>
+
+  <div id="ui-alert"
+    style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:16px; font-size:0.85rem;">
+  </div>
+
+  <div class="grid">
+    <div class="card cyan-accent">
+      <h2>My Accessible Projects</h2>
+      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Use any project's Base URL below in IDE plugins
+        (Continue/Cline), Office add-ins, or scripts with your personal <code>ark_proj_*</code> key.</p>
+      <table id="proj-table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Mode</th>
+            <th>Role</th>
+            <th>OpenAI Base URL</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card amber-accent">
+      <h2>Issue Personal API Key</h2>
+      <label>Project</label>
+      <select id="key-proj"></select>
+      <label>Key Label</label>
+      <input id="key-label" placeholder="VS Code Continue / Word Add-in" />
+      <label>Rate Limit (RPM)</label>
+      <input id="key-rpm" type="number" value="60" min="1" max="6000" />
+      <label>Key Scopes</label>
+      <div style="display:flex;gap:14px;align-items:center;margin:4px 0 8px;font-size:0.84rem;">
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-chat" type="checkbox" checked style="width:auto;" /> chat
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-images" type="checkbox" style="width:auto;" /> images
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
+        </label>
+      </div>
+      <div id="key-scope-hint" style="display:none;font-size:0.78rem;color:var(--gray);margin-bottom:8px;">
+        Read-only (<code>viewer</code>) members can issue <code>chat</code> keys only.
+      </div>
+      <button class="amber" onclick="createKey()">Generate API Key</button>
+      <pre id="key-output" style="display:none"></pre>
+
+      <h2 style="margin-top:22px;">My Active API Keys</h2>
+      <table id="key-table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Label</th>
+            <th>Scopes</th>
+            <th>Prefix</th>
+            <th>RPM</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer id="ark-footer"
+    style="margin-top:22px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
+    ARK User Portal &bull; Apache-2.0 License
+  </footer>
+
+  <script>
+    const showError = (msg) => {
+      const el = document.getElementById('ui-alert');
+      el.textContent = msg;
+      el.style.display = msg ? 'block' : 'none';
+    };
+
+    const api = (path, opts = {}) => fetch('/portal/api' + path, opts).then(async r => {
+      if (!r.ok) {
+        const text = await r.text();
+        showError('API Error: ' + text);
+        throw new Error(text);
+      }
+      showError('');
+      return r.json();
+    });
+
+    function el(tag, attrs = {}, children = []) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'className') node.className = v;
+        else if (k === 'style') node.setAttribute('style', v);
+        else if (k === 'text') node.textContent = v;
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
+        else node.setAttribute(k, v);
+      }
+      for (const child of Array.isArray(children) ? children : [children]) {
+        if (child === null || child === undefined) continue;
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
+    let portalProjects = [];
+
+    function updateScopeControlsForProject() {
+      const slug = document.getElementById('key-proj').value;
+      const proj = portalProjects.find(p => p.slug === slug);
+      const isViewer = Boolean(proj && proj.user_role === 'viewer');
+      const ingestBox = document.getElementById('key-scope-ingest');
+      const hintEl = document.getElementById('key-scope-hint');
+      if (isViewer) {
+        ingestBox.checked = false;
+        ingestBox.disabled = true;
+        hintEl.style.display = 'block';
+      } else {
+        ingestBox.disabled = false;
+        hintEl.style.display = 'none';
+      }
+    }
+
+    async function refresh() {
+      const [ver, me, projects, keys] = await Promise.all([api('/version'), api('/me'), api('/projects'), api('/keys')]);
+      portalProjects = projects || [];
+      const verLabel = `v${ver.version}`;
+      document.getElementById('ark-version').textContent = verLabel;
+      document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel} • ${ver.license} License • Strict Air-Gap Mode`;
+      document.getElementById('me-user').textContent = me.user;
+      document.getElementById('me-groups').textContent = me.groups.length ? me.groups.join(', ') : 'none';
+      if (me.is_admin) {
+        document.getElementById('admin-link').style.display = 'inline-block';
+      }
+
+      const origin = window.location.origin;
+      const projBody = document.querySelector('#proj-table tbody');
+      if (projects.length) {
+        projBody.replaceChildren(
+          ...projects.map(p =>
+            el('tr', {}, [
+              el('td', { text: p.name }),
+              el('td', {}, el('span', {
+                className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`,
+                text: p.rag_enabled
+                  ? ((p.extra_rag_projects && p.extra_rag_projects.length)
+                    ? `RAG (+${p.extra_rag_projects.join(', ')})`
+                    : 'RAG')
+                  : 'Clean'
+              })),
+              el('td', { text: p.user_role || 'member' }),
+              el('td', {}, el('code', { text: `${origin}/projects/${p.slug}/v1` }))
+            ])
+          )
+        );
+      } else {
+        projBody.replaceChildren(
+          el('tr', {}, el('td', {
+            colspan: '4',
+            style: 'color:var(--gray)',
+            text: 'No projects assigned to your groups yet. Ask an administrator to add your group or deploy a project.'
+          }))
+        );
+      }
+
+      const projSelect = document.getElementById('key-proj');
+      const prevSlug = projSelect.value;
+      projSelect.replaceChildren(
+        ...projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
+      );
+      if (prevSlug && projects.some(p => p.slug === prevSlug)) {
+        projSelect.value = prevSlug;
+      }
+      updateScopeControlsForProject();
+
+      const keyBody = document.querySelector('#key-table tbody');
+      if (keys.length) {
+        keyBody.replaceChildren(
+          ...keys.map(k =>
+            el('tr', {}, [
+              el('td', { text: k.project_slug }),
+              el('td', { text: k.label }),
+              el('td', {}, el('code', { text: (k.scopes || ['chat']).join(', ') })),
+              el('td', {}, el('code', { text: `${k.key_prefix}...` })),
+              el('td', { text: String(k.rate_limit_rpm) }),
+              el('td', {}, el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeKey(k.id) }))
+            ])
+          )
+        );
+      } else {
+        keyBody.replaceChildren(
+          el('tr', {}, el('td', { colspan: '6', style: 'color:var(--gray)', text: 'No active keys issued yet.' }))
+        );
+      }
+    }
+
+    async function createKey() {
+      const proj = document.getElementById('key-proj').value;
+      if (!proj) return showError('No accessible project selected.');
+      const scopes = [];
+      if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
+      if (document.getElementById('key-scope-images').checked) scopes.push('images');
+      const ingestEl = document.getElementById('key-scope-ingest');
+      if (!ingestEl.disabled && ingestEl.checked) scopes.push('ingest');
+      const res = await api('/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_slug: proj,
+          label: document.getElementById('key-label').value || 'personal-key',
+          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10) || 60,
+          scopes: scopes.length ? scopes : ['chat']
+        })
+      });
+      const out = document.getElementById('key-output');
+      out.style.display = 'block';
+      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key + '\nScopes: ' + (res.scopes || []).join(', ') + '\n\nBase URL: ' + window.location.origin + '/projects/' + res.project_slug + '/v1';
+      refresh();
+    }
+
+    async function revokeKey(id) {
+      await api(`/keys/${id}`, { method: 'DELETE' });
+      refresh();
+    }
+
+    document.getElementById('key-proj').addEventListener('change', updateScopeControlsForProject);
+    refresh();
+  </script>
+</body>
+
+</html>
