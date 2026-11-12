@@ -1,0 +1,61 @@
+name: ARK CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-airgap-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax check
+        run: bash -n scripts/*.sh
+
+      - name: Air-gap & offline-flag invariants check
+        run: |
+          python3 - <<'EOF'
+          import pathlib, re, sys
+
+          html = pathlib.Path("admin/static/index.html").read_text()
+          external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', html, re.I)
+          if external_urls:
+              print("ERROR: External URLs found in admin/static/index.html:", external_urls)
+              sys.exit(1)
+
+          compose = pathlib.Path("docker-compose.yml").read_text()
+          required_flags = [
+              ("HF_HUB_OFFLINE", "1"),
+              ("TRANSFORMERS_OFFLINE", "1"),
+              ("DO_NOT_TRACK", "1"),
+              ("OFFLINE_MODE", "true"),
+              ("QDRANT__TELEMETRY_DISABLED", "true"),
+              ("VLLM_NO_USAGE_STATS", "1"),
+          ]
+          missing = [
+              f"{k}={v}" for k, v in required_flags
+              if not re.search(rf'{k}\s*[:=]\s*["\']?{v}["\']?', compose)
+          ]
+          if missing:
+              print("ERROR: Missing offline/telemetry-disable flags in docker-compose.yml:", missing)
+              sys.exit(1)
+
+          caddyfile = pathlib.Path("config/caddy/Caddyfile").read_text()
+          if "ocsp_stapling off" not in caddyfile:
+              print("ERROR: Caddyfile missing 'ocsp_stapling off'")
+              sys.exit(1)
+
+          print("Air-gap invariants check passed.")
+          EOF
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: lint-and-airgap-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run GPU-less integration test suite
+        run: ./scripts/test-integration.sh
