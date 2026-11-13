@@ -50,6 +50,7 @@ body {
 .bg-gray-50,
 .bg-gray-100,
 .dark\:bg-gray-900,
+
 .dark\:bg-gray-950,
 [class*="bg-white/"],
 [class*="bg-gray-50/"],
@@ -58,8 +59,8 @@ body {
 }
 
 /* Eliminate Open WebUI's white blurred navbar gradient overlay in light mode */
-nav > div.bg-gradient-to-b,
-nav > div[class*="from-white"],
+nav>div.bg-gradient-to-b,
+nav>div[class*="from-white"],
 [class*="from-white"] {
   background: linear-gradient(to bottom, rgba(10, 14, 23, 0.96) 0%, rgba(10, 14, 23, 0.85) 60%, transparent 100%) !important;
   --tw-gradient-from: var(--ark-void) !important;
@@ -69,6 +70,7 @@ nav > div[class*="from-white"],
 }
 
 .bg-gray-200,
+
 .bg-gray-800,
 .dark\:bg-gray-800,
 .dark\:bg-gray-850,
@@ -100,6 +102,7 @@ nav > div[class*="from-white"],
 .text-gray-900,
 .text-gray-800,
 .text-gray-700,
+
 .dark\:text-white,
 .dark\:text-gray-100,
 .dark\:text-gray-200 {
@@ -175,6 +178,7 @@ nav button:hover {
 
 /* Chat Input & Composer */
 #chat-input-container,
+
 #message-input-container,
 form .rounded-3xl {
   background-color: var(--ark-shield) !important;
