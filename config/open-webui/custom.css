@@ -13,6 +13,7 @@
 :root,
 html.dark,
 html.light {
+  color-scheme: dark;
   --ark-void: #0A0E17;
   --ark-shield: #1E293B;
   --ark-shield-alt: #141C2B;
@@ -20,6 +21,7 @@ html.light {
   --ark-amber: #F55A00;
   --ark-cyan: #00E5FF;
   --ark-text: #E2E8F0;
+  --ark-muted: #94A3B8;
   --ark-gray: #64748B;
 
   --color-gray-50: #F1F5F9;
@@ -40,48 +42,175 @@ html,
 body {
   background-color: var(--ark-void) !important;
   color: var(--ark-text) !important;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
 
-/* Ensure light-mode classes also render in ARK Deep Void / Steel Shield */
+/* Override light-mode surfaces & translucent white gradients */
 .bg-white,
 .bg-gray-50,
 .bg-gray-100,
 .dark\:bg-gray-900,
-.dark\:bg-gray-950 {
+.dark\:bg-gray-950,
+[class*="bg-white/"],
+[class*="bg-gray-50/"],
+[class*="bg-gray-900/"] {
   background-color: var(--ark-void) !important;
 }
 
+/* Eliminate Open WebUI's white blurred navbar gradient overlay in light mode */
+nav > div.bg-gradient-to-b,
+nav > div[class*="from-white"],
+[class*="from-white"] {
+  background: linear-gradient(to bottom, rgba(10, 14, 23, 0.96) 0%, rgba(10, 14, 23, 0.85) 60%, transparent 100%) !important;
+  --tw-gradient-from: var(--ark-void) !important;
+  --tw-gradient-via: rgba(10, 14, 23, 0.88) !important;
+  --tw-gradient-to: transparent !important;
+  filter: none !important;
+}
+
 .bg-gray-200,
-.dark\:bg-gray-800 {
+.bg-gray-800,
+.dark\:bg-gray-800,
+.dark\:bg-gray-850,
+.bg-gray-850 {
   background-color: var(--ark-shield) !important;
 }
 
-.text-gray-900,
-.text-gray-800,
-.text-gray-700,
-.text-black {
+/* User message bubbles */
+.user-message .rounded-3xl,
+[id^="message-"] .rounded-3xl {
+  background-color: var(--ark-shield) !important;
+  border: 1px solid var(--ark-border) !important;
   color: var(--ark-text) !important;
 }
 
+/* Borders */
+.border-gray-50,
+.border-gray-100,
+.border-gray-200,
+.border-gray-300,
+.dark\:border-gray-700,
+.dark\:border-gray-800,
+.dark\:border-gray-850 {
+  border-color: var(--ark-border) !important;
+}
+
+/* Typography contrast */
+.text-black,
+.text-gray-900,
+.text-gray-800,
+.text-gray-700,
+.dark\:text-white,
+.dark\:text-gray-100,
+.dark\:text-gray-200 {
+  color: var(--ark-text) !important;
+}
+
+.text-gray-600,
+.text-gray-500,
+.dark\:text-gray-400,
+.dark\:text-gray-300 {
+  color: var(--ark-muted) !important;
+}
+
+/* Markdown / Prose content inside chat messages (fixes light-mode dark gray text) */
+.prose,
+.markdown-prose,
+#response-content-container {
+  --tw-prose-body: var(--ark-text) !important;
+  --tw-prose-headings: #FFFFFF !important;
+  --tw-prose-lead: var(--ark-muted) !important;
+  --tw-prose-links: var(--ark-cyan) !important;
+  --tw-prose-bold: #FFFFFF !important;
+  --tw-prose-counters: var(--ark-muted) !important;
+  --tw-prose-bullets: var(--ark-cyan) !important;
+  --tw-prose-hr: var(--ark-border) !important;
+  --tw-prose-quotes: var(--ark-text) !important;
+  --tw-prose-quote-borders: var(--ark-amber) !important;
+  --tw-prose-code: var(--ark-cyan) !important;
+  --tw-prose-pre-code: var(--ark-text) !important;
+  --tw-prose-pre-bg: var(--ark-shield-alt) !important;
+  --tw-prose-th-borders: var(--ark-border) !important;
+  --tw-prose-td-borders: var(--ark-border) !important;
+  color: var(--ark-text) !important;
+}
+
+.prose p,
+.prose li,
+.prose span,
+.prose strong,
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.markdown-prose p,
+.markdown-prose li,
+.markdown-prose span,
+.markdown-prose strong,
+#response-content-container p,
+#response-content-container li,
+#response-content-container span {
+  color: var(--ark-text) !important;
+}
+
+/* Top Navbar */
+nav {
+  background: rgba(10, 14, 23, 0.94) !important;
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--ark-border) !important;
+}
+
 /* Sidebar & Navigation Panels */
-nav,
 #sidebar,
 aside {
   background-color: var(--ark-shield-alt) !important;
-  border-color: var(--ark-border) !important;
+  border-right: 1px solid var(--ark-border) !important;
+}
+
+#sidebar a:hover,
+#sidebar button:hover,
+nav button:hover {
+  background-color: rgba(30, 41, 59, 0.85) !important;
 }
 
 /* Chat Input & Composer */
 #chat-input-container,
-form textarea,
-.bg-gray-850,
-.dark\:bg-gray-850 {
+#message-input-container,
+form .rounded-3xl {
   background-color: var(--ark-shield) !important;
-  border-color: var(--ark-border) !important;
+  border: 1px solid var(--ark-border) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: var(--ark-text) !important;
+  transition: border-color 0.15s ease;
+}
+
+#chat-input-container:focus-within,
+#message-input-container:focus-within,
+form .rounded-3xl:focus-within {
+  border-color: var(--ark-cyan) !important;
+}
+
+#chat-input-container textarea,
+#chat-input-container [contenteditable="true"],
+#chat-input {
+  background-color: transparent !important;
   color: var(--ark-text) !important;
 }
 
+/* Menus, Popovers, Modals & Model Selector */
+[role="menu"],
+[role="listbox"],
+[role="dialog"],
+.tippy-box {
+  background-color: var(--ark-shield) !important;
+  border: 1px solid var(--ark-border) !important;
+  color: var(--ark-text) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5) !important;
+}
+
 /* Primary Buttons & Send / SSO CTA */
+#send-message-button,
 button[type="submit"],
 .bg-black,
 .dark\:bg-white {
@@ -91,6 +220,7 @@ button[type="submit"],
   border-color: var(--ark-cyan) !important;
 }
 
+#send-message-button:hover,
 button[type="submit"]:hover {
   opacity: 0.9;
 }
@@ -111,10 +241,21 @@ a:hover {
 pre,
 code {
   background-color: var(--ark-shield-alt) !important;
-  border-color: var(--ark-border) !important;
+  border: 1px solid var(--ark-border) !important;
+  color: var(--ark-text) !important;
+  border-radius: 6px;
 }
 
 /* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--ark-void);
+}
+
 ::-webkit-scrollbar-thumb {
   background: var(--ark-border) !important;
   border-radius: 6px;
