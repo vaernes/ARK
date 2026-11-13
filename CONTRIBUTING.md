@@ -41,10 +41,11 @@ python3 -m unittest discover -s tests -v
 ARK uses **CalVer (`YYYY.MM.PATCH`)** stored in [`VERSION`](VERSION).
 
 - Feature/bugfix PRs should update [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]`.
-- Maintainers bump versions with:
+- Maintainers can bump versions locally (updating `VERSION`, `README.md`, and build defaults):
   ```bash
-  ./scripts/bump-version.sh YYYY.MM.PATCH
+  ./scripts/bump-version.sh --update-changelog YYYY.MM.PATCH
   ```
+  or trigger the **ARK Bump Version** GitHub Action (`.github/workflows/bump-version.yml`) from the Actions tab.
 - Pushing a matching tag (`git tag -a vYYYY.MM.PATCH -m "Release vYYYY.MM.PATCH"`)
   triggers `.github/workflows/release.yml`.
 

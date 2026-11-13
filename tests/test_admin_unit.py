@@ -256,12 +256,24 @@ class TestVersionAndLicense(unittest.TestCase):
         version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
         self.assertRegex(version, r"^\d{4}\.(0[1-9]|1[0-2])\.\d+(-[0-9A-Za-z.-]+)?$")
 
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn(f"**Version:** `{version}`", readme)
+
         dockerfile = (REPO_ROOT / "admin" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn(f"ARG ARK_VERSION={version}", dockerfile)
         self.assertIn('org.opencontainers.image.licenses="Apache-2.0"', dockerfile)
 
+        llm_dockerfile = (REPO_ROOT / "llm-admin" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn(f"ARG ARK_VERSION={version}", llm_dockerfile)
+
+        llm_app = (REPO_ROOT / "llm-admin" / "app.py").read_text(encoding="utf-8")
+        self.assertIn(f'ARK_VERSION = os.environ.get("ARK_VERSION", "{version}")', llm_app)
+
         compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn(f"${{ARK_VERSION:-{version}}}", compose)
+
+        compose_llm = (REPO_ROOT / "docker-compose.llm.yml").read_text(encoding="utf-8")
+        self.assertIn(f"${{ARK_VERSION:-{version}}}", compose_llm)
 
         env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
         self.assertIn(f"ARK_VERSION={version}", env_example)
@@ -273,6 +285,84 @@ class TestVersionAndLicense(unittest.TestCase):
         self.assertIn("Apache License", license_text)
         self.assertIn("Version 2.0", license_text)
         self.assertTrue((REPO_ROOT / "NOTICE").is_file())
+
+    def test_bump_version_script_updates_readme_and_all_targets(self) -> None:
+        import shutil
+        import subprocess
+
+        rel_files = (
+            "VERSION",
+            "README.md",
+            "CHANGELOG.md",
+            "admin/version.py",
+            "admin/Dockerfile",
+            "llm-admin/Dockerfile",
+            "llm-admin/app.py",
+            "docker-compose.yml",
+            "docker-compose.llm.yml",
+            ".env.example",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            for rel in rel_files:
+                dst = tmp_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPO_ROOT / rel, dst)
+            script_dst = tmp_root / "scripts" / "bump-version.sh"
+            script_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / "scripts" / "bump-version.sh", script_dst)
+
+            proc = subprocess.run(
+                ["bash", str(script_dst), "--update-changelog", "2027.03.1"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((tmp_root / "VERSION").read_text(encoding="utf-8").strip(), "2027.03.1")
+            self.assertIn("**Version:** `2027.03.1`", (tmp_root / "README.md").read_text(encoding="utf-8"))
+            self.assertIn("## [2027.03.1]", (tmp_root / "CHANGELOG.md").read_text(encoding="utf-8"))
+            self.assertIn("v2027.03.1...HEAD", (tmp_root / "CHANGELOG.md").read_text(encoding="utf-8"))
+            self.assertIn('DEFAULT_VERSION = "2027.03.1"', (tmp_root / "admin/version.py").read_text(encoding="utf-8"))
+            self.assertIn("ARG ARK_VERSION=2027.03.1", (tmp_root / "admin/Dockerfile").read_text(encoding="utf-8"))
+            self.assertIn("ARG ARK_VERSION=2027.03.1", (tmp_root / "llm-admin/Dockerfile").read_text(encoding="utf-8"))
+            self.assertIn(
+                'ARK_VERSION = os.environ.get("ARK_VERSION", "2027.03.1")',
+                (tmp_root / "llm-admin/app.py").read_text(encoding="utf-8"),
+            )
+            self.assertIn("${ARK_VERSION:-2027.03.1}", (tmp_root / "docker-compose.yml").read_text(encoding="utf-8"))
+            self.assertIn("${ARK_VERSION:-2027.03.1}", (tmp_root / "docker-compose.llm.yml").read_text(encoding="utf-8"))
+            self.assertIn("ARK_VERSION=2027.03.1", (tmp_root / ".env.example").read_text(encoding="utf-8"))
+
+            proc_auto = subprocess.run(
+                ["bash", str(script_dst), "--update-changelog", "--bump", "patch"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_auto.returncode, 0, proc_auto.stderr)
+            self.assertEqual((tmp_root / "VERSION").read_text(encoding="utf-8").strip(), "2027.03.2")
+            self.assertIn("**Version:** `2027.03.2`", (tmp_root / "README.md").read_text(encoding="utf-8"))
+
+            changelog_path = tmp_root / "CHANGELOG.md"
+            changelog_text = changelog_path.read_text(encoding="utf-8").replace(
+                "## [Unreleased]\n",
+                "## [Unreleased]\n\n### Added\n- New connector option.\n",
+                1,
+            )
+            changelog_path.write_text(changelog_text, encoding="utf-8")
+            proc_month = subprocess.run(
+                ["bash", str(script_dst), "--update-changelog", "--bump", "calver-month"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_month.returncode, 0, proc_month.stderr)
+            self.assertEqual((tmp_root / "VERSION").read_text(encoding="utf-8").strip(), "2027.04.0")
+            self.assertIn("**Version:** `2027.04.0`", (tmp_root / "README.md").read_text(encoding="utf-8"))
+            updated_changelog = changelog_path.read_text(encoding="utf-8")
+            self.assertIn("## [2027.04.0]", updated_changelog)
+            self.assertIn("### Added\n- New connector option.", updated_changelog)
 
     def test_get_version_info_and_env_override(self) -> None:
         expected = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
