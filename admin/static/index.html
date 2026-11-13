@@ -350,6 +350,15 @@
       <input id="key-label" placeholder="Word Add-in / CI Script" />
       <label>Rate Limit (RPM)</label>
       <input id="key-rpm" type="number" value="60" />
+      <label>Key Scopes</label>
+      <div style="display:flex;gap:14px;align-items:center;margin:4px 0 8px;font-size:0.84rem;">
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-chat" type="checkbox" checked style="width:auto;" /> chat
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
+        </label>
+      </div>
       <button class="amber" onclick="createKey()">Issue Scoped Key</button>
       <pre id="key-output" style="display:none"></pre>
       <table id="key-table">
@@ -357,6 +366,7 @@
           <tr>
             <th>Project</th>
             <th>Label</th>
+            <th>Scopes</th>
             <th>Prefix</th>
             <th>Action</th>
           </tr>
@@ -384,29 +394,100 @@
       <pre id="ops-output" style="display:none"></pre>
     </div>
 
-    <!-- Connectors -->
+    <!-- Flexible Data Ingestion (Plugins / ARK Pipelines / Scripts / Push Upload) -->
     <div class="card rag-accent">
-      <h2>Document Connectors (M-Files / SharePoint / SMB)</h2>
-      <label>Project</label>
+      <h2>Data Ingestion (Plugins, Pipelines &amp; Scripts)</h2>
+      <label>Target RAG Project</label>
       <select id="conn-proj"></select>
-      <label>Connector Type</label>
-      <select id="conn-type">
-        <option value="sharepoint">SharePoint On-Prem (NTLM)</option>
-        <option value="mfiles">M-Files (REST API)</option>
-        <option value="smb_folder">Mounted SMB / NFS Folder</option>
+      <label>Source Mode</label>
+      <select id="ingest-kind" onchange="renderIngestMode()">
+        <option value="plugin">Connector Plugin</option>
+        <option value="pipeline_yaml">ARK Pipeline (YAML)</option>
+        <option value="script">Custom Python Script (/ingest-scripts)</option>
       </select>
-      <label>Name</label>
-      <input id="conn-name" placeholder="Engineering Docs" />
-      <label>JSON Config</label>
-      <textarea id="conn-config" rows="3">{"path": "/mnt/shares/project_alpha"}</textarea>
-      <button onclick="createConnector()">Add Connector</button>
+      <label>Source Name</label>
+      <input id="conn-name" placeholder="Engineering Docs / Wiki Sync" />
+
+      <div id="ingest-plugin-wrap">
+        <label>Plugin</label>
+        <select id="conn-type" onchange="renderPluginFields()"></select>
+        <div id="plugin-dynamic-fields"></div>
+      </div>
+
+      <div id="ingest-pipeline-wrap" style="display:none;">
+        <label>ARK Pipeline Spec (<code>ark-ingest/v1</code> YAML)</label>
+        <textarea id="pipeline-yaml" rows="8" placeholder="apiVersion: ark-ingest/v1&#10;..."></textarea>
+      </div>
+
+      <div id="ingest-script-wrap" style="display:none;">
+        <label>Script File (<code>/ingest-scripts/*.py</code>)</label>
+        <select id="ingest-script-select"></select>
+        <label>Script Config JSON</label>
+        <textarea id="script-config" rows="3">{}</textarea>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+        <div>
+          <label>Sync Mode</label>
+          <select id="ingest-sync-mode">
+            <option value="incremental">Incremental</option>
+            <option value="full_mirror">Full Mirror (Prune)</option>
+          </select>
+        </div>
+        <div>
+          <label>Chunking</label>
+          <select id="ingest-chunk-strategy">
+            <option value="chars">Chars (1200/200)</option>
+            <option value="markdown">Markdown Headings</option>
+            <option value="lines">Line Blocks</option>
+            <option value="none">Whole Doc</option>
+          </select>
+        </div>
+        <div>
+          <label>Schedule</label>
+          <select id="ingest-schedule">
+            <option value="">Manual</option>
+            <option value="@15m">Every 15m</option>
+            <option value="@hourly">Hourly</option>
+            <option value="@daily">Daily</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="createIngestSource()">Add Ingest Source</button>
+        <button class="amber" onclick="dryRunIngestSource()">Dry Run (Preview 5)</button>
+      </div>
+      <pre id="ingest-preview-output" style="display:none"></pre>
+
       <table id="conn-table">
         <thead>
           <tr>
             <th>Project</th>
-            <th>Type</th>
+            <th>Source</th>
             <th>Status</th>
             <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Direct File Upload to Project</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="direct-upload-file" type="file" style="flex:1;" />
+        <button style="margin-top:0;white-space:nowrap;" onclick="uploadProjectFile()">Upload &amp; Index</button>
+      </div>
+
+      <label style="margin-top:14px;">Recent Ingest Jobs</label>
+      <table id="ingest-jobs-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Project</th>
+            <th>Trigger</th>
+            <th>Status</th>
+            <th>Summary</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -505,9 +586,30 @@
       return node;
     }
 
+    let loadedPlugins = [];
+    const DEFAULT_PIPELINE_YAML = [
+      'apiVersion: ark-ingest/v1',
+      'name: sample-http-sync',
+      'sync_mode: incremental',
+      'source:',
+      '  type: http_json',
+      '  url: "http://internal-service.local/api/docs"',
+      'transform:',
+      '  doc_id: "doc/{{ item.id }}"',
+      '  filename: "{{ item.title | slugify }}.md"',
+      '  template: |',
+      '    # {{ item.title }}',
+      '    {{ item.body }}',
+      'chunking:',
+      '  strategy: markdown',
+      '  chunk_size: 1200',
+      '  overlap: 200',
+    ].join('\n');
+
     async function refreshAll() {
-      const [ver, health, projects, keys, backupCfg, backups, conns, audits, modelsInfo, llmBackend] = await Promise.all([
-          api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'), api('/connectors'), api('/audit?limit=15'), api('/models'), api('/llm-backend')
+      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend] = await Promise.all([
+          api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
+          api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?limit=15'), api('/models'), api('/llm-backend')
         ]);
 
       const verLabel = `v${ver.version}`;
@@ -556,6 +658,7 @@
           el('tr', {}, [
             el('td', { text: k.project_slug }),
             el('td', { text: k.label }),
+            el('td', {}, el('code', { text: (k.scopes || ['chat']).join(', ') })),
             el('td', {}, el('code', { text: `${k.key_prefix}...` })),
             el('td', {}, el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeKey(k.id) }))
           ])
@@ -568,15 +671,53 @@
         : [el('option', { value: '', text: 'No backup bundles found' })];
       document.getElementById('restore-backup-select').replaceChildren(...backupOpts);
 
+      loadedPlugins = pluginMeta.plugins || [];
+      const connTypeSel = document.getElementById('conn-type');
+      const prevPlugin = connTypeSel.value;
+      connTypeSel.replaceChildren(
+        ...loadedPlugins.map(p => el('option', { value: p.id, text: `${p.name} (${p.id})` }))
+      );
+      if (prevPlugin && loadedPlugins.some(p => p.id === prevPlugin)) connTypeSel.value = prevPlugin;
+      renderPluginFields();
+
+      const scriptSel = document.getElementById('ingest-script-select');
+      const scripts = pluginMeta.scripts || [];
+      scriptSel.replaceChildren(
+        ...(scripts.length
+          ? scripts.map(s => el('option', { value: s, text: s }))
+          : [el('option', { value: '', text: 'No .py scripts in /ingest-scripts' })])
+      );
+      const pipeEl = document.getElementById('pipeline-yaml');
+      if (!pipeEl.value.trim()) pipeEl.value = DEFAULT_PIPELINE_YAML;
+
       document.querySelector('#conn-table tbody').replaceChildren(
-        ...conns.map(c =>
+        ...sources.map(s =>
           el('tr', {}, [
-            el('td', { text: c.project_slug }),
-            el('td', { text: c.connector_type }),
-            el('td', { text: c.last_status || 'pending' }),
-            el('td', {}, el('button', { style: 'margin:0;padding:4px 9px;font-size:0.75rem;', text: 'Sync', onClick: () => syncConn(c.id) }))
+            el('td', { text: s.project_slug }),
+            el('td', { text: `${s.name} (${s.plugin_id || s.source_kind})` }),
+            el('td', { text: s.last_status || 'pending' }),
+            el('td', { style: 'white-space:nowrap;' }, [
+              el('button', { style: 'margin:0 4px 0 0;padding:4px 9px;font-size:0.75rem;', text: 'Sync', onClick: () => syncSource(s.id) }),
+              el('button', { className: 'danger', text: 'Del', onClick: () => deleteSource(s.id) })
+            ])
           ])
         )
+      );
+
+      document.querySelector('#ingest-jobs-table tbody').replaceChildren(
+        ...jobs.map(j => {
+          const st = j.stats || {};
+          const summary = st.docs_seen !== undefined
+            ? `${st.docs_upserted || 0} up, ${st.docs_skipped || 0} skip, ${st.docs_deleted || 0} del`
+            : (j.log_excerpt || '-').slice(0, 40);
+          return el('tr', {}, [
+            el('td', { text: String(j.id) }),
+            el('td', { text: j.project_slug }),
+            el('td', { text: j.trigger_type }),
+            el('td', {}, el('span', { className: `badge ${j.status === 'succeeded' ? 'ok' : (j.status === 'failed' ? 'err' : 'rag')}`, text: j.status })),
+            el('td', { text: summary })
+          ]);
+        })
       );
 
       document.querySelector('#audit-table tbody').replaceChildren(
@@ -651,17 +792,21 @@
     }
 
     async function createKey() {
+      const scopes = [];
+      if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
+      if (document.getElementById('key-scope-ingest').checked) scopes.push('ingest');
       const res = await api('/keys', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_slug: document.getElementById('key-proj').value,
           label: document.getElementById('key-label').value,
-          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10)
+          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10),
+          scopes: scopes.length ? scopes : ['chat']
         })
       });
       const out = document.getElementById('key-output');
       out.style.display = 'block';
-      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key;
+      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key + '\nScopes: ' + (res.scopes || []).join(', ');
       refreshAll();
     }
 
@@ -705,22 +850,128 @@
       showOps(res);
     }
 
-    async function createConnector() {
-      await api('/connectors', {
+    function renderIngestMode() {
+      const kind = document.getElementById('ingest-kind').value;
+      document.getElementById('ingest-plugin-wrap').style.display = kind === 'plugin' ? 'block' : 'none';
+      document.getElementById('ingest-pipeline-wrap').style.display = kind === 'pipeline_yaml' ? 'block' : 'none';
+      document.getElementById('ingest-script-wrap').style.display = kind === 'script' ? 'block' : 'none';
+    }
+
+    function renderPluginFields() {
+      const pid = document.getElementById('conn-type').value;
+      const plugin = loadedPlugins.find(p => p.id === pid);
+      const container = document.getElementById('plugin-dynamic-fields');
+      if (!plugin) {
+        container.replaceChildren();
+        return;
+      }
+      const props = (plugin.config_schema && plugin.config_schema.properties) || {};
+      const secrets = new Set(plugin.secret_fields || []);
+      const nodes = [];
+      for (const [key, spec] of Object.entries(props)) {
+        nodes.push(el('label', { text: spec.title || key }));
+        if (spec.type === 'boolean') {
+          const sel = el('select', { 'data-plugin-field': key }, [
+            el('option', { value: 'true', text: 'true' }),
+            el('option', { value: 'false', text: 'false' })
+          ]);
+          sel.value = spec.default === false ? 'false' : 'true';
+          nodes.push(sel);
+        } else {
+          const inpType = (secrets.has(key) || spec.format === 'password') ? 'password' : (spec.type === 'integer' ? 'number' : 'text');
+          const inp = el('input', {
+            type: inpType,
+            'data-plugin-field': key,
+            'data-field-type': spec.type || 'string',
+            placeholder: spec.description || '',
+            value: spec.default !== undefined ? String(spec.default) : ''
+          });
+          nodes.push(inp);
+        }
+      }
+      container.replaceChildren(...nodes);
+    }
+
+    function collectPluginConfig() {
+      const cfg = {};
+      document.querySelectorAll('#plugin-dynamic-fields [data-plugin-field]').forEach(node => {
+        const key = node.getAttribute('data-plugin-field');
+        const ftype = node.getAttribute('data-field-type');
+        if (node.tagName === 'SELECT') cfg[key] = node.value === 'true';
+        else if (ftype === 'integer') cfg[key] = parseInt(node.value || '0', 10);
+        else cfg[key] = node.value;
+      });
+      return cfg;
+    }
+
+    function buildIngestPayload() {
+      const kind = document.getElementById('ingest-kind').value;
+      const chunkStrategy = document.getElementById('ingest-chunk-strategy').value;
+      return {
+        project_slug: document.getElementById('conn-proj').value,
+        name: document.getElementById('conn-name').value || 'Ingest Source',
+        source_kind: kind,
+        plugin_id: kind === 'plugin' ? document.getElementById('conn-type').value : '',
+        config: kind === 'plugin' ? collectPluginConfig() : (kind === 'script' ? JSON.parse(document.getElementById('script-config').value || '{}') : {}),
+        pipeline_spec: kind === 'pipeline_yaml' ? document.getElementById('pipeline-yaml').value : '',
+        script_name: kind === 'script' ? document.getElementById('ingest-script-select').value : '',
+        chunk_config: { strategy: chunkStrategy, chunk_size: 1200, overlap: 200 },
+        sync_mode: document.getElementById('ingest-sync-mode').value,
+        schedule_cron: document.getElementById('ingest-schedule').value
+      };
+    }
+
+    async function createIngestSource() {
+      await api('/ingest-sources', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_slug: document.getElementById('conn-proj').value,
-          connector_type: document.getElementById('conn-type').value,
-          name: document.getElementById('conn-name').value,
-          config: JSON.parse(document.getElementById('conn-config').value)
-        })
+        body: JSON.stringify(buildIngestPayload())
       });
       refreshAll();
     }
 
-    async function syncConn(id) {
-      const res = await api(`/connectors/${id}/sync`, { method: 'POST' });
-      showOps(res);
+    async function dryRunIngestSource() {
+      const p = buildIngestPayload();
+      const res = await api('/ingest-sources/dry-run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_kind: p.source_kind,
+          plugin_id: p.plugin_id,
+          config: p.config,
+          pipeline_spec: p.pipeline_spec,
+          script_name: p.script_name,
+          limit: 5
+        })
+      });
+      const out = document.getElementById('ingest-preview-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function syncSource(id) {
+      const res = await api(`/ingest-sources/${id}/sync?async_mode=true`, { method: 'POST' });
+      const out = document.getElementById('ingest-preview-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(res, null, 2);
+      setTimeout(refreshAll, 1200);
+    }
+
+    async function deleteSource(id) {
+      if (!confirm(`Delete ingest source #${id}?`)) return;
+      await api(`/ingest-sources/${id}`, { method: 'DELETE' });
+      refreshAll();
+    }
+
+    async function uploadProjectFile() {
+      const proj = document.getElementById('conn-proj').value;
+      const f = document.getElementById('direct-upload-file').files[0];
+      if (!proj || !f) return alert('Select a project and a file first.');
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('chunk_strategy', document.getElementById('ingest-chunk-strategy').value);
+      const res = await api(`/projects/${encodeURIComponent(proj)}/ingest/files`, { method: 'POST', body: fd });
+      const out = document.getElementById('ingest-preview-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(res, null, 2);
       refreshAll();
     }
 

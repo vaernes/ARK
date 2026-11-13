@@ -441,8 +441,14 @@ services:
       LLM_MODEL_ID: "${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
       LLM_MODEL_DIR: "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
       EMBED_MODEL_DIR: "${EMBED_MODEL_DIR:-BAAI--bge-m3}"
+      EMBED_MODEL_ID: "${EMBED_MODEL_ID:-BAAI/bge-m3}"
       RERANK_MODEL_DIR: "${RERANK_MODEL_DIR:-BAAI--bge-reranker-v2-m3}"
       ARK_MODELS_DIR: "/models"
+      ARK_PLUGINS_DIR: "/plugins"
+      ARK_INGEST_SCRIPTS_DIR: "/ingest-scripts"
+      ARK_INGEST_MAX_CONCURRENT_JOBS: "${ARK_INGEST_MAX_CONCURRENT_JOBS:-2}"
+      ARK_INGEST_JOB_TIMEOUT_SEC: "${ARK_INGEST_JOB_TIMEOUT_SEC:-1800}"
+      ARK_SECRETS_KEY: "${ARK_SECRETS_KEY:-}"
       TEI_EMBED_URL: "http://tei-embed:80"
       TIKA_URL: "http://tika:9998"
       OPENWEBUI_INTERNAL_URL: "http://open-webui:8080"
@@ -461,6 +467,9 @@ services:
       - ./data/audit:/var/log/ark
       - ./artifacts/models:/models
       - ./certs:/certs:ro
+      - ./plugins:/plugins:ro
+      - ./data/ingest-scripts:/ingest-scripts:ro
+      - ${ARK_SHARES_DIR:-./data/shares}:/shares:ro
     networks:
       ark-net:
       ark-control:

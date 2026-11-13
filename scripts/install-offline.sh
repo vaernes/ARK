@@ -301,6 +301,9 @@ main() {
     "${REPO_ROOT}/data/caddy/data" \
     "${REPO_ROOT}/data/caddy/config" \
     "${REPO_ROOT}/data/audit" \
+    "${REPO_ROOT}/data/ingest-scripts" \
+    "${REPO_ROOT}/data/shares" \
+    "${REPO_ROOT}/plugins" \
     "${REPO_ROOT}/certs" \
     "${selected_backup}"
 

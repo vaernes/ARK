@@ -1,0 +1,23 @@
+{
+  "id": "sharepoint",
+  "name": "SharePoint On-Prem (NTLM)",
+  "version": "1.0.0",
+  "ark_protocol": "1",
+  "runtime": "python3",
+  "entrypoint": "run.py",
+  "builtin": true,
+  "supports_incremental": true,
+  "secret_fields": ["password"],
+  "description": "Pulls documents from an on-premises SharePoint folder using NTLM authentication.",
+  "config_schema": {
+    "type": "object",
+    "required": ["site_url", "folder_server_relative_url", "username", "password"],
+    "properties": {
+      "site_url": { "type": "string", "title": "SharePoint Site URL", "default": "https://intranet.corp.internal/sites/engineering" },
+      "folder_server_relative_url": { "type": "string", "title": "Folder Server-Relative URL", "default": "/sites/engineering/Shared Documents" },
+      "username": { "type": "string", "title": "Username (DOMAIN\\user)" },
+      "password": { "type": "string", "title": "Password", "format": "password" },
+      "verify_tls": { "type": "boolean", "title": "Verify TLS Certificate", "default": true }
+    }
+  }
+}

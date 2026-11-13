@@ -25,11 +25,15 @@ If your administrator issued a **Project API Key** (`ark_proj_...`) for your tea
 - **API Key:** `ark_proj_...`
 - **Model:** `<project-slug>-assistant` (or any value—the gateway routes to the project's configured model and RAG context)
 
-**Supported OpenAI-compatible endpoints on `/projects/<project-slug>/v1`:**
+**Supported OpenAI-compatible & Ingest endpoints on `/projects/<project-slug>/v1`:**
 - `GET /models` — returns the project's assistant model metadata (`<project-slug>-assistant`)
-- `POST /chat/completions` — supports both non-streaming (`"stream": false`) and Server-Sent Events streaming (`"stream": true`)
+- `POST /chat/completions` — supports both non-streaming (`"stream": false`) and Server-Sent Events streaming (`"stream": true`) (requires `chat` key scope)
+- `POST /ingest/documents` — push JSON (`{"documents": [...]}`) or `application/x-ndjson` Document IR records into the project's Qdrant collection (requires `ingest` key scope)
+- `POST /ingest/files` — multipart file upload extracted via Apache Tika and indexed into the project's Qdrant collection (requires `ingest` key scope)
+- `DELETE /ingest/documents/<doc_id>` — remove a document's vectors from the project's Qdrant collection (requires `ingest` key scope)
+- `GET /ingest/documents` & `GET /ingest/jobs/<job_id>` — list tracked document hashes and check async ingest job status (requires `ingest` key scope)
 
-> **Scope Note:** Other OpenAI endpoints (`/embeddings`, `/completions`, `/images/*`, `/audio/*`, `/files/*`, `/assistants/*`) are intentionally not exposed by the project gateway. Direct unauthenticated calls to `/v1/chat/completions` are also blocked (`403 Forbidden`) so RBAC, rate limits, and audit logging are always enforced.
+> **Scope Note:** Other OpenAI endpoints (`/embeddings`, `/completions`, `/images/*`, `/audio/*`, `/files/*`, `/assistants/*`) are intentionally not exposed by the project gateway. Direct unauthenticated calls to `/v1/chat/completions` are also blocked (`403 Forbidden`) so RBAC, key scopes (`chat` / `ingest`), rate limits, and audit logging are always enforced.
 
 **Example `curl` call:**
 ```bash
@@ -65,38 +69,18 @@ In the **Project API Keys** panel:
 2. Click **Issue API Key** and copy the `ark_proj_...` key immediately (it is only displayed once; only its SHA-256 hash is stored).
 3. Click **Revoke** next to any key to immediately block access.
 
-### 4. Connecting Document Sources (M-Files, SharePoint On-Prem, SMB/NFS)
-In the **Document Connectors** panel, select a **RAG-enabled** project, choose the connector type, and paste the JSON configuration:
+### 4. Flexible Data Ingestion (Plugins, ARK Pipelines, Scripts & Push API)
+In the **Data Ingestion (Plugins, Pipelines & Scripts)** panel, select a **RAG-enabled** project and choose one of three source modes (or push directly from external systems via `/projects/<slug>/v1/ingest/*` with an `ingest`-scoped `ark_proj_*` key):
 
-- **Mounted SMB / NFS Folder (`smb_folder`):**
-  ```json
-  {
-    "path": "/mnt/shares/project_alpha"
-  }
-  ```
-- **SharePoint On-Premises (`sharepoint`):**
-  ```json
-  {
-    "site_url": "https://intranet.corp.internal/sites/engineering",
-    "folder_server_relative_url": "/sites/engineering/Shared Documents/ProjectAlpha",
-    "username": "CORP\\svc-ark-sp",
-    "password": "service-account-password",
-    "verify_tls": true
-  }
-  ```
-- **M-Files (`mfiles`):**
-  ```json
-  {
-    "base_url": "https://mfiles.corp.internal",
-    "vault_guid": "{11111111-2222-3333-4444-555555555555}",
-    "username": "svc-ark-mfiles",
-    "password": "service-account-password",
-    "object_type": 0,
-    "verify_tls": true
-  }
-  ```
+1. **Connector Plugins (`plugin`):**
+   - Built-in plugins include `smb_folder`, `sharepoint`, `mfiles`, and `http_json`.
+   - Custom offline plugins placed in `./plugins/<plugin-id>/` (with a `manifest.json` declaring `ark_protocol: "1"` and `config_schema`) are discovered automatically and run in an env-scrubbed subprocess streaming NDJSON Document IR.
+2. **ARK Declarative Pipelines (`pipeline_yaml`):**
+   - Author `ark-ingest/v1` YAML/JSON pipelines directly in the Admin Console (supports `http_json`, `http_paginated`, `sql_query`, `filesystem_glob`, `csv`, `ndjson`) with sandboxed Jinja2 transforms (`html_to_text`, `slugify`, `regex_replace`, `json_get`) and **Dry Run (Preview 5)** before indexing.
+3. **Custom Python Scripts (`script`):**
+   - Place `.py` scripts using `from ark_ingest import Document, Checkpoint, run` in `./data/ingest-scripts/` (mounted read-only at `/ingest-scripts`). Scripts execute in an env-scrubbed subprocess without access to `ARK_ADMIN_DB_URL` or `QDRANT_API_KEY`.
 
-Click **Add Connector**, then click **Sync** to extract documents via Apache Tika, embed with `BAAI/bge-m3`, and upsert into the project's Qdrant collection.
+All modes support **Incremental** (content-hash deduplication + stale chunk cleanup) or **Full Mirror** (prunes deleted documents) sync modes, configurable chunking (`chars`, `markdown`, `lines`, `none`), and schedules (`@15m`, `@hourly`, `@daily`).
 
 ### 5. Updating `Company_Common` from HQ
 1. Obtain the latest `Company_Common.snapshot` (and `.sha256`) exported from HQ.

@@ -121,12 +121,21 @@
       <input id="key-label" placeholder="VS Code Continue / Word Add-in" />
       <label>Rate Limit (RPM)</label>
       <input id="key-rpm" type="number" value="60" min="1" max="6000" />
+      <label>Key Scopes</label>
+      <div style="display:flex;gap:14px;align-items:center;margin:4px 0 8px;font-size:0.84rem;">
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-chat" type="checkbox" checked style="width:auto;" /> chat
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
+        </label>
+      </div>
       <button class="amber" onclick="createKey()">Generate API Key</button>
       <pre id="key-output" style="display:none"></pre>
 
       <h2 style="margin-top:22px;">My Active API Keys</h2>
       <table id="key-table">
-        <thead><tr><th>Project</th><th>Label</th><th>Prefix</th><th>RPM</th><th>Action</th></tr></thead>
+        <thead><tr><th>Project</th><th>Label</th><th>Scopes</th><th>Prefix</th><th>RPM</th><th>Action</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -213,6 +222,7 @@
             el('tr', {}, [
               el('td', { text: k.project_slug }),
               el('td', { text: k.label }),
+              el('td', {}, el('code', { text: (k.scopes || ['chat']).join(', ') })),
               el('td', {}, el('code', { text: `${k.key_prefix}...` })),
               el('td', { text: String(k.rate_limit_rpm) }),
               el('td', {}, el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeKey(k.id) }))
@@ -221,7 +231,7 @@
         );
       } else {
         keyBody.replaceChildren(
-          el('tr', {}, el('td', { colspan: '5', style: 'color:var(--gray)', text: 'No active keys issued yet.' }))
+          el('tr', {}, el('td', { colspan: '6', style: 'color:var(--gray)', text: 'No active keys issued yet.' }))
         );
       }
     }
@@ -229,18 +239,22 @@
     async function createKey() {
       const proj = document.getElementById('key-proj').value;
       if (!proj) return showError('No accessible project selected.');
+      const scopes = [];
+      if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
+      if (document.getElementById('key-scope-ingest').checked) scopes.push('ingest');
       const res = await api('/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_slug: proj,
           label: document.getElementById('key-label').value || 'personal-key',
-          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10) || 60
+          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10) || 60,
+          scopes: scopes.length ? scopes : ['chat']
         })
       });
       const out = document.getElementById('key-output');
       out.style.display = 'block';
-      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key + '\n\nBase URL: ' + window.location.origin + '/projects/' + res.project_slug + '/v1';
+      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key + '\nScopes: ' + (res.scopes || []).join(', ') + '\n\nBase URL: ' + window.location.origin + '/projects/' + res.project_slug + '/v1';
       refresh();
     }
 

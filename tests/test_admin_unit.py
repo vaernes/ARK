@@ -25,6 +25,7 @@ from backup_utils import (  # noqa: E402
     validate_backup_name,
     verify_backup_manifest,
 )
+from ark_ingest import Checkpoint, Document, Log, run as ark_ingest_run  # noqa: E402
 from llm_backend import build_llm_headers, resolve_llm_backend_config  # noqa: E402
 from mock_inference import deterministic_embedding  # noqa: E402
 from security import authorize_proxy_request, normalize_groups  # noqa: E402
@@ -335,6 +336,41 @@ class TestLlmBackendConfig(unittest.TestCase):
     def test_no_api_key_omits_authorization_header(self) -> None:
         self.assertEqual(build_llm_headers("", json_content=True), {"Content-Type": "application/json"})
         self.assertEqual(build_llm_headers(""), {})
+
+
+class TestArkIngestSdkAndBuiltinPlugins(unittest.TestCase):
+    def test_ark_ingest_sdk_emits_ndjson_ir(self) -> None:
+        import io
+
+        def sample_sync(ctx):
+            yield Log(f"cursor={ctx.cursor.get('pos', 0)}")
+            yield Document(doc_id="d1", filename="d1.md", content="hello", metadata={"k": "v"})
+            yield Document(doc_id="d2", filename="d2.bin", content=b"\x00\x01")
+            yield Checkpoint({"pos": 2})
+
+        fake_in = io.StringIO(json.dumps({"config": {"a": 1}, "cursor": {"pos": 1}, "dry_run": True}))
+        fake_out = io.StringIO()
+        with mock.patch.object(sys, "stdin", fake_in), mock.patch.object(sys, "stdout", fake_out):
+            ark_ingest_run(sample_sync)
+
+        lines = [json.loads(line) for line in fake_out.getvalue().strip().splitlines()]
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[0]["type"], "log")
+        self.assertEqual(lines[1]["type"], "document")
+        self.assertEqual(lines[1]["content_type"], "text")
+        self.assertEqual(lines[2]["content_type"], "binary")
+        self.assertEqual(lines[3], {"type": "checkpoint", "cursor": {"pos": 2}})
+
+    def test_builtin_plugin_manifests_are_valid(self) -> None:
+        plugins_root = REPO_ROOT / "admin" / "builtin_plugins"
+        expected = {"smb_folder", "sharepoint", "mfiles", "http_json"}
+        found = {p.name for p in plugins_root.iterdir() if p.is_dir()}
+        self.assertTrue(expected.issubset(found), f"Missing builtin plugins: {expected - found}")
+        for pid in expected:
+            manifest = json.loads((plugins_root / pid / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["id"], pid)
+            self.assertEqual(manifest["ark_protocol"], "1")
+            self.assertTrue((plugins_root / pid / manifest["entrypoint"]).is_file())
 
 
 if __name__ == "__main__":

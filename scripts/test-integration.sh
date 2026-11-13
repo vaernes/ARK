@@ -52,7 +52,7 @@ cleanup() {
 trap cleanup EXIT
 
 main() {
-  mkdir -p "${TMP_ROOT}/backups" "${TMP_ROOT}/audit" "${TMP_ROOT}/keycloak"
+  mkdir -p "${TMP_ROOT}/backups" "${TMP_ROOT}/audit" "${TMP_ROOT}/keycloak" "${TMP_ROOT}/plugins" "${TMP_ROOT}/ingest-scripts"
   cp "${REPO_ROOT}/config/keycloak/ark-realm.json" "${TMP_ROOT}/keycloak/ark-realm.json"
   sed -i "s|https://ark\.local|https://localhost:8443|g" "${TMP_ROOT}/keycloak/ark-realm.json"
 
@@ -185,9 +185,13 @@ main() {
     -e ARK_BACKUP_DIR="/backups" \
     -e ARK_AUDIT_LOG_FILE="/var/log/ark/audit.jsonl" \
     -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
+    -e ARK_PLUGINS_DIR="/plugins" \
+    -e ARK_INGEST_SCRIPTS_DIR="/ingest-scripts" \
     -v "${TMP_ROOT}/backups:/backups" \
     -v "${TMP_ROOT}/audit:/var/log/ark" \
     -v "${TMP_ROOT}/models:/models" \
+    -v "${TMP_ROOT}/plugins:/plugins:ro" \
+    -v "${TMP_ROOT}/ingest-scripts:/ingest-scripts:ro" \
     ark-admin:latest >/dev/null
   docker network connect --alias ark-admin-control "${CONTROL_NET}" ark-test-ark-admin >/dev/null
 
@@ -405,6 +409,143 @@ requests.delete('http://localhost:8090/admin-console/api/projects/clean-sandbox'
 "
   pass "Deleted Clean_Sandbox project via API."
 
+  # 5d. Test Flexible Ingestion: Scoped Push Ingest API, Plugins, Pipelines & Scripts
+  log "5d/8 Testing Flexible Data Ingestion (Push API, Key Scopes, Plugins, YAML Pipelines & Custom Scripts)..."
+  cat <<'PYEOF' > "${TMP_ROOT}/ingest-scripts/test_custom.py"
+import os
+from ark_ingest import Document, Checkpoint, run
+
+def sync(ctx):
+    # Verify control-plane secrets are scrubbed from subprocess env
+    assert "ARK_ADMIN_DB_URL" not in os.environ, "ARK_ADMIN_DB_URL leaked to script!"
+    assert "QDRANT_API_KEY" not in os.environ, "QDRANT_API_KEY leaked to script!"
+    assert "ARK_PROXY_AUTH_SECRET" not in os.environ, "ARK_PROXY_AUTH_SECRET leaked to script!"
+    yield Document(
+        doc_id="script/item-1",
+        filename="item-1.md",
+        content="# Custom Script Doc\nIngested from custom Python script.",
+        metadata={"origin": "custom_script"},
+    )
+    yield Checkpoint({"last_id": 1})
+
+if __name__ == "__main__":
+    run(sync)
+PYEOF
+
+  local ingest_key
+  ingest_key=$(docker exec ark-test-ark-admin python3 -c "
+import requests
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+r = requests.post('http://localhost:8090/admin-console/api/keys', headers=H, json={
+    'project_slug': 'project-alpha', 'label': 'etl-ingest', 'scopes': ['ingest']
+})
+r.raise_for_status()
+print(r.json()['api_key'])
+")
+
+  # Chat-only key must be rejected (403) on /ingest/documents; ingest-only key must be rejected (403) on /chat/completions
+  local chat_on_ingest_code ingest_on_chat_code
+  chat_on_ingest_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/project-alpha/v1/ingest/documents" \
+    -H "Authorization: Bearer ${alpha_key}" \
+    -H "Content-Type: application/json" \
+    -d '{"documents":[{"doc_id":"blocked","content":"nope"}]}')
+  [[ "${chat_on_ingest_code}" == "403" ]] || fail "Expected 403 for chat-only key on /ingest/documents, got ${chat_on_ingest_code}"
+
+  ingest_on_chat_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
+    -H "Authorization: Bearer ${ingest_key}" \
+    -H "Content-Type: application/json" \
+    -d '{"messages":[{"role":"user","content":"Should fail"}]}')
+  [[ "${ingest_on_chat_code}" == "403" ]] || fail "Expected 403 for ingest-only key on /chat/completions, got ${ingest_on_chat_code}"
+
+  # Push documents -> dedup skip -> shrink doc -> delete doc
+  local push_resp1 push_resp2
+  push_resp1=$(curl -ksf -X POST "https://localhost:8443/projects/project-alpha/v1/ingest/documents" \
+    -H "Authorization: Bearer ${ingest_key}" \
+    -H "Content-Type: application/json" \
+    -d '{"documents":[{"doc_id":"push/guide-1","filename":"guide.md","content":"# ARK Guide\nAir-gapped retrieval works offline.","metadata":{"doc_id":"spoofed","dept":"eng"}}]}')
+  echo "${push_resp1}" | grep -q '"docs_upserted":1' || fail "Expected docs_upserted:1, got: ${push_resp1}"
+
+  push_resp2=$(curl -ksf -X POST "https://localhost:8443/projects/project-alpha/v1/ingest/documents" \
+    -H "Authorization: Bearer ${ingest_key}" \
+    -H "Content-Type: application/json" \
+    -d '{"documents":[{"doc_id":"push/guide-1","filename":"guide.md","content":"# ARK Guide\nAir-gapped retrieval works offline.","metadata":{"doc_id":"spoofed","dept":"eng"}}]}')
+  echo "${push_resp2}" | grep -q '"docs_skipped":1' || fail "Expected docs_skipped:1 on identical re-push, got: ${push_resp2}"
+
+  curl -ksf -X DELETE "https://localhost:8443/projects/project-alpha/v1/ingest/documents/push/guide-1" \
+    -H "Authorization: Bearer ${ingest_key}" | grep -q '"status":"deleted"' || fail "Push delete failed."
+
+  # Test Plugin discovery, YAML Pipeline Dry-Run & Sync, and Custom Script Sync
+  docker exec ark-test-ark-admin python3 -c "
+import requests
+from qdrant_client import QdrantClient
+
+H = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+pm = requests.get('http://localhost:8090/admin-console/api/plugins', headers=H, timeout=10)
+pm.raise_for_status()
+pids = {p['id'] for p in pm.json()['plugins']}
+assert {'smb_folder', 'sharepoint', 'mfiles', 'http_json'}.issubset(pids), pids
+assert 'test_custom.py' in pm.json()['scripts'], pm.json()['scripts']
+
+pipe_yaml = '''apiVersion: ark-ingest/v1
+name: csv-test
+sync_mode: full_mirror
+source:
+  type: csv
+  data: |
+    id,title,body
+    r1,First Row,Hello from CSV pipeline
+    r2,Second Row,Second CSV record
+transform:
+  doc_id: \"csv/{{ item.id }}\"
+  filename: \"{{ item.title | slugify }}.md\"
+  template: |
+    # {{ item.title }}
+    {{ item.body }}
+'''
+dr = requests.post('http://localhost:8090/admin-console/api/ingest-sources/dry-run', headers=H, json={
+    'source_kind': 'pipeline_yaml', 'pipeline_spec': pipe_yaml, 'limit': 5
+}, timeout=10)
+dr.raise_for_status()
+assert dr.json()['preview_count'] == 2, dr.json()
+
+src_pipe = requests.post('http://localhost:8090/admin-console/api/ingest-sources', headers=H, json={
+    'project_slug': 'project-alpha', 'name': 'CSV Pipeline', 'source_kind': 'pipeline_yaml',
+    'pipeline_spec': pipe_yaml, 'sync_mode': 'full_mirror'
+})
+src_pipe.raise_for_status()
+sid_pipe = src_pipe.json()['id']
+
+sync_pipe = requests.post(f'http://localhost:8090/admin-console/api/ingest-sources/{sid_pipe}/sync?async_mode=false', headers=H, timeout=30)
+sync_pipe.raise_for_status()
+assert sync_pipe.json()['docs_upserted'] == 2, sync_pipe.json()
+
+src_script = requests.post('http://localhost:8090/admin-console/api/ingest-sources', headers=H, json={
+    'project_slug': 'project-alpha', 'name': 'Custom Script', 'source_kind': 'script',
+    'script_name': 'test_custom.py'
+})
+src_script.raise_for_status()
+sid_script = src_script.json()['id']
+
+sync_script = requests.post(f'http://localhost:8090/admin-console/api/ingest-sources/{sid_script}/sync?async_mode=false', headers=H, timeout=30)
+sync_script.raise_for_status()
+assert sync_script.json()['docs_upserted'] == 1, sync_script.json()
+
+# Clean up test ingest sources + vectors so backup/restore test sees deterministic state
+requests.delete(f'http://localhost:8090/admin-console/api/ingest-sources/{sid_pipe}?delete_vectors=true', headers=H).raise_for_status()
+requests.delete(f'http://localhost:8090/admin-console/api/ingest-sources/{sid_script}?delete_vectors=true', headers=H).raise_for_status()
+qc = QdrantClient(url='http://qdrant:6333', api_key='${QDRANT_KEY}')
+assert qc.count(collection_name='Project_Alpha').count == 1, 'Expected only original spec point remaining'
+"
+  pass "Push Ingest API, key scopes, plugins, YAML pipelines, and sandboxed custom scripts verified."
+
   # 6. Test LLM & Model Management APIs
   log "6/8 Testing LLM & Model Management APIs..."
   docker exec ark-test-ark-admin python3 -c "
@@ -534,6 +675,12 @@ for expected in (
     'apikey.revoke',
     'api.chat_completion',
     'api.auth_failed',
+    'api.scope_denied',
+    'ingest.push',
+    'ingest.delete',
+    'ingest.dry_run',
+    'ingest.job_start',
+    'ingest.job_finish',
     'backup.restore',
 ):
     assert expected in events, f'{expected} missing from DB audit_logs: {events}'

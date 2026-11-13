@@ -1,0 +1,24 @@
+{
+  "id": "mfiles",
+  "name": "M-Files (REST API)",
+  "version": "1.0.0",
+  "ark_protocol": "1",
+  "runtime": "python3",
+  "entrypoint": "run.py",
+  "builtin": true,
+  "supports_incremental": true,
+  "secret_fields": ["password"],
+  "description": "Pulls vault documents from an on-premises M-Files REST API endpoint.",
+  "config_schema": {
+    "type": "object",
+    "required": ["base_url", "vault_guid", "username", "password"],
+    "properties": {
+      "base_url": { "type": "string", "title": "M-Files Base URL", "default": "https://mfiles.corp.internal" },
+      "vault_guid": { "type": "string", "title": "Vault GUID" },
+      "username": { "type": "string", "title": "Username" },
+      "password": { "type": "string", "title": "Password", "format": "password" },
+      "object_type": { "type": "integer", "title": "Object Type ID", "default": 0 },
+      "verify_tls": { "type": "boolean", "title": "Verify TLS Certificate", "default": true }
+    }
+  }
+}

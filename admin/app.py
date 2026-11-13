@@ -26,14 +26,16 @@ import tarfile
 import tempfile
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+import threading
 
 import psycopg
 import requests
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -50,7 +52,23 @@ from backup_utils import (
     validate_backup_name,
     verify_backup_manifest,
 )
-from connectors import CONNECTOR_RUNNERS, embed_texts
+from ingest import (
+    ChunkConfig,
+    IngestDocument,
+    decrypt_secrets,
+    delete_document_points,
+    embed_texts,
+    encrypt_secrets,
+    process_ingest_documents,
+    split_config_and_secrets,
+)
+from pipelines import dry_run_pipeline, execute_pipeline, parse_pipeline_spec
+from plugins import (
+    discover_plugins,
+    execute_custom_script,
+    execute_plugin,
+    list_ingest_scripts,
+)
 from security import authorize_proxy_request, normalize_groups
 from version import get_ark_version, get_version_info
 
@@ -73,6 +91,7 @@ LLM_SERVED_NAME = os.environ.get("LLM_SERVED_NAME", "ark-llm")
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "Qwen/Qwen2.5-14B-Instruct")
 LLM_MODEL_DIR = os.environ.get("LLM_MODEL_DIR", "Qwen--Qwen2.5-14B-Instruct")
 EMBED_MODEL_DIR = os.environ.get("EMBED_MODEL_DIR", "BAAI--bge-m3")
+EMBED_MODEL_ID = os.environ.get("EMBED_MODEL_ID", "BAAI/bge-m3")
 RERANK_MODEL_DIR = os.environ.get("RERANK_MODEL_DIR", "BAAI--bge-reranker-v2-m3")
 ARK_MODELS_DIR = Path(os.environ.get("ARK_MODELS_DIR", "/models"))
 TEI_EMBED_URL = os.environ.get("TEI_EMBED_URL", "http://tei-embed:80")
@@ -82,6 +101,7 @@ OPENWEBUI_URL = os.environ.get("OPENWEBUI_INTERNAL_URL", "http://open-webui:8080
 OPENWEBUI_API_KEY = os.environ.get("OPENWEBUI_API_KEY", "")
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_INTERNAL_URL", "http://keycloak:8080")
 EMBED_VECTOR_SIZE = int(os.environ.get("EMBED_VECTOR_SIZE", "1024"))
+ARK_INGEST_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("ARK_INGEST_MAX_CONCURRENT_JOBS", "2")))
 DEFAULT_BACKUP_DIR = os.environ.get("ARK_BACKUP_DIR", "/backups")
 AUDIT_LOG_FILE = Path(os.environ.get("ARK_AUDIT_LOG_FILE", "/var/log/ark/audit.jsonl"))
 PROXY_AUTH_SECRET = os.environ.get("ARK_PROXY_AUTH_SECRET", "")
@@ -95,6 +115,8 @@ PG_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 ARK_VERSION = get_ark_version()
 audit = AuditLogger(db_dsn=DB_DSN, log_file=AUDIT_LOG_FILE)
 rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+ingest_executor = ThreadPoolExecutor(max_workers=ARK_INGEST_MAX_CONCURRENT_JOBS, thread_name_prefix="ark-ingest")
+_scheduler_started = False
 
 app = FastAPI(
     title="ARK Control Plane & Project API Gateway",
@@ -160,6 +182,7 @@ def init_db() -> None:
                 );
 
                 ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT 'admin';
+                ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT[] NOT NULL DEFAULT ARRAY['chat']::TEXT[];
                 ALTER TABLE projects ADD COLUMN IF NOT EXISTS llm_model TEXT NOT NULL DEFAULT '';
 
                 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -182,6 +205,50 @@ def init_db() -> None:
                     last_status TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS ingest_sources (
+                    id SERIAL PRIMARY KEY,
+                    project_slug TEXT NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    source_kind TEXT NOT NULL DEFAULT 'plugin',
+                    plugin_id TEXT NOT NULL DEFAULT '',
+                    config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    secrets_enc BYTEA,
+                    pipeline_spec TEXT NOT NULL DEFAULT '',
+                    script_name TEXT NOT NULL DEFAULT '',
+                    chunk_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    sync_mode TEXT NOT NULL DEFAULT 'incremental',
+                    schedule_cron TEXT NOT NULL DEFAULT '',
+                    cursor_state JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    last_sync_at TIMESTAMPTZ,
+                    last_status TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS ingest_jobs (
+                    id BIGSERIAL PRIMARY KEY,
+                    source_id INTEGER REFERENCES ingest_sources(id) ON DELETE SET NULL,
+                    project_slug TEXT NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+                    trigger_type TEXT NOT NULL,
+                    triggered_by TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    log_excerpt TEXT NOT NULL DEFAULT '',
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    finished_at TIMESTAMPTZ
+                );
+
+                CREATE TABLE IF NOT EXISTS ingest_documents (
+                    source_key TEXT NOT NULL,
+                    project_slug TEXT NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+                    doc_id TEXT NOT NULL,
+                    filename TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL,
+                    chunk_count INTEGER NOT NULL DEFAULT 0,
+                    last_job_id BIGINT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (source_key, project_slug, doc_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS system_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
@@ -197,12 +264,68 @@ def init_db() -> None:
                 """,
                 (DEFAULT_BACKUP_DIR, LLM_SERVED_NAME),
             )
+            cur.execute(
+                """
+                INSERT INTO ingest_sources (id, project_slug, name, source_kind, plugin_id, config, last_sync_at, last_status)
+                SELECT c.id, c.project_slug, c.name, 'plugin', c.connector_type, c.config, c.last_sync_at, c.last_status
+                FROM connectors c
+                WHERE NOT EXISTS (SELECT 1 FROM ingest_sources s WHERE s.id = c.id)
+                """
+            )
+            cur.execute(
+                "SELECT setval(pg_get_serial_sequence('ingest_sources', 'id'), COALESCE((SELECT MAX(id) FROM ingest_sources), 1), true)"
+            )
         conn.commit()
+
+
+def _schedule_interval_seconds(expr: str) -> int | None:
+    cleaned = (expr or "").strip().lower()
+    if not cleaned:
+        return None
+    presets = {"@15m": 900, "@hourly": 3600, "@daily": 86400}
+    if cleaned in presets:
+        return presets[cleaned]
+    m = re.fullmatch(r"every:(\d+)([mh])", cleaned)
+    if m:
+        val = int(m.group(1))
+        unit = m.group(2)
+        return max(60, val * (3600 if unit == "h" else 60))
+    return None
+
+
+def _scheduler_loop() -> None:
+    while True:
+        time.sleep(60)
+        try:
+            with psycopg.connect(DB_DSN) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, schedule_cron, last_sync_at FROM ingest_sources "
+                        "WHERE enabled = TRUE AND schedule_cron <> ''"
+                    )
+                    rows = cur.fetchall()
+            now = datetime.now(timezone.utc)
+            for source_id, sched, last_sync_at in rows:
+                interval = _schedule_interval_seconds(sched)
+                if interval is None:
+                    continue
+                if last_sync_at is None or (now - last_sync_at).total_seconds() >= interval:
+                    try:
+                        enqueue_ingest_source_job(source_id=source_id, triggered_by="scheduler", trigger_type="schedule")
+                    except Exception as exc:
+                        logger.warning("Scheduled ingest trigger failed for source %s: %s", source_id, exc)
+        except Exception as exc:
+            logger.debug("Ingest scheduler tick error: %s", exc)
 
 
 @app.on_event("startup")
 def on_startup() -> None:
+    global _scheduler_started
     init_db()
+    if not _scheduler_started:
+        _scheduler_started = True
+        t = threading.Thread(target=_scheduler_loop, daemon=True, name="ark-ingest-scheduler")
+        t.start()
 
 
 def get_actor(request: Request) -> str:
@@ -411,6 +534,15 @@ class CreateKeyRequest(BaseModel):
     project_slug: str
     label: str = Field(min_length=1, max_length=80)
     rate_limit_rpm: int = Field(default=60, ge=1, le=6000)
+    scopes: list[str] = Field(default_factory=lambda: ["chat"])
+
+
+def _normalize_key_scopes(scopes: list[str] | None) -> list[str]:
+    allowed = {"chat", "ingest"}
+    cleaned = sorted({s.strip().lower() for s in (scopes or ["chat"]) if s and s.strip().lower() in allowed})
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="API key scopes must include at least one of: chat, ingest.")
+    return cleaned
 
 
 class BackupSettingRequest(BaseModel):
@@ -434,9 +566,49 @@ class RestoreBackupRequest(BaseModel):
 
 class CreateConnectorRequest(BaseModel):
     project_slug: str
-    connector_type: str = Field(pattern="^(smb_folder|sharepoint|mfiles)$")
+    connector_type: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=100)
-    config: dict[str, Any]
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateIngestSourceRequest(BaseModel):
+    project_slug: str
+    name: str = Field(min_length=1, max_length=100)
+    source_kind: str = Field(default="plugin", pattern="^(plugin|pipeline_yaml|script)$")
+    plugin_id: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    pipeline_spec: str = ""
+    script_name: str = ""
+    chunk_config: ChunkConfig = Field(default_factory=ChunkConfig)
+    sync_mode: str = Field(default="incremental", pattern="^(incremental|full_mirror)$")
+    schedule_cron: str = ""
+    enabled: bool = True
+
+
+class UpdateIngestSourceRequest(BaseModel):
+    name: str | None = None
+    config: dict[str, Any] | None = None
+    pipeline_spec: str | None = None
+    script_name: str | None = None
+    chunk_config: ChunkConfig | None = None
+    sync_mode: str | None = Field(default=None, pattern="^(incremental|full_mirror)$")
+    schedule_cron: str | None = None
+    enabled: bool | None = None
+
+
+class DryRunIngestRequest(BaseModel):
+    source_kind: str = Field(default="pipeline_yaml", pattern="^(plugin|pipeline_yaml|script)$")
+    plugin_id: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    pipeline_spec: str = ""
+    script_name: str = ""
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class PushDocumentsRequest(BaseModel):
+    documents: list[IngestDocument]
+    source_name: str = Field(default="push_api", min_length=1, max_length=64)
+    sync_mode: str = Field(default="incremental", pattern="^(incremental|full_mirror)$")
 
 
 @app.get("/admin-console/", response_class=HTMLResponse)
@@ -495,7 +667,7 @@ def portal_list_keys(request: Request) -> list[dict[str, Any]]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT k.id, k.project_slug, k.label, k.key_prefix, k.rate_limit_rpm, k.revoked, k.created_at, p.group_name "
+                "SELECT k.id, k.project_slug, k.label, k.key_prefix, k.rate_limit_rpm, k.revoked, k.created_at, p.group_name, k.scopes "
                 "FROM api_keys k JOIN projects p ON p.slug = k.project_slug "
                 "WHERE k.owner = %s AND k.revoked = FALSE ORDER BY k.created_at DESC",
                 (actor,),
@@ -510,6 +682,7 @@ def portal_list_keys(request: Request) -> list[dict[str, Any]]:
             "rate_limit_rpm": r[4],
             "revoked": r[5],
             "created_at": r[6].isoformat(),
+            "scopes": list(r[8] or ["chat"]),
         }
         for r in rows
         if user_has_project_access(groups, r[1], r[7])
@@ -520,6 +693,7 @@ def portal_list_keys(request: Request) -> list[dict[str, Any]]:
 def portal_create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
     groups = get_user_groups(request)
+    scopes = _normalize_key_scopes(req.scopes)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT group_name FROM projects WHERE slug = %s", (req.project_slug,))
@@ -531,15 +705,15 @@ def portal_create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]
             key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
             prefix = raw_key[:16]
             cur.execute(
-                "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, owner, rate_limit_rpm) "
-                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (req.project_slug, req.label, prefix, key_hash, actor, req.rate_limit_rpm),
+                "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, owner, rate_limit_rpm, scopes) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (req.project_slug, req.label, prefix, key_hash, actor, req.rate_limit_rpm, scopes),
             )
             key_id = cur.fetchone()[0]
         conn.commit()
 
-    audit.record("apikey.create", actor=actor, project_slug=req.project_slug, details={"key_id": key_id, "label": req.label, "portal": True})
-    return {"id": key_id, "api_key": raw_key, "prefix": prefix, "project_slug": req.project_slug}
+    audit.record("apikey.create", actor=actor, project_slug=req.project_slug, details={"key_id": key_id, "label": req.label, "scopes": scopes, "portal": True})
+    return {"id": key_id, "api_key": raw_key, "prefix": prefix, "project_slug": req.project_slug, "scopes": scopes}
 
 
 @app.delete("/portal/api/keys/{key_id}")
@@ -805,10 +979,10 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
 def list_keys() -> list[dict[str, Any]]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, project_slug, label, key_prefix, rate_limit_rpm, revoked, created_at FROM api_keys ORDER BY created_at DESC")
+            cur.execute("SELECT id, project_slug, label, key_prefix, rate_limit_rpm, revoked, created_at, scopes FROM api_keys ORDER BY created_at DESC")
             rows = cur.fetchall()
     return [
-        {"id": r[0], "project_slug": r[1], "label": r[2], "key_prefix": r[3], "rate_limit_rpm": r[4], "revoked": r[5], "created_at": r[6].isoformat()}
+        {"id": r[0], "project_slug": r[1], "label": r[2], "key_prefix": r[3], "rate_limit_rpm": r[4], "revoked": r[5], "created_at": r[6].isoformat(), "scopes": list(r[7] or ["chat"])}
         for r in rows
     ]
 
@@ -816,6 +990,7 @@ def list_keys() -> list[dict[str, Any]]:
 @app.post("/admin-console/api/keys")
 def create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
+    scopes = _normalize_key_scopes(req.scopes)
     raw_key = f"ark_proj_{secrets.token_urlsafe(32)}"
     key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
     prefix = raw_key[:16]
@@ -823,14 +998,14 @@ def create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, owner, rate_limit_rpm) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (req.project_slug, req.label, prefix, key_hash, actor, req.rate_limit_rpm),
+                "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, owner, rate_limit_rpm, scopes) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (req.project_slug, req.label, prefix, key_hash, actor, req.rate_limit_rpm, scopes),
             )
             key_id = cur.fetchone()[0]
         conn.commit()
 
-    audit.record("apikey.create", actor=actor, project_slug=req.project_slug, details={"key_id": key_id, "label": req.label})
-    return {"id": key_id, "api_key": raw_key, "prefix": prefix, "project_slug": req.project_slug}
+    audit.record("apikey.create", actor=actor, project_slug=req.project_slug, details={"key_id": key_id, "label": req.label, "scopes": scopes})
+    return {"id": key_id, "api_key": raw_key, "prefix": prefix, "project_slug": req.project_slug, "scopes": scopes}
 
 
 @app.delete("/admin-console/api/keys/{key_id}")
@@ -1121,11 +1296,549 @@ def restore_backup(req: RestoreBackupRequest, request: Request) -> dict[str, Any
     }
 
 
+def _mask_source_config(plugin_id: str, config: dict[str, Any], has_secrets: bool) -> dict[str, Any]:
+    masked = dict(config or {})
+    plugins = discover_plugins()
+    manifest = plugins.get(plugin_id)
+    if manifest and has_secrets:
+        for sf in manifest.secret_fields:
+            masked[sf] = "********"
+    return masked
+
+
+def _execute_ingest_source_job(job_id: int, source_id: int, triggered_by: str) -> dict[str, Any]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.project_slug, s.name, s.source_kind, s.plugin_id, s.config, s.secrets_enc,
+                       s.pipeline_spec, s.script_name, s.chunk_config, s.sync_mode, s.cursor_state,
+                       p.collection_name, p.rag_enabled
+                FROM ingest_sources s
+                JOIN projects p ON p.slug = s.project_slug
+                WHERE s.id = %s
+                """,
+                (source_id,),
+            )
+            row = cur.fetchone()
+            cur.execute("UPDATE ingest_jobs SET status = 'running' WHERE id = %s", (job_id,))
+        conn.commit()
+
+    if not row:
+        raise RuntimeError(f"Ingest source {source_id} not found.")
+
+    (
+        slug,
+        name,
+        source_kind,
+        plugin_id,
+        config,
+        secrets_enc,
+        pipeline_spec,
+        script_name,
+        chunk_cfg_raw,
+        sync_mode,
+        cursor_state,
+        collection_name,
+        rag_enabled,
+    ) = row
+
+    if not rag_enabled or not collection_name:
+        raise RuntimeError("Cannot ingest documents into a non-RAG clean project.")
+
+    logs: list[str] = []
+    new_cursor: dict[str, Any] | None = None
+    secrets_dict = decrypt_secrets(secrets_enc)
+    merged_config = {**(config or {}), **secrets_dict}
+    default_chunking = ChunkConfig.model_validate(chunk_cfg_raw or {})
+
+    try:
+        if source_kind == "plugin":
+            plugins = discover_plugins()
+            if plugin_id not in plugins:
+                raise RuntimeError(f"Plugin '{plugin_id}' is not installed.")
+            docs, new_cursor, logs = execute_plugin(
+                plugins[plugin_id],
+                config=merged_config,
+                cursor=cursor_state or {},
+            )
+            source_system = plugin_id
+        elif source_kind == "pipeline_yaml":
+            docs = execute_pipeline(pipeline_spec, secrets=secrets_dict)
+            source_system = f"pipeline:{name}"
+        elif source_kind == "script":
+            docs, new_cursor, logs = execute_custom_script(
+                script_name,
+                config=merged_config,
+                cursor=cursor_state or {},
+            )
+            source_system = f"script:{script_name}"
+        else:
+            raise RuntimeError(f"Unsupported source_kind '{source_kind}'.")
+
+        stats = process_ingest_documents(
+            documents=docs,
+            qdrant=get_qdrant(),
+            db_dsn=DB_DSN,
+            project_slug=slug,
+            collection_name=collection_name,
+            source_key=f"source:{source_id}",
+            source_system=source_system,
+            tika_url=TIKA_URL,
+            tei_url=TEI_EMBED_URL,
+            embed_model=EMBED_MODEL_ID,
+            embed_vector_size=EMBED_VECTOR_SIZE,
+            job_id=job_id,
+            sync_mode=sync_mode,
+            default_chunking=default_chunking,
+        )
+        stats_dict = stats.to_dict()
+        status_text = (
+            f"ok ({stats.docs_upserted} upserted, {stats.docs_skipped} skipped, "
+            f"{stats.docs_deleted} deleted, {stats.chunks_upserted} chunks)"
+        )
+        job_status = "succeeded" if stats.errors == 0 else "succeeded_with_errors"
+        log_text = "\n".join((logs + stats.error_messages)[-50:])
+
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE ingest_sources
+                    SET last_sync_at = NOW(),
+                        last_status = %s,
+                        cursor_state = COALESCE(%s::jsonb, cursor_state)
+                    WHERE id = %s
+                    """,
+                    (status_text, json.dumps(new_cursor) if new_cursor is not None else None, source_id),
+                )
+                cur.execute(
+                    """
+                    UPDATE ingest_jobs
+                    SET status = %s, stats = %s::jsonb, log_excerpt = %s, finished_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (job_status, json.dumps(stats_dict), log_text, job_id),
+                )
+            conn.commit()
+
+        audit.record(
+            "ingest.job_finish",
+            actor=triggered_by,
+            project_slug=slug,
+            status="success" if stats.errors == 0 else "partial",
+            details={"job_id": job_id, "source_id": source_id, **stats_dict},
+        )
+        return stats_dict
+    except Exception as exc:
+        err_msg = str(exc)
+        log_text = "\n".join((logs + [err_msg])[-50:])
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE ingest_sources SET last_sync_at = NOW(), last_status = %s WHERE id = %s",
+                    (f"error: {err_msg[:300]}", source_id),
+                )
+                cur.execute(
+                    "UPDATE ingest_jobs SET status = 'failed', log_excerpt = %s, finished_at = NOW() WHERE id = %s",
+                    (log_text, job_id),
+                )
+            conn.commit()
+        audit.record(
+            "ingest.job_finish",
+            actor=triggered_by,
+            project_slug=slug,
+            status="error",
+            details={"job_id": job_id, "source_id": source_id, "error": err_msg},
+        )
+        raise
+
+
+def enqueue_ingest_source_job(
+    *,
+    source_id: int,
+    triggered_by: str,
+    trigger_type: str = "manual",
+    wait: bool = False,
+) -> dict[str, Any]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT s.project_slug, p.rag_enabled, p.collection_name FROM ingest_sources s "
+                "JOIN projects p ON p.slug = s.project_slug WHERE s.id = %s",
+                (source_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Ingest source not found.")
+            slug, rag_enabled, collection_name = row
+            if not rag_enabled or not collection_name:
+                raise HTTPException(status_code=400, detail="Cannot sync documents to a non-RAG clean project.")
+
+            cur.execute(
+                "INSERT INTO ingest_jobs (source_id, project_slug, trigger_type, triggered_by, status) "
+                "VALUES (%s, %s, %s, %s, 'queued') RETURNING id",
+                (source_id, slug, trigger_type, triggered_by),
+            )
+            job_id = cur.fetchone()[0]
+        conn.commit()
+
+    audit.record(
+        "ingest.job_start",
+        actor=triggered_by,
+        project_slug=slug,
+        details={"job_id": job_id, "source_id": source_id, "trigger_type": trigger_type},
+    )
+    future = ingest_executor.submit(_execute_ingest_source_job, job_id, source_id, triggered_by)
+    if wait:
+        try:
+            stats = future.result()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"status": "ok", "job_id": job_id, **stats}
+    return {"status": "queued", "job_id": job_id, "source_id": source_id, "project_slug": slug}
+
+
+@app.get("/admin-console/api/plugins")
+def list_available_plugins() -> dict[str, Any]:
+    plugins = discover_plugins()
+    return {
+        "plugins": [m.to_public_dict() for m in plugins.values()],
+        "scripts": list_ingest_scripts(),
+        "pipeline_source_types": ["http_json", "http_paginated", "sql_query", "filesystem_glob", "csv", "ndjson"],
+        "chunk_strategies": ["chars", "markdown", "lines", "none"],
+    }
+
+
+@app.get("/admin-console/api/ingest-sources")
+def list_ingest_sources() -> list[dict[str, Any]]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, project_slug, name, source_kind, plugin_id, config, secrets_enc IS NOT NULL,
+                       pipeline_spec, script_name, chunk_config, sync_mode, schedule_cron, enabled,
+                       last_sync_at, last_status
+                FROM ingest_sources
+                ORDER BY id DESC
+                """
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "project_slug": r[1],
+            "name": r[2],
+            "source_kind": r[3],
+            "plugin_id": r[4],
+            "config": _mask_source_config(r[4], r[5], bool(r[6])),
+            "pipeline_spec": r[7],
+            "script_name": r[8],
+            "chunk_config": r[9] or {},
+            "sync_mode": r[10],
+            "schedule_cron": r[11],
+            "enabled": r[12],
+            "last_sync_at": r[13].isoformat() if r[13] else None,
+            "last_status": r[14],
+        }
+        for r in rows
+    ]
+
+
+@app.post("/admin-console/api/ingest-sources")
+def create_ingest_source(req: CreateIngestSourceRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    secret_fields: list[str] = []
+    if req.source_kind == "plugin":
+        plugins = discover_plugins()
+        if req.plugin_id not in plugins:
+            raise HTTPException(status_code=400, detail=f"Unknown plugin_id '{req.plugin_id}'.")
+        secret_fields = plugins[req.plugin_id].secret_fields
+    elif req.source_kind == "pipeline_yaml":
+        try:
+            parse_pipeline_spec(req.pipeline_spec)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid pipeline_spec: {exc}") from exc
+    elif req.source_kind == "script":
+        if req.script_name not in list_ingest_scripts():
+            raise HTTPException(status_code=400, detail=f"Ingest script not found: {req.script_name}")
+
+    public_cfg, secret_cfg = split_config_and_secrets(req.config, secret_fields)
+    secrets_enc = encrypt_secrets(secret_cfg) if secret_cfg else None
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ingest_sources (
+                    project_slug, name, source_kind, plugin_id, config, secrets_enc,
+                    pipeline_spec, script_name, chunk_config, sync_mode, schedule_cron, enabled
+                )
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    req.project_slug,
+                    req.name,
+                    req.source_kind,
+                    req.plugin_id,
+                    json.dumps(public_cfg),
+                    secrets_enc,
+                    req.pipeline_spec,
+                    req.script_name,
+                    req.chunk_config.model_dump_json(),
+                    req.sync_mode,
+                    req.schedule_cron.strip(),
+                    req.enabled,
+                ),
+            )
+            sid = cur.fetchone()[0]
+        conn.commit()
+    audit.record(
+        "ingest.source_create",
+        actor=actor,
+        project_slug=req.project_slug,
+        details={"source_id": sid, "source_kind": req.source_kind, "plugin_id": req.plugin_id, "script_name": req.script_name},
+    )
+    return {"id": sid, "status": "created"}
+
+
+@app.patch("/admin-console/api/ingest-sources/{source_id}")
+def update_ingest_source(source_id: int, req: UpdateIngestSourceRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT project_slug, source_kind, plugin_id, config, secrets_enc, name, pipeline_spec, "
+                "script_name, chunk_config, sync_mode, schedule_cron, enabled FROM ingest_sources WHERE id = %s",
+                (source_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Ingest source not found.")
+            slug, source_kind, plugin_id, cur_cfg, cur_secrets_enc, cur_name, cur_pipe, cur_script, cur_chunk, cur_mode, cur_sched, cur_enabled = row
+
+            new_name = req.name if req.name is not None else cur_name
+            new_pipe = req.pipeline_spec if req.pipeline_spec is not None else cur_pipe
+            if source_kind == "pipeline_yaml" and req.pipeline_spec is not None:
+                try:
+                    parse_pipeline_spec(new_pipe)
+                except Exception as exc:
+                    raise HTTPException(status_code=400, detail=f"Invalid pipeline_spec: {exc}") from exc
+            new_script = req.script_name if req.script_name is not None else cur_script
+            new_chunk = req.chunk_config.model_dump() if req.chunk_config is not None else cur_chunk
+            new_mode = req.sync_mode if req.sync_mode is not None else cur_mode
+            new_sched = req.schedule_cron.strip() if req.schedule_cron is not None else cur_sched
+            new_enabled = req.enabled if req.enabled is not None else cur_enabled
+
+            new_cfg = cur_cfg
+            new_secrets_enc = cur_secrets_enc
+            if req.config is not None:
+                plugins = discover_plugins()
+                secret_fields = plugins[plugin_id].secret_fields if source_kind == "plugin" and plugin_id in plugins else []
+                existing_sec = decrypt_secrets(cur_secrets_enc)
+                new_cfg, merged_sec = split_config_and_secrets(req.config, secret_fields, existing_secrets=existing_sec)
+                new_secrets_enc = encrypt_secrets(merged_sec) if merged_sec else None
+
+            cur.execute(
+                """
+                UPDATE ingest_sources
+                SET name = %s, config = %s::jsonb, secrets_enc = %s, pipeline_spec = %s,
+                    script_name = %s, chunk_config = %s::jsonb, sync_mode = %s, schedule_cron = %s, enabled = %s
+                WHERE id = %s
+                """,
+                (new_name, json.dumps(new_cfg), new_secrets_enc, new_pipe, new_script, json.dumps(new_chunk), new_mode, new_sched, new_enabled, source_id),
+            )
+        conn.commit()
+    audit.record("ingest.source_update", actor=actor, project_slug=slug, details={"source_id": source_id})
+    return {"id": source_id, "status": "updated"}
+
+
+@app.delete("/admin-console/api/ingest-sources/{source_id}")
+def delete_ingest_source(source_id: int, request: Request, delete_vectors: bool = False) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM ingest_sources WHERE id = %s RETURNING project_slug",
+                (source_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Ingest source not found.")
+            slug = row[0]
+            if delete_vectors:
+                cur.execute("SELECT collection_name, rag_enabled FROM projects WHERE slug = %s", (slug,))
+                prow = cur.fetchone()
+                cur.execute(
+                    "DELETE FROM ingest_documents WHERE source_key = %s AND project_slug = %s RETURNING doc_id",
+                    (f"source:{source_id}", slug),
+                )
+                doc_ids = [r[0] for r in cur.fetchall()]
+                if prow and prow[1] and prow[0]:
+                    qdrant = get_qdrant()
+                    for did in doc_ids:
+                        delete_document_points(qdrant, prow[0], f"source:{source_id}", did)
+        conn.commit()
+    audit.record("ingest.source_delete", actor=actor, project_slug=slug, details={"source_id": source_id, "delete_vectors": delete_vectors})
+    return {"status": "deleted", "id": source_id}
+
+
+@app.post("/admin-console/api/ingest-sources/dry-run")
+def dry_run_ingest_source(req: DryRunIngestRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    try:
+        if req.source_kind == "pipeline_yaml":
+            result = dry_run_pipeline(req.pipeline_spec, secrets=req.config, limit=req.limit)
+        elif req.source_kind == "plugin":
+            plugins = discover_plugins()
+            if req.plugin_id not in plugins:
+                raise HTTPException(status_code=400, detail=f"Unknown plugin_id '{req.plugin_id}'.")
+            docs, _, logs = execute_plugin(plugins[req.plugin_id], config=req.config, dry_run=True, limit=req.limit)
+            result = {
+                "name": req.plugin_id,
+                "preview_count": len(docs),
+                "logs": logs,
+                "documents": [
+                    {
+                        "doc_id": d.doc_id,
+                        "filename": d.filename,
+                        "content_type": d.content_type,
+                        "metadata": d.metadata,
+                        "content_preview": (d.content[:300] + "...") if len(d.content) > 300 else d.content,
+                    }
+                    for d in docs
+                ],
+            }
+        elif req.source_kind == "script":
+            docs, _, logs = execute_custom_script(req.script_name, config=req.config, dry_run=True, limit=req.limit)
+            result = {
+                "name": req.script_name,
+                "preview_count": len(docs),
+                "logs": logs,
+                "documents": [
+                    {
+                        "doc_id": d.doc_id,
+                        "filename": d.filename,
+                        "content_type": d.content_type,
+                        "metadata": d.metadata,
+                        "content_preview": (d.content[:300] + "...") if len(d.content) > 300 else d.content,
+                    }
+                    for d in docs
+                ],
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported source_kind.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Dry-run failed: {exc}") from exc
+
+    audit.record("ingest.dry_run", actor=actor, details={"source_kind": req.source_kind, "preview_count": result.get("preview_count", 0)})
+    return result
+
+
+@app.post("/admin-console/api/ingest-sources/{source_id}/sync")
+def trigger_ingest_source_sync(source_id: int, request: Request, async_mode: bool = True) -> dict[str, Any]:
+    actor = get_actor(request)
+    return enqueue_ingest_source_job(source_id=source_id, triggered_by=actor, trigger_type="manual", wait=not async_mode)
+
+
+@app.get("/admin-console/api/ingest-jobs")
+def list_ingest_jobs(project_slug: str = "", limit: int = 30) -> list[dict[str, Any]]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            if project_slug.strip():
+                cur.execute(
+                    """
+                    SELECT id, source_id, project_slug, trigger_type, triggered_by, status, stats, log_excerpt, started_at, finished_at
+                    FROM ingest_jobs WHERE project_slug = %s ORDER BY id DESC LIMIT %s
+                    """,
+                    (project_slug.strip(), min(limit, 200)),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, source_id, project_slug, trigger_type, triggered_by, status, stats, log_excerpt, started_at, finished_at
+                    FROM ingest_jobs ORDER BY id DESC LIMIT %s
+                    """,
+                    (min(limit, 200),),
+                )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "source_id": r[1],
+            "project_slug": r[2],
+            "trigger_type": r[3],
+            "triggered_by": r[4],
+            "status": r[5],
+            "stats": r[6] or {},
+            "log_excerpt": r[7],
+            "started_at": r[8].isoformat() if r[8] else None,
+            "finished_at": r[9].isoformat() if r[9] else None,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/admin-console/api/projects/{slug}/ingest/files")
+async def admin_upload_project_file(
+    slug: str,
+    request: Request,
+    file: UploadFile = File(...),
+    doc_id: str = Form(default=""),
+    chunk_strategy: str = Form(default="chars"),
+) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT collection_name, rag_enabled FROM projects WHERE slug = %s", (slug,))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    collection_name, rag_enabled = row
+    if not rag_enabled or not collection_name:
+        raise HTTPException(status_code=400, detail="Cannot ingest files into a non-RAG clean project.")
+
+    raw = await file.read()
+    filename = Path(file.filename or "document.bin").name
+    target_doc_id = (doc_id or "").strip() or f"upload/{filename}"
+    doc = IngestDocument(
+        doc_id=target_doc_id,
+        filename=filename,
+        content_type="binary",
+        raw_bytes=raw,
+        chunking=ChunkConfig(strategy=chunk_strategy if chunk_strategy in {"chars", "markdown", "lines", "none"} else "chars"),
+    )
+    stats = process_ingest_documents(
+        documents=[doc],
+        qdrant=get_qdrant(),
+        db_dsn=DB_DSN,
+        project_slug=slug,
+        collection_name=collection_name,
+        source_key="admin_upload",
+        source_system="admin_upload",
+        tika_url=TIKA_URL,
+        tei_url=TEI_EMBED_URL,
+        embed_model=EMBED_MODEL_ID,
+        embed_vector_size=EMBED_VECTOR_SIZE,
+    )
+    if stats.errors:
+        raise HTTPException(status_code=500, detail="; ".join(stats.error_messages))
+    audit.record("ingest.push", actor=actor, project_slug=slug, details={"doc_id": target_doc_id, **stats.to_dict()})
+    return {"status": "ok", "doc_id": target_doc_id, **stats.to_dict()}
+
+
+# Legacy /admin-console/api/connectors endpoints (backed by ingest_sources)
 @app.get("/admin-console/api/connectors")
 def list_connectors() -> list[dict[str, Any]]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, project_slug, connector_type, name, last_sync_at, last_status FROM connectors ORDER BY id DESC")
+            cur.execute(
+                "SELECT id, project_slug, COALESCE(NULLIF(plugin_id, ''), source_kind), name, last_sync_at, last_status "
+                "FROM ingest_sources ORDER BY id DESC"
+            )
             rows = cur.fetchall()
     return [
         {"id": r[0], "project_slug": r[1], "connector_type": r[2], "name": r[3], "last_sync_at": r[4].isoformat() if r[4] else None, "last_status": r[5]}
@@ -1135,52 +1848,22 @@ def list_connectors() -> list[dict[str, Any]]:
 
 @app.post("/admin-console/api/connectors")
 def create_connector(req: CreateConnectorRequest, request: Request) -> dict[str, Any]:
-    actor = get_actor(request)
-    with psycopg.connect(DB_DSN) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO connectors (project_slug, connector_type, name, config) VALUES (%s, %s, %s, %s::jsonb) RETURNING id",
-                (req.project_slug, req.connector_type, req.name, json.dumps(req.config)),
-            )
-            cid = cur.fetchone()[0]
-        conn.commit()
-    audit.record("connector.create", actor=actor, project_slug=req.project_slug, details={"connector_id": cid, "type": req.connector_type})
-    return {"id": cid, "status": "created"}
+    return create_ingest_source(
+        CreateIngestSourceRequest(
+            project_slug=req.project_slug,
+            name=req.name,
+            source_kind="plugin",
+            plugin_id=req.connector_type,
+            config=req.config,
+        ),
+        request,
+    )
 
 
 @app.post("/admin-console/api/connectors/{connector_id}/sync")
 def trigger_connector_sync(connector_id: int, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
-    with psycopg.connect(DB_DSN) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT c.project_slug, c.connector_type, c.config, p.collection_name, p.rag_enabled "
-                "FROM connectors c JOIN projects p ON p.slug = c.project_slug WHERE c.id = %s",
-                (connector_id,),
-            )
-            row = cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Connector not found.")
-    slug, ctype, config, collection_name, rag_enabled = row
-    if not rag_enabled or not collection_name:
-        raise HTTPException(status_code=400, detail="Cannot sync documents to a non-RAG clean project.")
-
-    runner = CONNECTOR_RUNNERS[ctype]
-    try:
-        stats = runner(config=config, qdrant=get_qdrant(), collection_name=collection_name, tika_url=TIKA_URL, tei_url=TEI_EMBED_URL)
-        status_text = f"ok ({stats['files_processed']} files, {stats['chunks_upserted']} chunks)"
-    except Exception as exc:
-        status_text = f"error: {exc}"
-        audit.record("connector.sync", actor=actor, project_slug=slug, status="error", details={"connector_id": connector_id, "error": str(exc)})
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        with psycopg.connect(DB_DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute("UPDATE connectors SET last_sync_at = NOW(), last_status = %s WHERE id = %s", (status_text, connector_id))
-            conn.commit()
-
-    audit.record("connector.sync", actor=actor, project_slug=slug, details={"connector_id": connector_id, **stats})
-    return {"status": "ok", **stats}
+    return enqueue_ingest_source_job(source_id=connector_id, triggered_by=actor, trigger_type="manual", wait=True)
 
 
 @app.get("/admin-console/api/llm-backend")
@@ -1418,7 +2101,7 @@ def authenticate_project_key(slug: str, authorization: str | None = Header(defau
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT k.id, k.label, k.rate_limit_rpm, k.revoked, p.collection_name, p.rag_enabled, p.system_prompt, p.model_id, p.llm_model
+                SELECT k.id, k.label, k.rate_limit_rpm, k.revoked, p.collection_name, p.rag_enabled, p.system_prompt, p.model_id, p.llm_model, k.scopes
                 FROM api_keys k
                 JOIN projects p ON p.slug = k.project_slug
                 WHERE k.key_hash = %s AND k.project_slug = %s
@@ -1431,7 +2114,7 @@ def authenticate_project_key(slug: str, authorization: str | None = Header(defau
         audit.record("api.auth_failed", actor="unknown", project_slug=slug, status="denied")
         raise HTTPException(status_code=403, detail="Invalid or revoked project API key.")
 
-    key_id, label, rpm, _, collection_name, rag_enabled, system_prompt, model_id, llm_model = row
+    key_id, label, rpm, _, collection_name, rag_enabled, system_prompt, model_id, llm_model, raw_scopes = row
     now = time.monotonic()
     bucket = rate_buckets[f"{slug}:{key_id}"]
     while bucket and now - bucket[0] > 60.0:
@@ -1448,7 +2131,14 @@ def authenticate_project_key(slug: str, authorization: str | None = Header(defau
         "system_prompt": system_prompt,
         "model_id": model_id,
         "llm_model": llm_model,
+        "scopes": list(raw_scopes or ["chat"]),
     }
+
+
+def _require_key_scope(auth: dict[str, Any], scope: str, slug: str) -> None:
+    if scope not in (auth.get("scopes") or []):
+        audit.record("api.scope_denied", actor=f"key:{auth['key_label']}", project_slug=slug, status="denied", details={"required_scope": scope})
+        raise HTTPException(status_code=403, detail=f"API key lacks required '{scope}' scope.")
 
 
 @app.get("/projects/{slug}/v1/models")
@@ -1478,6 +2168,7 @@ def rerank_contexts(query: str, candidates: list[dict[str, str]], top_n: int = 4
 
 @app.post("/projects/{slug}/v1/chat/completions")
 async def project_chat_completions(slug: str, request: Request, auth: dict[str, Any] = Depends(authenticate_project_key)) -> Any:
+    _require_key_scope(auth, "chat", slug)
     body = await request.json()
     messages = list(body.get("messages") or [])
     stream = bool(body.get("stream", False))
@@ -1486,7 +2177,7 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
     if auth["rag_enabled"] and messages:
         last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
         if isinstance(last_user, str) and last_user.strip():
-            query_vec = embed_texts(TEI_EMBED_URL, [last_user])[0]
+            query_vec = embed_texts(TEI_EMBED_URL, [last_user], model=EMBED_MODEL_ID)[0]
             qdrant = get_qdrant()
             candidates: list[dict[str, str]] = []
             for col in ("Company_Common", auth["collection_name"]):
@@ -1576,3 +2267,276 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
     except ValueError:
         content = {"error": resp.text}
     return JSONResponse(status_code=resp.status_code, content=content)
+
+
+# ==============================================================================
+# Scoped Push Ingest API (/projects/{slug}/v1/ingest/...)
+# ==============================================================================
+
+def _run_push_ingest_job(
+    *,
+    job_id: int,
+    slug: str,
+    collection_name: str,
+    documents: list[IngestDocument],
+    source_key: str,
+    source_system: str,
+    sync_mode: str,
+    actor: str,
+) -> dict[str, Any]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE ingest_jobs SET status = 'running' WHERE id = %s", (job_id,))
+        conn.commit()
+    try:
+        stats = process_ingest_documents(
+            documents=documents,
+            qdrant=get_qdrant(),
+            db_dsn=DB_DSN,
+            project_slug=slug,
+            collection_name=collection_name,
+            source_key=source_key,
+            source_system=source_system,
+            tika_url=TIKA_URL,
+            tei_url=TEI_EMBED_URL,
+            embed_model=EMBED_MODEL_ID,
+            embed_vector_size=EMBED_VECTOR_SIZE,
+            job_id=job_id,
+            sync_mode=sync_mode,
+        )
+        stats_dict = stats.to_dict()
+        job_status = "succeeded" if stats.errors == 0 else "succeeded_with_errors"
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE ingest_jobs SET status = %s, stats = %s::jsonb, log_excerpt = %s, finished_at = NOW() WHERE id = %s",
+                    (job_status, json.dumps(stats_dict), "\n".join(stats.error_messages[:50]), job_id),
+                )
+            conn.commit()
+        audit.record(
+            "ingest.push",
+            actor=actor,
+            project_slug=slug,
+            status="success" if stats.errors == 0 else "partial",
+            details={"job_id": job_id, "source": source_system, **stats_dict},
+        )
+        return stats_dict
+    except Exception as exc:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE ingest_jobs SET status = 'failed', log_excerpt = %s, finished_at = NOW() WHERE id = %s",
+                    (str(exc), job_id),
+                )
+            conn.commit()
+        audit.record("ingest.push", actor=actor, project_slug=slug, status="error", details={"job_id": job_id, "error": str(exc)})
+        raise
+
+
+@app.post("/projects/{slug}/v1/ingest/documents")
+async def project_push_documents(
+    slug: str,
+    request: Request,
+    async_mode: bool = False,
+    auth: dict[str, Any] = Depends(authenticate_project_key),
+) -> dict[str, Any]:
+    _require_key_scope(auth, "ingest", slug)
+    if not auth["rag_enabled"] or not auth["collection_name"]:
+        raise HTTPException(status_code=400, detail="Cannot ingest documents into a non-RAG clean project.")
+
+    content_type = (request.headers.get("content-type") or "").lower()
+    raw_body = (await request.body()).decode("utf-8")
+    source_name = "push_api"
+    sync_mode = "incremental"
+    docs: list[IngestDocument] = []
+
+    if "ndjson" in content_type or "x-ndjson" in content_type:
+        for line in raw_body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            docs.append(IngestDocument.model_validate_json(line))
+    else:
+        payload = json.loads(raw_body) if raw_body.strip() else {}
+        req = PushDocumentsRequest.model_validate(payload)
+        docs = req.documents
+        source_name = req.source_name
+        sync_mode = req.sync_mode
+
+    actor = f"key:{auth['key_label']}"
+    source_key = f"push:{source_name}"
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO ingest_jobs (source_id, project_slug, trigger_type, triggered_by, status) "
+                "VALUES (NULL, %s, 'push_api', %s, 'queued') RETURNING id",
+                (slug, actor),
+            )
+            job_id = cur.fetchone()[0]
+        conn.commit()
+
+    if async_mode or request.query_params.get("async") == "true":
+        ingest_executor.submit(
+            _run_push_ingest_job,
+            job_id=job_id,
+            slug=slug,
+            collection_name=auth["collection_name"],
+            documents=docs,
+            source_key=source_key,
+            source_system=source_name,
+            sync_mode=sync_mode,
+            actor=actor,
+        )
+        return {"status": "queued", "job_id": job_id, "project_slug": slug, "documents_queued": len(docs)}
+
+    stats_dict = _run_push_ingest_job(
+        job_id=job_id,
+        slug=slug,
+        collection_name=auth["collection_name"],
+        documents=docs,
+        source_key=source_key,
+        source_system=source_name,
+        sync_mode=sync_mode,
+        actor=actor,
+    )
+    return {"status": "ok", "job_id": job_id, **stats_dict}
+
+
+@app.post("/projects/{slug}/v1/ingest/files")
+async def project_push_file(
+    slug: str,
+    file: UploadFile = File(...),
+    doc_id: str = Form(default=""),
+    metadata: str = Form(default="{}"),
+    chunk_strategy: str = Form(default="chars"),
+    chunk_size: int = Form(default=1200),
+    overlap: int = Form(default=200),
+    source_name: str = Form(default="push_api"),
+    auth: dict[str, Any] = Depends(authenticate_project_key),
+) -> dict[str, Any]:
+    _require_key_scope(auth, "ingest", slug)
+    if not auth["rag_enabled"] or not auth["collection_name"]:
+        raise HTTPException(status_code=400, detail="Cannot ingest files into a non-RAG clean project.")
+
+    try:
+        parsed_meta = json.loads(metadata) if metadata.strip() else {}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {exc}") from exc
+
+    raw = await file.read()
+    filename = Path(file.filename or "document.bin").name
+    target_doc_id = (doc_id or "").strip() or filename
+    doc = IngestDocument(
+        doc_id=target_doc_id,
+        filename=filename,
+        content_type="binary",
+        raw_bytes=raw,
+        metadata=parsed_meta if isinstance(parsed_meta, dict) else {},
+        chunking=ChunkConfig(
+            strategy=chunk_strategy if chunk_strategy in {"chars", "markdown", "lines", "none"} else "chars",
+            chunk_size=max(64, min(chunk_size, 32000)),
+            overlap=max(0, min(overlap, 8000)),
+        ),
+    )
+    actor = f"key:{auth['key_label']}"
+    stats = process_ingest_documents(
+        documents=[doc],
+        qdrant=get_qdrant(),
+        db_dsn=DB_DSN,
+        project_slug=slug,
+        collection_name=auth["collection_name"],
+        source_key=f"push:{source_name}",
+        source_system=source_name,
+        tika_url=TIKA_URL,
+        tei_url=TEI_EMBED_URL,
+        embed_model=EMBED_MODEL_ID,
+        embed_vector_size=EMBED_VECTOR_SIZE,
+    )
+    if stats.errors:
+        audit.record("ingest.push", actor=actor, project_slug=slug, status="error", details={"doc_id": target_doc_id, "errors": stats.error_messages})
+        raise HTTPException(status_code=500, detail="; ".join(stats.error_messages))
+    audit.record("ingest.push", actor=actor, project_slug=slug, details={"doc_id": target_doc_id, "filename": filename, **stats.to_dict()})
+    return {"status": "ok", "doc_id": target_doc_id, **stats.to_dict()}
+
+
+@app.delete("/projects/{slug}/v1/ingest/documents/{doc_id:path}")
+def project_delete_document(
+    slug: str,
+    doc_id: str,
+    source_name: str = "push_api",
+    auth: dict[str, Any] = Depends(authenticate_project_key),
+) -> dict[str, Any]:
+    _require_key_scope(auth, "ingest", slug)
+    if not auth["rag_enabled"] or not auth["collection_name"]:
+        raise HTTPException(status_code=400, detail="Project does not have RAG enabled.")
+
+    source_key = f"push:{source_name}"
+    delete_document_points(get_qdrant(), auth["collection_name"], source_key, doc_id)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM ingest_documents WHERE source_key = %s AND project_slug = %s AND doc_id = %s",
+                (source_key, slug, doc_id),
+            )
+            deleted_rows = cur.rowcount
+        conn.commit()
+    audit.record("ingest.delete", actor=f"key:{auth['key_label']}", project_slug=slug, details={"doc_id": doc_id, "source_key": source_key})
+    return {"status": "deleted", "doc_id": doc_id, "tracked_rows_removed": deleted_rows}
+
+
+@app.get("/projects/{slug}/v1/ingest/documents")
+def project_list_documents(
+    slug: str,
+    limit: int = 100,
+    auth: dict[str, Any] = Depends(authenticate_project_key),
+) -> dict[str, Any]:
+    _require_key_scope(auth, "ingest", slug)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT source_key, doc_id, filename, content_hash, chunk_count, updated_at "
+                "FROM ingest_documents WHERE project_slug = %s ORDER BY updated_at DESC LIMIT %s",
+                (slug, min(limit, 500)),
+            )
+            rows = cur.fetchall()
+    return {
+        "project_slug": slug,
+        "documents": [
+            {
+                "source_key": r[0],
+                "doc_id": r[1],
+                "filename": r[2],
+                "content_hash": r[3],
+                "chunk_count": r[4],
+                "updated_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/projects/{slug}/v1/ingest/jobs/{job_id}")
+def project_get_ingest_job(
+    slug: str,
+    job_id: int,
+    auth: dict[str, Any] = Depends(authenticate_project_key),
+) -> dict[str, Any]:
+    _require_key_scope(auth, "ingest", slug)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, status, stats, log_excerpt, started_at, finished_at "
+                "FROM ingest_jobs WHERE id = %s AND project_slug = %s",
+                (job_id, slug),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ingest job not found.")
+    return {
+        "id": row[0],
+        "status": row[1],
+        "stats": row[2] or {},
+        "log_excerpt": row[3],
+        "started_at": row[4].isoformat() if row[4] else None,
+        "finished_at": row[5].isoformat() if row[5] else None,
+    }
