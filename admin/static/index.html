@@ -124,6 +124,8 @@
       border-radius: 12px;
       padding: 18px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      min-width: 0;
+      overflow-x: auto;
     }
 
     .card.admin-accent {
@@ -213,14 +215,19 @@
       width: 100%;
       border-collapse: collapse;
       margin-top: 14px;
-      font-size: 0.83rem;
+      font-size: 0.8rem;
     }
 
     th,
     td {
       text-align: left;
-      padding: 7px 8px;
+      padding: 6px 6px;
       border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    table code {
+      word-break: break-word;
     }
 
     th {
@@ -333,7 +340,41 @@
             <th>Slug</th>
             <th>Mode</th>
             <th>LLM</th>
+            <th>Users</th>
             <th>Gateway Endpoint</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Project User Access -->
+    <div id="project-access-card" class="card admin-accent">
+      <h2>Project User Access</h2>
+      <p style="margin-top:0;font-size:0.82rem;color:var(--muted);">
+        Control which users can access each project in the User Portal (<code>/portal</code>) and Open WebUI.
+        Users in the matching SSO group (<code>&lt;slug&gt;</code>) or <code>ark-admins</code> also have access.
+      </p>
+      <label>Project</label>
+      <select id="access-proj" onchange="loadProjectMembers()"></select>
+      <label>User Email or Username</label>
+      <input id="access-user" list="known-users-list" placeholder="alice@corp.internal or jdoe" />
+      <datalist id="known-users-list"></datalist>
+      <label>Role</label>
+      <select id="access-role">
+        <option value="member">member</option>
+        <option value="editor">editor</option>
+        <option value="viewer">viewer</option>
+      </select>
+      <button onclick="grantProjectAccess()">Grant Access</button>
+      <div id="access-status" style="margin-top:8px;font-size:0.82rem;color:var(--muted);"></div>
+      <table id="access-table">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Role</th>
+            <th>Granted By</th>
             <th>Action</th>
           </tr>
         </thead>
@@ -607,9 +648,10 @@
     ].join('\n');
 
     async function refreshAll() {
-      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend] = await Promise.all([
+      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, knownUsers] = await Promise.all([
           api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
-          api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?limit=15'), api('/models'), api('/llm-backend')
+          api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?limit=15'), api('/models'), api('/llm-backend'),
+          api('/users')
         ]);
 
       const verLabel = `v${ver.version}`;
@@ -632,15 +674,22 @@
             el('td', { text: p.slug }),
             el('td', {}, el('span', { className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`, text: p.rag_enabled ? 'RAG' : 'Clean' })),
             el('td', {}, el('code', { text: p.effective_llm_model || '-' })),
+            el('td', { text: String(p.member_count ?? 0) }),
             el('td', {}, el('code', { text: `/projects/${p.slug}/v1` })),
-            el('td', { style: 'white-space:nowrap;' }, [
+            el('td', { style: 'display:flex;gap:4px;flex-wrap:wrap;' }, [
               el('button', {
-                style: 'margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;',
+                style: 'margin:0;padding:4px 7px;font-size:0.74rem;',
+                text: 'Access',
+                onClick: () => focusProjectAccess(p.slug)
+              }),
+              el('button', {
+                style: 'margin:0;padding:4px 7px;font-size:0.74rem;',
                 text: 'LLM',
                 onClick: () => setProjectLlm(p.slug, p.llm_model || '')
               }),
               el('button', {
                 className: 'danger',
+                style: 'padding:4px 7px;font-size:0.74rem;',
                 text: 'Delete',
                 onClick: () => deleteProject(p.slug)
               })
@@ -652,6 +701,16 @@
       const makeProjOpts = () => projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }));
       document.getElementById('key-proj').replaceChildren(...makeProjOpts());
       document.getElementById('conn-proj').replaceChildren(...makeProjOpts());
+      const accessProjSel = document.getElementById('access-proj');
+      const prevAccessProj = accessProjSel.value;
+      accessProjSel.replaceChildren(...makeProjOpts());
+      if (prevAccessProj && projects.some(p => p.slug === prevAccessProj)) {
+        accessProjSel.value = prevAccessProj;
+      }
+      document.getElementById('known-users-list').replaceChildren(
+        ...(knownUsers || []).map(u => el('option', { value: u.identifier, text: u.source }))
+      );
+      await loadProjectMembers();
 
       document.querySelector('#key-table tbody').replaceChildren(
         ...keys.filter(k => !k.revoked).map(k =>
@@ -789,6 +848,65 @@
       if (!confirm(`Delete project '${slug}' and its API keys/Qdrant collection?`)) return;
       await api(`/projects/${encodeURIComponent(slug)}`, { method: 'DELETE' });
       refreshAll();
+    }
+
+    async function loadProjectMembers() {
+      const slug = document.getElementById('access-proj').value;
+      const tbody = document.querySelector('#access-table tbody');
+      if (!slug) {
+        tbody.replaceChildren(el('tr', {}, el('td', { colSpan: 4, text: 'No project selected.' })));
+        return;
+      }
+      const members = await api(`/projects/${encodeURIComponent(slug)}/members`);
+      if (!members.length) {
+        tbody.replaceChildren(el('tr', {}, el('td', { colSpan: 4, text: 'No explicit user grants for this project.' })));
+        return;
+      }
+      tbody.replaceChildren(
+        ...members.map(m =>
+          el('tr', {}, [
+            el('td', {}, el('code', { text: m.user_identifier })),
+            el('td', { text: m.role }),
+            el('td', { text: m.granted_by }),
+            el('td', {}, el('button', {
+              className: 'danger',
+              text: 'Revoke',
+              onClick: () => revokeProjectAccess(slug, m.user_identifier)
+            }))
+          ])
+        )
+      );
+    }
+
+    async function grantProjectAccess() {
+      const slug = document.getElementById('access-proj').value;
+      const user = document.getElementById('access-user').value.trim();
+      const role = document.getElementById('access-role').value;
+      if (!slug || !user) return;
+      const res = await api(`/projects/${encodeURIComponent(slug)}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_identifier: user, role })
+      });
+      document.getElementById('access-user').value = '';
+      document.getElementById('access-status').textContent = `Granted ${res.role} access to ${res.user_identifier} on ${slug} (WebUI sync: ${res.webui_sync}).`;
+      refreshAll();
+    }
+
+    async function revokeProjectAccess(slug, userIdentifier) {
+      if (!confirm(`Revoke '${userIdentifier}' access from '${slug}'?`)) return;
+      const res = await api(`/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(userIdentifier)}`, {
+        method: 'DELETE'
+      });
+      document.getElementById('access-status').textContent = `Revoked ${userIdentifier} from ${slug} (WebUI sync: ${res.webui_sync}).`;
+      refreshAll();
+    }
+
+    function focusProjectAccess(slug) {
+      const sel = document.getElementById('access-proj');
+      sel.value = slug;
+      loadProjectMembers();
+      document.getElementById('project-access-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     async function createKey() {

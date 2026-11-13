@@ -31,17 +31,22 @@
 
 ## Product Tour
 
-### 1. AI Chat Workspace & User Portal (`/portal/`)
-Team members sign in with Corporate SSO to chat with their authorized project assistants in **Open WebUI**. From the **ARK User Portal**, users can view the projects they have access to and create or revoke personal API keys for their IDE or Office add-ins.
+### 1. AI Chat Workspace (WebChat UI — `/`)
+Team members sign in with Corporate SSO to chat with their authorized project assistants in **Open WebUI**, styled with the ARK dark theme and isolated per-project knowledge bases.
+
+![ARK WebChat UI](docs/images/webchat-ui.png)
+
+### 2. ARK User Portal (`/portal/`)
+From the **ARK User Portal**, users can view the projects they have access to and create or revoke personal, scoped API keys (`chat` / `ingest`) for their IDE or Office add-ins.
 
 ![ARK User Portal](docs/images/user-portal.png)
 
-### 2. ARK Control Plane (`/admin-console/`)
-IT administrators use the **ARK Control Plane** to monitor system health, provision RAG or Clean projects, issue and revoke team API keys, configure document connectors and ingestion schedules, view audit logs, and run full backups.
+### 3. ARK Control Plane (`/admin-console/`)
+IT administrators use the **ARK Control Plane** to monitor system health, provision RAG or Clean projects, control per-user project access, issue and revoke scoped API keys, configure document connectors and ingestion pipelines, view audit logs, and run full backups.
 
 ![ARK Control Plane](docs/images/admin-console.png)
 
-### 3. ARK LLM Backend Console (`:8095`)
+### 4. ARK LLM Backend Console (`:8095`)
 When running inference on a dedicated GPU host, infrastructure teams can use the standalone **ARK LLM Backend Console** to inspect live model status, stage offline model archives, and manage local model weights.
 
 ![ARK LLM Backend Console](docs/images/llm-backend-console.png)

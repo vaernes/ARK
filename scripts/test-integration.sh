@@ -367,6 +367,59 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   [[ "${cross_code}" == "403" ]] || fail "Expected 403 for cross-project API key, got ${cross_code}"
   pass "Cross-project API key rejected (HTTP 403)."
 
+  # 5a. Test per-user project access control from admin side -> portal enforcement
+  docker exec ark-test-ark-admin python3 -c "
+import requests
+H_ADMIN = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-User': 'ci-admin@ark.local',
+    'X-Forwarded-Groups': 'ark-admins',
+}
+H_BOB = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-Email': 'bob@ark.local',
+    'X-Forwarded-Groups': 'users',
+}
+
+# Initially bob has no access to project-alpha
+projs = requests.get('http://localhost:8090/portal/api/projects', headers=H_BOB, timeout=5)
+projs.raise_for_status()
+assert all(p['slug'] != 'project-alpha' for p in projs.json()), projs.json()
+denied = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key'}, timeout=5)
+assert denied.status_code == 403, denied.status_code
+
+# Admin grants bob access
+grant = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, json={'user_identifier': 'bob@ark.local', 'role': 'member'}, timeout=5)
+grant.raise_for_status()
+assert grant.json()['user_identifier'] == 'bob@ark.local', grant.json()
+
+members = requests.get('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, timeout=5)
+members.raise_for_status()
+assert any(m['user_identifier'] == 'bob@ark.local' for m in members.json()), members.json()
+
+users = requests.get('http://localhost:8090/admin-console/api/users', headers=H_ADMIN, timeout=5)
+users.raise_for_status()
+assert any(u['identifier'] == 'bob@ark.local' for u in users.json()), users.json()
+
+# Now bob sees project-alpha and can issue a key
+projs2 = requests.get('http://localhost:8090/portal/api/projects', headers=H_BOB, timeout=5)
+projs2.raise_for_status()
+assert any(p['slug'] == 'project-alpha' for p in projs2.json()), projs2.json()
+created = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key'}, timeout=5)
+created.raise_for_status()
+
+# Admin revokes bob access
+rev = requests.delete('http://localhost:8090/admin-console/api/projects/project-alpha/members/bob@ark.local', headers=H_ADMIN, timeout=5)
+rev.raise_for_status()
+
+projs3 = requests.get('http://localhost:8090/portal/api/projects', headers=H_BOB, timeout=5)
+projs3.raise_for_status()
+assert all(p['slug'] != 'project-alpha' for p in projs3.json()), projs3.json()
+denied2 = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key-2'}, timeout=5)
+assert denied2.status_code == 403, denied2.status_code
+" || fail "Per-user project access control verification failed"
+  pass "Admin per-user project access grant/revoke and Portal enforcement verified."
+
   # 5b. Test SSE streaming on Project_Alpha
   local stream_resp
   stream_resp=$(curl -ks -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \

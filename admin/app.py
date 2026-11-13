@@ -254,6 +254,16 @@ def init_db() -> None:
                     value TEXT NOT NULL,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+
+                CREATE TABLE IF NOT EXISTS project_members (
+                    project_slug TEXT NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+                    user_identifier TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'member',
+                    granted_by TEXT NOT NULL DEFAULT 'admin',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (project_slug, user_identifier)
+                );
+                CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_identifier);
                 """
             )
             cur.execute(
@@ -339,8 +349,39 @@ def get_user_groups(request: Request) -> set[str]:
     return normalize_groups(request.headers.get("X-Forwarded-Groups", ""))
 
 
-def user_has_project_access(groups: set[str], slug: str, group_name: str) -> bool:
-    return "ark-admins" in groups or slug in groups or group_name in groups
+def get_user_identities(request: Request) -> set[str]:
+    identities: set[str] = set()
+    for header in ("X-Forwarded-Email", "X-Forwarded-User"):
+        val = (request.headers.get(header) or "").strip().lower()
+        if val:
+            identities.add(val)
+    return identities
+
+
+def _get_user_project_slugs(identities: set[str]) -> set[str]:
+    if not identities:
+        return set()
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT project_slug FROM project_members WHERE user_identifier = ANY(%s)",
+                (sorted(identities),),
+            )
+            return {r[0] for r in cur.fetchall()}
+
+
+def user_has_project_access(
+    groups: set[str],
+    slug: str,
+    group_name: str,
+    member_slugs: set[str] | None = None,
+) -> bool:
+    return (
+        "ark-admins" in groups
+        or slug in groups
+        or group_name in groups
+        or (member_slugs is not None and slug in member_slugs)
+    )
 
 
 def get_default_llm_model() -> str:
@@ -521,6 +562,11 @@ class ProjectModelRequest(BaseModel):
     llm_model: str = Field(default="", max_length=128)
 
 
+class ProjectMemberRequest(BaseModel):
+    user_identifier: str = Field(min_length=1, max_length=255)
+    role: str = Field(default="member", pattern="^(member|editor|viewer)$")
+
+
 class ModelSwitchPlanRequest(BaseModel):
     model_dir: str = Field(min_length=1, max_length=200)
     model_type: str = Field(default="llm", pattern="^(llm|embed|rerank)$")
@@ -639,6 +685,8 @@ def portal_version() -> dict[str, Any]:
 @app.get("/portal/api/projects")
 def portal_projects(request: Request) -> list[dict[str, Any]]:
     groups = get_user_groups(request)
+    identities = get_user_identities(request)
+    member_slugs = _get_user_project_slugs(identities)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -656,7 +704,7 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
             "created_at": r[5].isoformat(),
         }
         for r in rows
-        if user_has_project_access(groups, r[0], r[2])
+        if user_has_project_access(groups, r[0], r[2], member_slugs)
     ]
 
 
@@ -664,6 +712,8 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
 def portal_list_keys(request: Request) -> list[dict[str, Any]]:
     actor = get_actor(request)
     groups = get_user_groups(request)
+    identities = get_user_identities(request)
+    member_slugs = _get_user_project_slugs(identities)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -685,7 +735,7 @@ def portal_list_keys(request: Request) -> list[dict[str, Any]]:
             "scopes": list(r[8] or ["chat"]),
         }
         for r in rows
-        if user_has_project_access(groups, r[1], r[7])
+        if user_has_project_access(groups, r[1], r[7], member_slugs)
     ]
 
 
@@ -693,12 +743,14 @@ def portal_list_keys(request: Request) -> list[dict[str, Any]]:
 def portal_create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
     groups = get_user_groups(request)
+    identities = get_user_identities(request)
+    member_slugs = _get_user_project_slugs(identities)
     scopes = _normalize_key_scopes(req.scopes)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT group_name FROM projects WHERE slug = %s", (req.project_slug,))
             proj = cur.fetchone()
-            if not proj or not user_has_project_access(groups, req.project_slug, proj[0]):
+            if not proj or not user_has_project_access(groups, req.project_slug, proj[0], member_slugs):
                 raise HTTPException(status_code=403, detail="You do not have access to this project.")
 
             raw_key = f"ark_proj_{secrets.token_urlsafe(32)}"
@@ -777,8 +829,12 @@ def list_projects() -> list[dict[str, Any]]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT slug, name, collection_name, group_name, model_id, rag_enabled, system_prompt, llm_model, created_at "
-                "FROM projects ORDER BY created_at DESC"
+                "SELECT p.slug, p.name, p.collection_name, p.group_name, p.model_id, p.rag_enabled, "
+                "p.system_prompt, p.llm_model, p.created_at, COALESCE(m.cnt, 0) "
+                "FROM projects p "
+                "LEFT JOIN (SELECT project_slug, COUNT(*) AS cnt FROM project_members GROUP BY project_slug) m "
+                "ON m.project_slug = p.slug "
+                "ORDER BY p.created_at DESC"
             )
             rows = cur.fetchall()
     return [
@@ -793,6 +849,7 @@ def list_projects() -> list[dict[str, Any]]:
             "llm_model": r[7],
             "effective_llm_model": r[7].strip() if r[7] and r[7].strip() else default_llm,
             "created_at": r[8].isoformat(),
+            "member_count": int(r[9]),
         }
         for r in rows
     ]
@@ -973,6 +1030,201 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
         details={"name": display, "collection_name": collection_name, "qdrant_deleted": qdrant_deleted},
     )
     return {"status": "deleted", "slug": slug, "qdrant_deleted": qdrant_deleted}
+
+
+def _sync_openwebui_project_member(slug: str, user_identifier: str, grant: bool) -> str:
+    """Best-effort sync of user membership into the matching Open WebUI project group."""
+    if not OPENWEBUI_API_KEY:
+        return "skipped_no_api_key"
+    try:
+        headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+        groups_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/groups/", headers=headers, timeout=10)
+        groups_resp.raise_for_status()
+        grp = next((g for g in groups_resp.json() if g.get("name") == slug), None)
+        if not grp:
+            return "group_not_in_webui"
+
+        users_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/users/", headers=headers, timeout=10)
+        users_resp.raise_for_status()
+        target = user_identifier.strip().lower()
+        matched_user = next(
+            (
+                u for u in users_resp.json()
+                if str(u.get("email", "")).strip().lower() == target
+                or str(u.get("name", "")).strip().lower() == target
+            ),
+            None,
+        )
+        if not matched_user or not matched_user.get("id"):
+            return "user_not_in_webui"
+
+        uid = matched_user["id"]
+        current_uids = list(grp.get("user_ids") or [])
+        if grant and uid not in current_uids:
+            next_uids = current_uids + [uid]
+        elif not grant and uid in current_uids:
+            next_uids = [x for x in current_uids if x != uid]
+        else:
+            return "already_in_sync"
+
+        update_resp = requests.post(
+            f"{OPENWEBUI_URL}/api/v1/groups/id/{grp['id']}/update",
+            headers=headers,
+            json={
+                "name": grp["name"],
+                "description": grp.get("description", ""),
+                "permissions": grp.get("permissions", {}),
+                "user_ids": next_uids,
+            },
+            timeout=10,
+        )
+        update_resp.raise_for_status()
+        return "synced"
+    except Exception as exc:
+        logger.warning("Open WebUI member sync warning for '%s' (%s): %s", slug, user_identifier, exc)
+        return f"warning: {exc}"
+
+
+@app.get("/admin-console/api/users")
+def list_known_users() -> list[dict[str, str]]:
+    """Return known user identifiers discovered from DB records and (optionally) Open WebUI."""
+    found: dict[str, str] = {}
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT user_identifier FROM project_members")
+            for (u,) in cur.fetchall():
+                norm = (u or "").strip().lower()
+                if norm:
+                    found.setdefault(norm, "project_member")
+
+            cur.execute("SELECT DISTINCT owner FROM api_keys WHERE owner IS NOT NULL AND owner <> 'admin'")
+            for (u,) in cur.fetchall():
+                norm = (u or "").strip().lower()
+                if norm:
+                    found.setdefault(norm, "api_key_owner")
+
+            cur.execute(
+                "SELECT DISTINCT actor FROM audit_logs "
+                "WHERE actor IS NOT NULL AND actor NOT IN ('unknown', 'system') AND actor NOT LIKE 'key:%'"
+            )
+            for (u,) in cur.fetchall():
+                norm = (u or "").strip().lower()
+                if norm:
+                    found.setdefault(norm, "audit_actor")
+
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}"}
+            resp = requests.get(f"{OPENWEBUI_URL}/api/v1/users/", headers=headers, timeout=3)
+            if resp.ok:
+                for u in resp.json():
+                    email = str(u.get("email", "")).strip().lower()
+                    if email:
+                        found[email] = "openwebui"
+        except Exception:
+            pass
+
+    return [{"identifier": k, "source": found[k]} for k in sorted(found)]
+
+
+@app.get("/admin-console/api/projects/{slug}/members")
+def list_project_members(slug: str) -> list[dict[str, Any]]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM projects WHERE slug = %s", (slug,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Project not found.")
+            cur.execute(
+                "SELECT project_slug, user_identifier, role, granted_by, created_at "
+                "FROM project_members WHERE project_slug = %s ORDER BY created_at DESC",
+                (slug,),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "project_slug": r[0],
+            "user_identifier": r[1],
+            "role": r[2],
+            "granted_by": r[3],
+            "created_at": r[4].isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@app.post("/admin-console/api/projects/{slug}/members")
+def grant_project_member(slug: str, req: ProjectMemberRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    user_id = req.user_identifier.strip().lower()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_identifier cannot be blank.")
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM projects WHERE slug = %s", (slug,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Project not found.")
+            cur.execute(
+                """
+                INSERT INTO project_members (project_slug, user_identifier, role, granted_by)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (project_slug, user_identifier) DO UPDATE
+                SET role = EXCLUDED.role,
+                    granted_by = EXCLUDED.granted_by
+                RETURNING created_at
+                """,
+                (slug, user_id, req.role, actor),
+            )
+            created_at = cur.fetchone()[0]
+        conn.commit()
+
+    webui_sync = _sync_openwebui_project_member(slug, user_id, grant=True)
+    audit.record(
+        "project.member_grant",
+        actor=actor,
+        project_slug=slug,
+        details={"user_identifier": user_id, "role": req.role, "webui_sync": webui_sync},
+    )
+    return {
+        "project_slug": slug,
+        "user_identifier": user_id,
+        "role": req.role,
+        "granted_by": actor,
+        "created_at": created_at.isoformat(),
+        "webui_sync": webui_sync,
+    }
+
+
+@app.delete("/admin-console/api/projects/{slug}/members/{user_identifier:path}")
+def revoke_project_member(slug: str, user_identifier: str, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    target = user_identifier.strip().lower()
+    if not target:
+        raise HTTPException(status_code=400, detail="user_identifier cannot be blank.")
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM projects WHERE slug = %s", (slug,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Project not found.")
+            cur.execute(
+                "DELETE FROM project_members WHERE project_slug = %s AND user_identifier = %s RETURNING user_identifier",
+                (slug, target),
+            )
+            deleted = cur.fetchone()
+        conn.commit()
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Project member not found.")
+
+    webui_sync = _sync_openwebui_project_member(slug, target, grant=False)
+    audit.record(
+        "project.member_revoke",
+        actor=actor,
+        project_slug=slug,
+        details={"user_identifier": target, "webui_sync": webui_sync},
+    )
+    return {"status": "removed", "project_slug": slug, "user_identifier": target, "webui_sync": webui_sync}
 
 
 @app.get("/admin-console/api/keys")
