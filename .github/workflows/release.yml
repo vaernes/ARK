@@ -2,6 +2,8 @@ name: ARK Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -20,29 +22,47 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify tag matches VERSION and CHANGELOG.md
+      - name: Resolve release version
+        id: meta
         run: |
-          VERSION="$(tr -d '[:space:]' < VERSION)"
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+          BASE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG_VERSION="${GITHUB_REF_NAME#v}"
-          elif [[ -n "${{ inputs.tag }}" ]]; then
-            TAG_VERSION="${{ inputs.tag }}"
-            TAG_VERSION="${TAG_VERSION#v}"
+            if [[ "${TAG_VERSION}" != "${BASE_VERSION}" ]]; then
+              echo "ERROR: Tag version (${TAG_VERSION}) does not match VERSION (${BASE_VERSION})."
+              exit 1
+            fi
+            if ! grep -q "## \[${BASE_VERSION}\]" CHANGELOG.md; then
+              echo "ERROR: CHANGELOG.md is missing section '## [${BASE_VERSION}]'."
+              exit 1
+            fi
+            RELEASE_VERSION="${BASE_VERSION}"
+            TAG_NAME="${GITHUB_REF_NAME}"
+            IS_TAGGED="true"
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            SHORT_SHA="$(git rev-parse --short HEAD)"
+            STAMP="$(date -u +'%Y.%m.%Y%m%d%H%M%S')"
+            RELEASE_VERSION="${STAMP}-${SHORT_SHA}"
+            TAG_NAME="v${RELEASE_VERSION}"
+            IS_TAGGED="false"
           else
-            TAG_VERSION="${VERSION}"
+            if [[ -n "${{ inputs.tag }}" ]]; then
+              TAG_VERSION="${{ inputs.tag }}"
+              TAG_VERSION="${TAG_VERSION#v}"
+              if [[ "${TAG_VERSION}" != "${BASE_VERSION}" ]]; then
+                echo "ERROR: Tag version (${TAG_VERSION}) does not match VERSION (${BASE_VERSION})."
+                exit 1
+              fi
+            fi
+            RELEASE_VERSION="${BASE_VERSION}"
+            TAG_NAME="v${RELEASE_VERSION}"
+            IS_TAGGED="false"
           fi
 
-          echo "Repository VERSION: ${VERSION}"
-          echo "Release tag version: ${TAG_VERSION}"
-          if [[ "${TAG_VERSION}" != "${VERSION}" ]]; then
-            echo "ERROR: Tag version (${TAG_VERSION}) does not match VERSION (${VERSION})."
-            exit 1
-          fi
-
-          if ! grep -q "## \[${VERSION}\]" CHANGELOG.md; then
-            echo "ERROR: CHANGELOG.md is missing section '## [${VERSION}]'."
-            exit 1
-          fi
+          echo "version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "is_tagged=${IS_TAGGED}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved release version: ${RELEASE_VERSION} (tag: ${TAG_NAME}, tagged: ${IS_TAGGED})"
 
       - name: Shell syntax & unit tests
         run: |
@@ -51,7 +71,7 @@ jobs:
 
       - name: Build ark-admin image with OCI metadata
         run: |
-          VERSION="$(tr -d '[:space:]' < VERSION)"
+          VERSION="${{ steps.meta.outputs.version }}"
           GIT_COMMIT="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           docker build \
@@ -63,7 +83,7 @@ jobs:
 
       - name: Package release archive and SHA-256 checksums
         run: |
-          VERSION="$(tr -d '[:space:]' < VERSION)"
+          VERSION="${{ steps.meta.outputs.version }}"
           STAGE_DIR="dist/ark-${VERSION}"
           mkdir -p dist "${STAGE_DIR}"
           cp -a \
@@ -71,6 +91,7 @@ jobs:
             README.md AGENTS.md .env.example docker-compose.yml docker-compose.test.yml \
             admin config docs provisioning scripts tests \
             "${STAGE_DIR}/"
+          printf '%s\n' "${VERSION}" > "${STAGE_DIR}/VERSION"
           find "${STAGE_DIR}" -name '__pycache__' -type d -prune -exec rm -rf {} +
           tar -C dist -czf "dist/ark-${VERSION}.tar.gz" "ark-${VERSION}"
           (cd dist && sha256sum "ark-${VERSION}.tar.gz" > "ark-${VERSION}.tar.gz.sha256")
@@ -95,24 +116,27 @@ jobs:
       - name: Extract release notes from CHANGELOG.md
         id: notes
         run: |
-          VERSION="$(tr -d '[:space:]' < VERSION)"
-          python3 - "${VERSION}" <<'PYEOF' > dist/RELEASE_NOTES.md
+          VERSION="${{ steps.meta.outputs.version }}"
+          GIT_COMMIT="$(git rev-parse --short HEAD)"
+          python3 - "${VERSION}" "${GIT_COMMIT}" <<'PYEOF' > dist/RELEASE_NOTES.md
           import re, sys
           from pathlib import Path
 
-          ver = sys.argv[1]
+          ver, commit = sys.argv[1], sys.argv[2]
           text = Path("CHANGELOG.md").read_text(encoding="utf-8")
           m = re.search(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, flags=re.M | re.S)
           if m:
               print(m.group(1).strip())
           else:
-              print(f"Release v{ver}")
+              print(f"Automated release `v{ver}` from commit `{commit}`.")
           PYEOF
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          prerelease: ${{ steps.meta.outputs.is_tagged != 'true' }}
           body_path: dist/RELEASE_NOTES.md
           generate_release_notes: true
           files: |
