@@ -4,165 +4,76 @@
 
 # ARK (Air-gapped Retrieval & Knowledge)
 
-**Version:** `2026.11.0` ([`VERSION`](VERSION) · [CalVer](https://calver.org/)) · **License:** [Apache-2.0](LICENSE) · **Changelog:** [CHANGELOG.md](CHANGELOG.md) · **Security:** [SECURITY.md](SECURITY.md)
+**Version:** `2026.11.0` · **License:** [Apache-2.0](LICENSE) · **Changelog:** [CHANGELOG.md](CHANGELOG.md) · **Security:** [SECURITY.md](SECURITY.md)
 
-ARK (`ark-stack`) is a 100% open-source, Linux-based Infrastructure-as-Code (IaC) appliance for deploying high-concurrency local LLM inference, enterprise SSO, and multi-tenant RAG across **strictly air-gapped (offline)** offices.
-
-| Color | Hex | Usage |
-| :--- | :--- | :--- |
-| **Deep Void** | `#0A0E17` | Midnight background & boundaries |
-| **Steel Shield** | `#1E293B` | System & container panels |
-| **Signal Amber** | `#F55A00` | Admin alerts, isolation badges & offline status banner |
-| **Tech Cyan** | `#00E5FF` | RAG actions, data retrieval & AI features |
-| **Glint White** | `#E2E8F0` | High-contrast UI text |
-| **Armor Gray** | `#64748B` | Infrastructure & secondary labels |
-
-- **[Installation & Setup Guide](docs/INSTALL.md)** — HQ bundling, offline server installation, Keycloak/AD SSO, TLS, and initial setup.
-- **[User & Operations Guide](docs/USER_GUIDE.md)** — Day-to-day usage for end users (WebUI chat, Office/IDE APIs) and administrators (`ark-admin`, connectors, backups, and audits).
+**ARK** is a 100% open-source, self-hosted AI assistant and knowledge platform built for **strictly air-gapped (offline)** organizations. It gives your teams private LLM chat, document-grounded search (RAG), corporate Single Sign-On, and project-scoped APIs for IDEs and Office tools—without a single byte ever leaving your network.
 
 ---
 
-## 1. Project Overview & Architecture
+## Who Is ARK For?
 
-```mermaid
-flowchart LR
-    Users["Office Users (Browser)"] -->|HTTPS :443| Caddy["Caddy Reverse Proxy\n(TLS & Routing)"]
-    DevTools["Office / IDE / Scripts"] -->|"/projects/&lt;slug&gt;/v1/*"| Caddy
-
-    Caddy -->|"/auth/*"| Keycloak["Keycloak\n(AD/LDAPS, Kerberos, SAML)"]
-    Caddy -->|"/admin-console/*"| OAuthProxy["OAuth2-Proxy\n(ark-admins gate)"]
-    OAuthProxy --> ArkAdmin["ark-admin\n(Control Plane & API Gateway)"]
-    Caddy -->|"/projects/*/v1/*"| ArkAdmin
-    Caddy -->|"/"| OpenWebUI["Open WebUI\n(OIDC SSO, RAG Chat & RBAC)"]
-
-    ArkAdmin --> vLLM["vLLM\n(LLM Inference)"]
-    ArkAdmin --> TEIEmbed["TEI Embeddings\n(BAAI/bge-m3)"]
-    ArkAdmin --> Qdrant["Qdrant Vector DB\n(Isolated Collections)"]
-    ArkAdmin --> Postgres["PostgreSQL 16\n(State, Keys & Audit)"]
-    ArkAdmin --> Tika["Apache Tika\n(M-Files / SharePoint / SMB)"]
-
-    OpenWebUI --> vLLM
-    OpenWebUI --> TEIEmbed
-    OpenWebUI --> TEIRerank["TEI Reranker\n(BAAI/bge-reranker-v2-m3)"]
-    OpenWebUI --> Qdrant
-    OpenWebUI --> Postgres
-    OpenWebUI --> Tika
-```
-
-### Core Capabilities
-- **Strict Air-Gap Compliance:** Zero external network calls. `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `DO_NOT_TRACK=1`, `OFFLINE_MODE=true`, `QDRANT__TELEMETRY_DISABLED=true`, and `VLLM_NO_USAGE_STATS=1` are enforced across the stack.
-- **Unified Enterprise SSO:** **Keycloak** federates on-prem Active Directory (LDAPS), Kerberos, and SAML 2.0 into OIDC for both **Open WebUI** and **ark-admin** (via `oauth2-proxy`).
-- **Multi-Tenant Data Compartmentalization:** Each project receives an isolated Qdrant collection, RBAC group, and locked Workspace Assistant—or can be created as a **clean (non-RAG) project**.
-- **Scoped Per-Project API Gateway:** Office add-ins, IDE plugins, and scripts authenticate via `/projects/<slug>/v1/chat/completions` using project-scoped `ark_proj_*` keys with rate limits and audit logging. Unauthenticated raw `/v1/*` access is blocked at Caddy (`403`).
-- **Document Connectors:** Built-in offline ingestion from **M-Files**, **SharePoint On-Prem**, and **SMB/NFS folders** via Apache Tika and TEI.
-- **Local + SIEM Audit & Configurable Backups:** Every admin action and API call is logged to PostgreSQL (`ark_admin.audit_logs`), `./data/audit/audit.jsonl`, and optional Syslog SIEM. Backup paths are configurable at install time and in the Admin UI.
-- **Decoupled LLM Backend:** Run vLLM + its dedicated **ARK LLM Backend Console** (`ark-llm-admin`) on a separate GPU server ([docker-compose.llm.yml](docker-compose.llm.yml)), locally via `docker compose --profile local-llm up -d`, or point ARK to any 3rd-party OpenAI-compatible API.
+- **Air-Gapped & Regulated Organizations:** Defense, government, critical infrastructure, finance, healthcare, and R&D teams that require modern AI capabilities with zero internet connectivity and zero external telemetry.
+- **Project & Engineering Teams:** Teams working across sensitive or compartmentalized projects who need separate AI assistants, isolated document knowledge bases, and OpenAI-compatible API keys for IDEs (VS Code, Continue, Cline) and Office add-ins.
+- **IT & Platform Administrators:** Infrastructure teams looking for a turnkey offline appliance with Active Directory / Enterprise SSO integration, role-based access control, document connectors, audit logging, and one-click backups.
 
 ---
 
-## 2. Frontend Consoles
+## Key Capabilities
 
-| Frontend | Purpose | Preview |
-| :--- | :--- | :--- |
-| **ARK Control Plane** (`/admin-console/`) | Infrastructure health, RAG/Clean project provisioning, scoped API keys, backups, document connectors, and runtime LLM backend configuration. | ![ARK Control Plane](docs/images/admin-console.png) |
-| **ARK User Portal** (`/portal/`) | Self-service portal for authenticated users to view accessible projects and issue/revoke personal `ark_proj_*` API keys for IDEs and Office add-ins. | ![ARK User Portal](docs/images/user-portal.png) |
-| **ARK LLM Backend Console** (`:8095`) | Standalone console for the ARK vLLM backend to inspect live OpenAI API status, stage offline model archives, and manage local weights. | ![ARK LLM Backend Console](docs/images/llm-backend-console.png) |
-
----
-
-## 3. Repository Structure
-
-```text
-ark-stack/
-├── VERSION                          # Canonical CalVer release version (YYYY.MM.PATCH)
-├── LICENSE                          # Apache License 2.0
-├── NOTICE                           # Attribution notice
-├── CHANGELOG.md                     # Release history
-├── SECURITY.md                      # Supported versions & vulnerability disclosure policy
-├── CONTRIBUTING.md                  # Development workflow & air-gap engineering rules
-├── CODE_OF_CONDUCT.md               # Contributor Covenant v2.1
-├── README.md
-├── .gitignore
-├── .env.example
-├── docker-compose.yml               # Production multi-container GPU stack (local-llm profile)
-├── docker-compose.llm.yml           # Standalone dedicated GPU LLM + ark-llm-admin stack
-├── docker-compose.test.yml          # GPU-less test override (mock vLLM & TEI)
-├── admin/                           # ark-admin Control Plane & Project API Gateway
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── app.py
-│   ├── audit.py
-│   ├── backup_utils.py
-│   ├── connectors.py
-│   ├── security.py
-│   ├── version.py
-│   └── static/
-│       ├── index.html
-│       ├── portal.html
-│       └── ark-logo.svg
-├── config/
-│   ├── caddy/Caddyfile              # Local HTTPS proxy, forward_auth, & API routing
-│   ├── keycloak/ark-realm.json      # Declarative OIDC realm & clients
-│   ├── open-webui/custom.css        # Air-gapped ARK branding theme for Open WebUI
-│   ├── postgres/init.sql            # Multi-DB init (openwebui, keycloak, ark_admin)
-│   └── qdrant/config.yaml           # Production Qdrant config (telemetry disabled)
-├── docs/
-│   ├── INSTALL.md                   # HQ bundling & air-gapped installation runbook
-│   └── USER_GUIDE.md                # End-user & administrator operations guide
-├── provisioning/
-│   ├── requirements.txt
-│   ├── bootstrap_ark.py             # CLI project provisioner
-│   └── sync_ad_groups.py            # Optional direct AD -> Open WebUI group sync
-├── scripts/
-│   ├── bump-version.sh              # CalVer release bump helper
-│   ├── bundle-offline.sh            # HQ: pulls/builds images & downloads HF models
-│   ├── dev-up.sh                    # Local GPU-less interactive dev stack
-│   ├── install-offline.sh           # Office: verifies checksums, loads & starts ARK
-│   ├── restore-backup.sh            # Disaster-recovery verify & restore CLI
-│   ├── sync-company-kb.sh           # Imports Company_Common Qdrant snapshots
-│   ├── test-integration.sh          # Automated GPU-less integration test suite
-│   └── update-llm.sh                # Atomic offline LLM/embed/rerank updater
-└── tests/
-    ├── mock_inference.py            # Stdlib mock vLLM & TEI server for testing
-    └── test_admin_unit.py           # Unit tests (security, backups, version, UI XSS)
-```
+- **100% Offline by Design:** Runs completely inside your internal network with no external API calls, cloud dependencies, or telemetry.
+- **Isolated Project Workspaces:** Create **RAG-enabled projects** (each with its own private document collection and assistant) or **Clean projects** (general-purpose AI chat with no document retrieval) so sensitive project data never mixes.
+- **Enterprise Single Sign-On:** Users sign in with their existing corporate credentials (Active Directory, Kerberos, SAML 2.0, or OIDC), and project permissions follow their IT security groups automatically.
+- **Built-in Document Ingestion:** Connect **SharePoint On-Prem**, **M-Files**, **SMB/NFS file shares**, or custom data pipelines to automatically index PDFs, Word, Excel, PowerPoint, and text files.
+- **Scoped APIs for IDEs & Office Tools:** Issue project-specific API keys with per-minute rate limits and full audit trails so developers and analysts can use AI directly inside their editor or documents.
+- **Flexible GPU Hosting:** Run the AI models on the same server, offload inference to a dedicated GPU server, or point ARK to an existing internal OpenAI-compatible endpoint.
 
 ---
 
-## 4. Running for Testing (No GPU Required)
+## Product Tour
 
-You can validate the full integration—PostgreSQL, Qdrant, Keycloak SSO, `oauth2-proxy`, `ark-admin`, Caddy routing, per-project APIs, backups, and audit logging—on any Linux workstation without an NVIDIA GPU or model weights.
+### 1. AI Chat Workspace & User Portal (`/portal/`)
+Team members sign in with Corporate SSO to chat with their authorized project assistants in **Open WebUI**. From the **ARK User Portal**, users can view the projects they have access to and create or revoke personal API keys for their IDE or Office add-ins.
 
-### Option A: Automated Integration Test Suite (Works Without `docker compose`)
-Run [scripts/test-integration.sh](scripts/test-integration.sh):
-```bash
-./scripts/test-integration.sh
-```
-This spins up an isolated `ark-test-net` environment using [tests/mock_inference.py](tests/mock_inference.py) and verifies:
-1. Keycloak OIDC discovery through Caddy (`/auth/realms/ark/.well-known/openid-configuration`).
-2. `oauth2-proxy` SSO redirect on `/admin-console/` (`HTTP 302`).
-3. Raw `/v1/*` bypass block (`HTTP 403`).
-4. Creation of both a RAG project (`Project_Alpha`) and a clean non-RAG project (`Clean_Sandbox`).
-5. Per-project `/projects/<slug>/v1/chat/completions` routing, Qdrant RAG context injection, and cross-project API key rejection (`HTTP 403`).
-6. Full `pg_dump` + Qdrant snapshot backup execution.
-7. PostgreSQL audit log recording.
+![ARK User Portal](docs/images/user-portal.png)
 
-To leave the test containers running so you can inspect endpoints manually:
-```bash
-./scripts/test-integration.sh --keep
-```
+### 2. ARK Control Plane (`/admin-console/`)
+IT administrators use the **ARK Control Plane** to monitor system health, provision RAG or Clean projects, issue and revoke team API keys, configure document connectors and ingestion schedules, view audit logs, and run full backups.
 
-### Option B: Docker Compose Test Override
-If `docker compose` is installed, you can start the stack with mock inference using [docker-compose.test.yml](docker-compose.test.yml):
-```bash
-cp .env.example .env
-docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
-```
+![ARK Control Plane](docs/images/admin-console.png)
+
+### 3. ARK LLM Backend Console (`:8095`)
+When running inference on a dedicated GPU host, infrastructure teams can use the standalone **ARK LLM Backend Console** to inspect live model status, stage offline model archives, and manage local model weights.
+
+![ARK LLM Backend Console](docs/images/llm-backend-console.png)
 
 ---
 
-## 5. Versioning, Licensing & Governance
+## How to Use ARK
 
-- **Versioning:** ARK follows **CalVer (`YYYY.MM.PATCH`)** with [`VERSION`](VERSION) as the single source of truth. Run `./scripts/bump-version.sh YYYY.MM.PATCH` to update all build defaults consistently, and see [CHANGELOG.md](CHANGELOG.md) for release notes.
-- **License:** Distributed under the [Apache License, Version 2.0](LICENSE) (see also [NOTICE](NOTICE)).
-- **Security & Contributions:** See [SECURITY.md](SECURITY.md) for private vulnerability reporting and [CONTRIBUTING.md](CONTRIBUTING.md) / [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for contributor guidelines.
+### For End Users
+1. **Sign In:** Open your organization's ARK URL (e.g., `https://ark.corp.internal`) and log in via **Corporate SSO**.
+2. **Choose a Project Assistant:** In the chat model selector, pick the assistant for your project (e.g., a RAG assistant to search project documents with citations, or a Clean assistant for general drafting and coding).
+3. **Upload Documents (if authorized):** Add project files in your project's Knowledge tab so only members of that project can query them.
+4. **Connect Your IDE or Office Add-in:** Visit `/portal/`, generate a personal API key for your project, and paste the project's base URL and key into your tool.
+
+For detailed instructions and API examples, see the **[User & Operations Guide](docs/USER_GUIDE.md)**.
+
+### For Administrators
+1. **Bundle at HQ:** On an internet-connected build machine, run `./scripts/bundle-offline.sh --package-models` to package container images and model weights for offline transfer.
+2. **Install Offline:** Transfer the bundle to your air-gapped Linux GPU server, configure `.env`, and run `./scripts/install-offline.sh`.
+3. **Provision & Operate:** Open `/admin-console/` to create projects, connect SharePoint/M-Files/SMB data sources, manage API keys, and schedule backups.
+
+For the full deployment runbook, see the **[Installation & Setup Guide](docs/INSTALL.md)**.
+
+---
+
+## Documentation
+
+| Document | Description |
+| :--- | :--- |
+| **[Installation & Setup Guide](docs/INSTALL.md)** | Offline bundling at HQ, server installation, SSO, TLS, and disaster recovery |
+| **[User & Operations Guide](docs/USER_GUIDE.md)** | Day-to-day usage for end users, IDE/API integration, and admin operations |
+| **[Architecture & Implementation](docs/ARCHITECTURE.md)** | System architecture diagram, security boundaries, repo structure, and GPU-less testing |
+| **[Branding & Design System](docs/BRANDING.md)** | Logo assets and UI color palette |
+| **[Contributing](CONTRIBUTING.md)** | Engineering rules, local dev workflow, and pull request checklist |
+| **[Security Policy](SECURITY.md)** | Supported versions and vulnerability reporting |
