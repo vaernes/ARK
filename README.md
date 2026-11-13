@@ -56,10 +56,21 @@ flowchart LR
 - **Scoped Per-Project API Gateway:** Office add-ins, IDE plugins, and scripts authenticate via `/projects/<slug>/v1/chat/completions` using project-scoped `ark_proj_*` keys with rate limits and audit logging. Unauthenticated raw `/v1/*` access is blocked at Caddy (`403`).
 - **Document Connectors:** Built-in offline ingestion from **M-Files**, **SharePoint On-Prem**, and **SMB/NFS folders** via Apache Tika and TEI.
 - **Local + SIEM Audit & Configurable Backups:** Every admin action and API call is logged to PostgreSQL (`ark_admin.audit_logs`), `./data/audit/audit.jsonl`, and optional Syslog SIEM. Backup paths are configurable at install time and in the Admin UI.
+- **Decoupled LLM Backend:** Run vLLM + its dedicated **ARK LLM Backend Console** (`ark-llm-admin`) on a separate GPU server ([docker-compose.llm.yml](docker-compose.llm.yml)), locally via `docker compose --profile local-llm up -d`, or point ARK to any 3rd-party OpenAI-compatible API.
 
 ---
 
-## 2. Repository Structure
+## 2. Frontend Consoles
+
+| Frontend | Purpose | Preview |
+| :--- | :--- | :--- |
+| **ARK Control Plane** (`/admin-console/`) | Infrastructure health, RAG/Clean project provisioning, scoped API keys, backups, document connectors, and runtime LLM backend configuration. | ![ARK Control Plane](docs/images/admin-console.png) |
+| **ARK User Portal** (`/portal/`) | Self-service portal for authenticated users to view accessible projects and issue/revoke personal `ark_proj_*` API keys for IDEs and Office add-ins. | ![ARK User Portal](docs/images/user-portal.png) |
+| **ARK LLM Backend Console** (`:8095`) | Standalone console for the ARK vLLM backend to inspect live OpenAI API status, stage offline model archives, and manage local weights. | ![ARK LLM Backend Console](docs/images/llm-backend-console.png) |
+
+---
+
+## 3. Repository Structure
 
 ```text
 ark-stack/
@@ -73,7 +84,8 @@ ark-stack/
 ├── README.md
 ├── .gitignore
 ├── .env.example
-├── docker-compose.yml               # Production multi-container GPU stack
+├── docker-compose.yml               # Production multi-container GPU stack (local-llm profile)
+├── docker-compose.llm.yml           # Standalone dedicated GPU LLM + ark-llm-admin stack
 ├── docker-compose.test.yml          # GPU-less test override (mock vLLM & TEI)
 ├── admin/                           # ark-admin Control Plane & Project API Gateway
 │   ├── Dockerfile
@@ -117,7 +129,7 @@ ark-stack/
 
 ---
 
-## 3. Running for Testing (No GPU Required)
+## 4. Running for Testing (No GPU Required)
 
 You can validate the full integration—PostgreSQL, Qdrant, Keycloak SSO, `oauth2-proxy`, `ark-admin`, Caddy routing, per-project APIs, backups, and audit logging—on any Linux workstation without an NVIDIA GPU or model weights.
 
@@ -149,7 +161,7 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
 
 ---
 
-## 4. Versioning, Licensing & Governance
+## 5. Versioning, Licensing & Governance
 
 - **Versioning:** ARK follows **CalVer (`YYYY.MM.PATCH`)** with [`VERSION`](VERSION) as the single source of truth. Run `./scripts/bump-version.sh YYYY.MM.PATCH` to update all build defaults consistently, and see [CHANGELOG.md](CHANGELOG.md) for release notes.
 - **License:** Distributed under the [Apache License, Version 2.0](LICENSE) (see also [NOTICE](NOTICE)).
