@@ -1,0 +1,89 @@
+name: ark-llm
+
+# ==============================================================================
+# ARK Dedicated LLM Inference Server (Standalone vLLM + OpenAI-Compatible API)
+# ==============================================================================
+# Use this Compose file when hosting the LLM backend on a separate GPU server.
+# On the main ARK server, set in .env:
+#   LLM_API_BASE_URL=http://<llm-server-ip>:8000/v1
+#   LLM_API_KEY=<same-key-as-below>
+#   LLM_SERVED_NAME=ark-llm
+# ==============================================================================
+
+services:
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4.post1}
+    container_name: ark-vllm
+    restart: unless-stopped
+    shm_size: 16gb
+    ports:
+      - "${VLLM_BIND_IP:-0.0.0.0}:${VLLM_PORT:-8000}:8000"
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      DO_NOT_TRACK: "1"
+      OFFLINE_MODE: "true"
+      VLLM_NO_USAGE_STATS: "1"
+      ANONYMIZED_TELEMETRY: "false"
+      HF_HOME: /models/.cache
+    volumes:
+      - ./artifacts/models:/models:ro
+    command:
+      - --model
+      - /models/${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}
+      - --served-model-name
+      - ${LLM_SERVED_NAME:-ark-llm}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --enable-prefix-caching
+      - --max-model-len
+      - "${VLLM_MAX_MODEL_LEN:-16384}"
+      - --gpu-memory-utilization
+      - "${VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
+      - --tensor-parallel-size
+      - "${VLLM_TENSOR_PARALLEL_SIZE:-1}"
+      - --api-key
+      - "${LLM_API_KEY:-${VLLM_API_KEY}}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-all}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  llm-admin:
+    build:
+      context: ./llm-admin
+      args:
+        ARK_VERSION: ${ARK_VERSION:-2026.11.0}
+    image: ${ARK_LLM_ADMIN_IMAGE:-ark-llm-admin:latest}
+    container_name: ark-llm-admin
+    restart: unless-stopped
+    ports:
+      - "${LLM_ADMIN_BIND_IP:-0.0.0.0}:${LLM_ADMIN_PORT:-8095}:8095"
+    environment:
+      ARK_VERSION: "${ARK_VERSION:-2026.11.0}"
+      VLLM_URL: "http://vllm:8000"
+      LLM_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
+      LLM_ADMIN_TOKEN: "${LLM_ADMIN_TOKEN:-${LLM_API_KEY:-${VLLM_API_KEY}}}"
+      LLM_MODEL_ID: "${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
+      LLM_MODEL_DIR: "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
+      LLM_SERVED_NAME: "${LLM_SERVED_NAME:-ark-llm}"
+      ARK_MODELS_DIR: "/models"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ./artifacts/models:/models
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8095/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5

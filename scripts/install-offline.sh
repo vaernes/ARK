@@ -18,6 +18,10 @@ MODELS_SRC=""
 MIN_FREE_GB=100
 DOMAIN_ARG=""
 BACKUP_DIR_ARG=""
+LLM_MODE_ARG=""
+LLM_API_BASE_URL_ARG=""
+LLM_API_KEY_ARG=""
+LLM_BACKEND_ADMIN_URL_ARG=""
 NON_INTERACTIVE=false
 SKIP_GPU_CHECK=false
 NO_START=false
@@ -40,7 +44,11 @@ Options:
   -m, --min-free-gb N        Minimum free disk space required in GB (default: ${MIN_FREE_GB})
   -d, --domain FQDN          Set ARK_DOMAIN & WEBUI_URL (e.g. ark.corp.internal)
   -b, --backup-dir PATH      Set initial ARK_BACKUP_DIR (e.g. /mnt/nas/ark-backups)
-      --non-interactive      Do not prompt for domain or backup directory
+      --llm-mode MODE        LLM backend mode: local | remote-ark | third-party
+      --llm-api-base-url URL OpenAI-compatible LLM base URL (including /v1)
+      --llm-api-key KEY      API key for the configured LLM backend
+      --llm-backend-admin-url URL  ARK LLM Backend Console URL (for local/remote-ark)
+      --non-interactive      Do not prompt for domain, backup dir, or LLM mode
       --skip-gpu-check       Skip nvidia-smi GPU verification (for testing only)
       --no-start             Load images and prepare volumes without running docker compose up -d
   -V, --version              Print ARK version and exit
@@ -57,6 +65,10 @@ while [[ $# -gt 0 ]]; do
     -m|--min-free-gb)    MIN_FREE_GB="$2"; shift 2 ;;
     -d|--domain)         DOMAIN_ARG="$2"; shift 2 ;;
     -b|--backup-dir)     BACKUP_DIR_ARG="$2"; shift 2 ;;
+    --llm-mode)          LLM_MODE_ARG="$2"; shift 2 ;;
+    --llm-api-base-url)  LLM_API_BASE_URL_ARG="$2"; shift 2 ;;
+    --llm-api-key)       LLM_API_KEY_ARG="$2"; shift 2 ;;
+    --llm-backend-admin-url) LLM_BACKEND_ADMIN_URL_ARG="$2"; shift 2 ;;
     --non-interactive)   NON_INTERACTIVE=true; shift ;;
     --skip-gpu-check)    SKIP_GPU_CHECK=true; shift ;;
     --no-start)          NO_START=true; shift ;;
@@ -167,10 +179,78 @@ main() {
     zstd -d -c "${MODELS_ARCHIVE}" | tar -xf - -C "${REPO_ROOT}/artifacts"
   fi
 
-  for model_dir in \
-    "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}" \
-    "${EMBED_MODEL_DIR:-BAAI--bge-m3}" \
-    "${RERANK_MODEL_DIR:-BAAI--bge-reranker-v2-m3}"; do
+  local use_local_llm=true
+  local selected_backend_type="${LLM_BACKEND_TYPE:-ark_llm}"
+  local selected_llm_url="${LLM_API_BASE_URL_ARG:-${LLM_API_BASE_URL:-http://vllm:8000/v1}}"
+  local selected_llm_key="${LLM_API_KEY_ARG:-${LLM_API_KEY:-${VLLM_API_KEY:-}}}"
+  local selected_backend_admin_url="${LLM_BACKEND_ADMIN_URL_ARG:-${LLM_BACKEND_ADMIN_URL:-http://localhost:8095}}"
+
+  if [[ "${NON_INTERACTIVE}" == false && -t 0 && -z "${LLM_MODE_ARG}" ]]; then
+    printf '\nSelect LLM Backend Mode:\n'
+    printf '  1) Local ARK LLM Backend (vLLM + LLM Console on this host)\n'
+    printf '  2) Separate ARK LLM Server (vLLM + LLM Console on another host)\n'
+    printf '  3) 3rd-Party OpenAI-Compatible API (e.g. LiteLLM, Ollama, OpenAI)\n'
+    read -r -p "Choice [1]: " llm_choice
+    case "${llm_choice:-1}" in
+      1) LLM_MODE_ARG="local" ;;
+      2) LLM_MODE_ARG="remote-ark" ;;
+      3) LLM_MODE_ARG="third-party" ;;
+      *) err "Invalid LLM mode selection: ${llm_choice}" ;;
+    esac
+  fi
+
+  case "${LLM_MODE_ARG}" in
+    "" )
+      if [[ -n "${LLM_API_BASE_URL_ARG:-${LLM_API_BASE_URL:-}}" && ! "${selected_llm_url}" =~ ^https?://vllm(:[0-9]+)?(/|$) ]]; then
+        use_local_llm=false
+      fi
+      ;;
+    local)
+      use_local_llm=true
+      selected_backend_type="ark_llm"
+      selected_llm_url="${LLM_API_BASE_URL_ARG:-http://vllm:8000/v1}"
+      selected_backend_admin_url="${LLM_BACKEND_ADMIN_URL_ARG:-http://localhost:8095}"
+      ;;
+    remote-ark)
+      use_local_llm=false
+      selected_backend_type="ark_llm"
+      if [[ "${NON_INTERACTIVE}" == false && -t 0 && -z "${LLM_API_BASE_URL_ARG}" ]]; then
+        read -r -p "Enter remote ARK vLLM OpenAI API Base URL [http://llm-server.internal:8000/v1]: " input_llm_url
+        selected_llm_url="${input_llm_url:-http://llm-server.internal:8000/v1}"
+      fi
+      if [[ "${NON_INTERACTIVE}" == false && -t 0 && -z "${LLM_BACKEND_ADMIN_URL_ARG}" ]]; then
+        read -r -p "Enter remote ARK LLM Backend Console URL [http://llm-server.internal:8095]: " input_admin_url
+        selected_backend_admin_url="${input_admin_url:-http://llm-server.internal:8095}"
+      fi
+      ;;
+    third-party)
+      use_local_llm=false
+      selected_backend_type="third_party"
+      selected_backend_admin_url=""
+      if [[ "${NON_INTERACTIVE}" == false && -t 0 && -z "${LLM_API_BASE_URL_ARG}" ]]; then
+        read -r -p "Enter 3rd-party OpenAI-compatible Base URL (including /v1): " input_llm_url
+        [[ -n "${input_llm_url}" ]] || err "LLM API Base URL is required for third-party mode."
+        selected_llm_url="${input_llm_url}"
+      fi
+      ;;
+    *)
+      err "Invalid --llm-mode '${LLM_MODE_ARG}'. Use: local | remote-ark | third-party"
+      ;;
+  esac
+
+  if [[ "${use_local_llm}" == false ]]; then
+    log "External LLM backend configured (${selected_backend_type}: ${selected_llm_url}); skipping local vLLM container and LLM weight check."
+  fi
+
+  local -a required_models=(
+    "${EMBED_MODEL_DIR:-BAAI--bge-m3}"
+    "${RERANK_MODEL_DIR:-BAAI--bge-reranker-v2-m3}"
+  )
+  if [[ "${use_local_llm}" == true ]]; then
+    required_models=("${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}" "${required_models[@]}")
+  fi
+
+  for model_dir in "${required_models[@]}"; do
     if [[ ! -d "${target_models_dir}/${model_dir}" ]]; then
       err "Expected model directory missing: ${target_models_dir}/${model_dir}"
     fi
@@ -192,10 +272,16 @@ main() {
     fi
   fi
 
-  # Persist selected domain & backup directory to .env
+  # Persist selected domain, backup directory, and LLM backend settings to .env
   sed -i "s|^ARK_DOMAIN=.*|ARK_DOMAIN=${selected_domain}|" "${REPO_ROOT}/.env"
   sed -i "s|^WEBUI_URL=.*|WEBUI_URL=https://${selected_domain}|" "${REPO_ROOT}/.env"
   sed -i "s|^ARK_BACKUP_DIR=.*|ARK_BACKUP_DIR=${selected_backup}|" "${REPO_ROOT}/.env"
+  sed -i "s|^LLM_BACKEND_TYPE=.*|LLM_BACKEND_TYPE=${selected_backend_type}|" "${REPO_ROOT}/.env"
+  sed -i "s|^LLM_BACKEND_ADMIN_URL=.*|LLM_BACKEND_ADMIN_URL=${selected_backend_admin_url}|" "${REPO_ROOT}/.env"
+  sed -i "s|^LLM_API_BASE_URL=.*|LLM_API_BASE_URL=${selected_llm_url}|" "${REPO_ROOT}/.env"
+  if [[ -n "${selected_llm_key}" ]]; then
+    sed -i "s|^LLM_API_KEY=.*|LLM_API_KEY=${selected_llm_key}|" "${REPO_ROOT}/.env"
+  fi
 
   # Update Keycloak realm redirect URIs & OIDC client secrets to match .env
   if [[ -f "${REPO_ROOT}/config/keycloak/ark-realm.json" ]]; then
@@ -218,13 +304,18 @@ main() {
     "${REPO_ROOT}/certs" \
     "${selected_backup}"
 
+  local -a compose_args=()
+  if [[ "${use_local_llm}" == true ]]; then
+    compose_args+=(--profile local-llm)
+  fi
+
   if [[ "${NO_START}" == true ]]; then
-    log "Offline installation prepared (--no-start). Run 'docker compose up -d' when ready."
+    log "Offline installation prepared (--no-start). Run 'docker compose ${compose_args[*]} up -d' when ready."
     exit 0
   fi
 
   log "Starting ARK stack in air-gapped mode..."
-  (cd "${REPO_ROOT}" && docker compose up -d)
+  (cd "${REPO_ROOT}" && docker compose "${compose_args[@]}" up -d)
 
   log "ARK stack started. Check service status with: docker compose ps"
 }

@@ -41,6 +41,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 
 from audit import AuditLogger
+from llm_backend import build_llm_headers, normalize_backend_type, resolve_llm_backend_config
 from backup_utils import (
     dump_postgres_gzip,
     restore_postgres_gzip,
@@ -64,8 +65,10 @@ APP_DIR = Path(__file__).resolve().parent
 DB_DSN = os.environ["ARK_ADMIN_DB_URL"]
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or None
-VLLM_URL = os.environ.get("VLLM_URL", "http://vllm:8000")
-VLLM_API_KEY = os.environ.get("VLLM_API_KEY", "")
+_llm_cfg = resolve_llm_backend_config()
+LLM_API_BASE_URL = _llm_cfg["api_base_url"]
+LLM_API_KEY = _llm_cfg["api_key"]
+LLM_HEALTH_URL = _llm_cfg["health_url"]
 LLM_SERVED_NAME = os.environ.get("LLM_SERVED_NAME", "ark-llm")
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "Qwen/Qwen2.5-14B-Instruct")
 LLM_MODEL_DIR = os.environ.get("LLM_MODEL_DIR", "Qwen--Qwen2.5-14B-Instruct")
@@ -235,6 +238,44 @@ def get_effective_llm_model(project_llm_model: str = "") -> str:
     return override if override else get_default_llm_model()
 
 
+def get_llm_backend_settings() -> dict[str, str]:
+    """Return active LLM backend settings from system_settings, falling back to env defaults."""
+    cfg = dict(_llm_cfg)
+    raw_health_override = (os.environ.get("LLM_HEALTH_URL") or "").strip()
+    keys = (
+        "llm_backend_type",
+        "llm_api_base_url",
+        "llm_api_key",
+        "llm_health_url",
+        "llm_backend_admin_url",
+    )
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM system_settings WHERE key = ANY(%s)", (list(keys),))
+                rows = dict(cur.fetchall())
+    except Exception as exc:
+        logger.warning("Failed to read LLM backend settings from DB, falling back to env: %s", exc)
+        return cfg
+
+    if "llm_backend_type" in rows:
+        cfg["backend_type"] = normalize_backend_type(rows["llm_backend_type"], default=cfg["backend_type"])
+    if rows.get("llm_api_base_url", "").strip():
+        cfg["api_base_url"] = rows["llm_api_base_url"].strip().rstrip("/")
+    if "llm_api_key" in rows:
+        cfg["api_key"] = rows["llm_api_key"].strip()
+    if "llm_health_url" in rows:
+        cfg["health_url"] = rows["llm_health_url"].strip() or f"{cfg['api_base_url']}/models"
+    elif "llm_api_base_url" in rows and not raw_health_override:
+        cfg["health_url"] = f"{cfg['api_base_url']}/models"
+    if "llm_backend_admin_url" in rows:
+        cfg["backend_admin_url"] = rows["llm_backend_admin_url"].strip().rstrip("/")
+
+    if cfg["backend_type"] != "ark_llm":
+        cfg["backend_admin_url"] = ""
+    return cfg
+
+
 def _validate_model_dir_name(name: str) -> str:
     cleaned = name.strip()
     if not cleaned or "/" in cleaned or "\\" in cleaned or ".." in cleaned or cleaned.startswith("."):
@@ -376,6 +417,15 @@ class BackupSettingRequest(BaseModel):
     backup_dir: str = Field(min_length=1)
 
 
+class LlmBackendConfigRequest(BaseModel):
+    backend_type: str = "ark_llm"
+    api_base_url: str = Field(min_length=1)
+    api_key: str | None = None
+    clear_api_key: bool = False
+    health_url: str = ""
+    backend_admin_url: str = ""
+
+
 class RestoreBackupRequest(BaseModel):
     backup_name: str = Field(min_length=1, max_length=128)
     restore_databases: bool = True
@@ -512,8 +562,9 @@ def portal_revoke_key(key_id: int, request: Request) -> dict[str, str]:
 
 @app.get("/admin-console/api/health")
 def health_dashboard() -> dict[str, Any]:
+    llm_cfg = get_llm_backend_settings()
     checks = {
-        "vllm": f"{VLLM_URL}/health",
+        "llm_backend": llm_cfg["health_url"],
         "tei_embed": f"{TEI_EMBED_URL}/health",
         "tei_rerank": f"{TEI_RERANK_URL}/health",
         "qdrant": f"{QDRANT_URL}/readyz",
@@ -524,7 +575,8 @@ def health_dashboard() -> dict[str, Any]:
     results: dict[str, str] = {}
     for name, url in checks.items():
         try:
-            r = requests.get(url, timeout=3)
+            headers = build_llm_headers(llm_cfg["api_key"]) if name == "llm_backend" else {}
+            r = requests.get(url, headers=headers, timeout=3)
             results[name] = "healthy" if r.ok else f"http_{r.status_code}"
         except Exception:
             results[name] = "unreachable"
@@ -1131,27 +1183,95 @@ def trigger_connector_sync(connector_id: int, request: Request) -> dict[str, Any
     return {"status": "ok", **stats}
 
 
+@app.get("/admin-console/api/llm-backend")
+def get_llm_backend() -> dict[str, Any]:
+    cfg = get_llm_backend_settings()
+    return {
+        "backend_type": cfg["backend_type"],
+        "api_base_url": cfg["api_base_url"],
+        "api_key_set": bool(cfg["api_key"]),
+        "health_url": cfg["health_url"],
+        "backend_admin_url": cfg["backend_admin_url"],
+    }
+
+
+@app.post("/admin-console/api/llm-backend")
+def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    backend_type = req.backend_type.strip().lower()
+    if backend_type not in {"ark_llm", "third_party"}:
+        raise HTTPException(status_code=400, detail="backend_type must be 'ark_llm' or 'third_party'.")
+
+    api_base_url = req.api_base_url.strip().rstrip("/")
+    if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="api_base_url must start with http:// or https://.")
+
+    health_url = req.health_url.strip()
+    if health_url and not (health_url.startswith("http://") or health_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="health_url must start with http:// or https://.")
+
+    backend_admin_url = req.backend_admin_url.strip().rstrip("/") if backend_type == "ark_llm" else ""
+    if backend_admin_url and not (backend_admin_url.startswith("http://") or backend_admin_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="backend_admin_url must start with http:// or https://.")
+
+    current = get_llm_backend_settings()
+    if req.clear_api_key:
+        new_api_key = ""
+    elif req.api_key is not None and req.api_key.strip():
+        new_api_key = req.api_key.strip()
+    else:
+        new_api_key = current["api_key"]
+
+    updates = {
+        "llm_backend_type": backend_type,
+        "llm_api_base_url": api_base_url,
+        "llm_api_key": new_api_key,
+        "llm_health_url": health_url,
+        "llm_backend_admin_url": backend_admin_url,
+    }
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            for k, v in updates.items():
+                cur.execute(
+                    "INSERT INTO system_settings (key, value, updated_at) VALUES (%s, %s, NOW()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                    (k, v),
+                )
+        conn.commit()
+
+    audit.record(
+        "llm_backend.update",
+        actor=actor,
+        details={"backend_type": backend_type, "api_base_url": api_base_url, "backend_admin_url": backend_admin_url},
+    )
+    return get_llm_backend()
+
+
 @app.get("/admin-console/api/models")
 def list_models() -> dict[str, Any]:
-    vllm_live: dict[str, Any] = {"reachable": False, "models": [], "error": ""}
+    llm_cfg = get_llm_backend_settings()
+    llm_live: dict[str, Any] = {"reachable": False, "models": [], "error": ""}
     try:
-        headers = {"Authorization": f"Bearer {VLLM_API_KEY}"} if VLLM_API_KEY else {}
-        resp = requests.get(f"{VLLM_URL.rstrip('/')}/v1/models", headers=headers, timeout=5)
+        headers = build_llm_headers(llm_cfg["api_key"])
+        resp = requests.get(f"{llm_cfg['api_base_url']}/models", headers=headers, timeout=5)
         if resp.ok:
             data = resp.json().get("data", [])
-            vllm_live = {
+            llm_live = {
                 "reachable": True,
                 "models": [m.get("id") for m in data if isinstance(m, dict) and m.get("id")],
                 "error": "",
             }
         else:
-            vllm_live["error"] = f"HTTP {resp.status_code}"
+            llm_live["error"] = f"HTTP {resp.status_code}"
     except Exception as exc:
-        vllm_live["error"] = str(exc)
+        llm_live["error"] = str(exc)
 
     return {
         "default_llm_model": get_default_llm_model(),
         "configured": {
+            "backend_type": llm_cfg["backend_type"],
+            "backend_admin_url": llm_cfg["backend_admin_url"],
+            "llm_api_base_url": llm_cfg["api_base_url"],
             "llm_model_id": LLM_MODEL_ID,
             "llm_model_dir": LLM_MODEL_DIR,
             "llm_served_name": LLM_SERVED_NAME,
@@ -1159,7 +1279,8 @@ def list_models() -> dict[str, Any]:
             "rerank_model_dir": RERANK_MODEL_DIR,
             "models_dir": str(ARK_MODELS_DIR),
         },
-        "vllm_live": vllm_live,
+        "llm_live": llm_live,
+        "vllm_live": llm_live,
         "local_models": _scan_local_models(),
     }
 
@@ -1387,13 +1508,26 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
     if context_blocks:
         sys_content += "\n\nRetrieved Context:\n" + "\n---\n".join(context_blocks)
 
+    llm_cfg = get_llm_backend_settings()
     target_model = get_effective_llm_model(auth.get("llm_model", ""))
     forwarded_messages = [{"role": "system", "content": sys_content}] + [m for m in messages if m.get("role") != "system"]
-    vllm_payload = {**body, "model": target_model, "messages": forwarded_messages, "stream": stream}
-    vllm_headers = {"Authorization": f"Bearer {VLLM_API_KEY}", "Content-Type": "application/json"}
+    llm_payload = {**body, "model": target_model, "messages": forwarded_messages, "stream": stream}
+    llm_headers = build_llm_headers(llm_cfg["api_key"], json_content=True)
+    chat_url = f"{llm_cfg['api_base_url']}/chat/completions"
 
     if stream:
-        resp = requests.post(f"{VLLM_URL}/v1/chat/completions", headers=vllm_headers, json=vllm_payload, stream=True, timeout=180)
+        try:
+            resp = requests.post(chat_url, headers=llm_headers, json=llm_payload, stream=True, timeout=180)
+        except requests.RequestException as exc:
+            audit.record(
+                "api.chat_completion",
+                actor=f"key:{auth['key_label']}",
+                project_slug=slug,
+                status="upstream_unreachable",
+                details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": True, "llm_model": target_model, "error": str(exc)},
+            )
+            return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"})
+
         audit.record(
             "api.chat_completion",
             actor=f"key:{auth['key_label']}",
@@ -1402,7 +1536,11 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
             details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": True, "llm_model": target_model},
         )
         if not resp.ok:
-            return JSONResponse(status_code=resp.status_code, content=resp.json())
+            try:
+                err_body = resp.json()
+            except ValueError:
+                err_body = {"error": resp.text}
+            return JSONResponse(status_code=resp.status_code, content=err_body)
 
         def event_stream():
             try:
@@ -1414,7 +1552,18 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    resp = requests.post(f"{VLLM_URL}/v1/chat/completions", headers=vllm_headers, json=vllm_payload, timeout=180)
+    try:
+        resp = requests.post(chat_url, headers=llm_headers, json=llm_payload, timeout=180)
+    except requests.RequestException as exc:
+        audit.record(
+            "api.chat_completion",
+            actor=f"key:{auth['key_label']}",
+            project_slug=slug,
+            status="upstream_unreachable",
+            details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": False, "llm_model": target_model, "error": str(exc)},
+        )
+        return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"})
+
     audit.record(
         "api.chat_completion",
         actor=f"key:{auth['key_label']}",
@@ -1422,4 +1571,8 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
         status="success" if resp.ok else f"http_{resp.status_code}",
         details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": False, "llm_model": target_model},
     )
-    return JSONResponse(status_code=resp.status_code, content=resp.json())
+    try:
+        content = resp.json()
+    except ValueError:
+        content = {"error": resp.text}
+    return JSONResponse(status_code=resp.status_code, content=content)

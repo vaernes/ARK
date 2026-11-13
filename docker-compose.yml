@@ -7,6 +7,7 @@ services:
   vllm:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4.post1}
     container_name: ark-vllm
+    profiles: ["local-llm"]
     restart: unless-stopped
     shm_size: 16gb
     environment:
@@ -36,7 +37,7 @@ services:
       - --tensor-parallel-size
       - "${VLLM_TENSOR_PARALLEL_SIZE:-1}"
       - --api-key
-      - "${VLLM_API_KEY}"
+      - "${LLM_API_KEY:-${VLLM_API_KEY}}"
     deploy:
       resources:
         reservations:
@@ -50,6 +51,32 @@ services:
       timeout: 10s
       retries: 10
       start_period: 120s
+    networks:
+      - ark-net
+
+  llm-admin:
+    build:
+      context: ./llm-admin
+      args:
+        ARK_VERSION: ${ARK_VERSION:-2026.11.0}
+    image: ${ARK_LLM_ADMIN_IMAGE:-ark-llm-admin:latest}
+    container_name: ark-llm-admin
+    profiles: ["local-llm"]
+    restart: unless-stopped
+    ports:
+      - "${LLM_ADMIN_BIND_IP:-127.0.0.1}:${LLM_ADMIN_PORT:-8095}:8095"
+    environment:
+      ARK_VERSION: "${ARK_VERSION:-2026.11.0}"
+      VLLM_URL: "http://vllm:8000"
+      LLM_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
+      LLM_ADMIN_TOKEN: "${LLM_ADMIN_TOKEN:-${LLM_API_KEY:-${VLLM_API_KEY}}}"
+      LLM_MODEL_ID: "${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
+      LLM_MODEL_DIR: "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
+      LLM_SERVED_NAME: "${LLM_SERVED_NAME:-ark-llm}"
+      ARK_MODELS_DIR: "/models"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ./artifacts/models:/models
     networks:
       - ark-net
 
@@ -214,8 +241,6 @@ services:
         condition: service_healthy
       tika:
         condition: service_healthy
-      vllm:
-        condition: service_healthy
       tei-embed:
         condition: service_healthy
       tei-rerank:
@@ -264,9 +289,9 @@ services:
       LDAP_SEARCH_FILTERS: "${LDAP_SEARCH_FILTERS:-}"
       LDAP_APP_DN: "${LDAP_APP_DN:-}"
       LDAP_APP_PASSWORD: "${LDAP_APP_PASSWORD:-}"
-      # LLM Inference (vLLM)
-      OPENAI_API_BASE_URL: "http://vllm:8000/v1"
-      OPENAI_API_KEY: "${VLLM_API_KEY}"
+      # LLM Inference (Separate vLLM Server or 3rd-Party OpenAI-Compatible API)
+      OPENAI_API_BASE_URL: "${LLM_API_BASE_URL:-http://vllm:8000/v1}"
+      OPENAI_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
       # Vector DB (Qdrant)
       VECTOR_DB: "qdrant"
       QDRANT_URI: "http://qdrant:6333"
@@ -395,8 +420,6 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-      vllm:
-        condition: service_healthy
       tei-embed:
         condition: service_healthy
       tika:
@@ -409,8 +432,11 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
       QDRANT_URL: "http://qdrant:6333"
       QDRANT_API_KEY: "${QDRANT_API_KEY}"
-      VLLM_URL: "http://vllm:8000"
-      VLLM_API_KEY: "${VLLM_API_KEY}"
+      LLM_BACKEND_TYPE: "${LLM_BACKEND_TYPE:-ark_llm}"
+      LLM_BACKEND_ADMIN_URL: "${LLM_BACKEND_ADMIN_URL:-http://localhost:8095}"
+      LLM_API_BASE_URL: "${LLM_API_BASE_URL:-http://vllm:8000/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
+      LLM_HEALTH_URL: "${LLM_HEALTH_URL:-}"
       LLM_SERVED_NAME: "${LLM_SERVED_NAME:-ark-llm}"
       LLM_MODEL_ID: "${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
       LLM_MODEL_DIR: "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
@@ -457,8 +483,6 @@ services:
         condition: service_started
       ark-admin:
         condition: service_started
-      vllm:
-        condition: service_healthy
       tei-embed:
         condition: service_healthy
     environment:

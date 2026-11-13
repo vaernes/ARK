@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -20,81 +21,266 @@
       --ok: #22C55E;
       --err: #EF4444;
     }
-    * { box-sizing: border-box; font-family: "Inter", system-ui, -apple-system, sans-serif; }
-    body { margin: 0; background: var(--void); color: var(--text); padding: 24px; min-height: 100vh; }
+
+    * {
+      box-sizing: border-box;
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      background: var(--void);
+      color: var(--text);
+      padding: 24px;
+      min-height: 100vh;
+    }
 
     /* Header & Offline Status Banner */
     .topbar {
-      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px;
-      background: var(--shield); border: 1px solid var(--border); border-radius: 12px;
-      padding: 14px 20px; margin-bottom: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 20px;
+      margin-bottom: 16px;
     }
-    .brand { display: flex; align-items: center; gap: 14px; }
-    .brand img { width: 44px; height: 48px; }
-    .brand h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.08em; color: var(--text); }
-    .brand small { display: block; color: var(--gray); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; }
 
-    .status-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-    .offline-banner {
-      display: inline-flex; align-items: center; gap: 8px;
-      background: var(--amber-soft); border: 1px solid var(--amber); color: #FFB38A;
-      padding: 6px 12px; border-radius: 8px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em;
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand img {
+      width: 44px;
+      height: 48px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      letter-spacing: 0.08em;
+      color: var(--text);
+    }
+
+    .brand small {
+      display: block;
+      color: var(--gray);
+      font-size: 0.78rem;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
     }
-    .projects-pill {
-      background: var(--void); border: 1px solid var(--border); border-radius: 8px;
-      padding: 6px 12px; font-size: 0.8rem; color: var(--text);
+
+    .status-strip {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
     }
-    .projects-pill strong { color: var(--cyan); margin-left: 6px; }
+
+    .offline-banner {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--amber-soft);
+      border: 1px solid var(--amber);
+      color: #FFB38A;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .projects-pill {
+      background: var(--void);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      color: var(--text);
+    }
+
+    .projects-pill strong {
+      color: var(--cyan);
+      margin-left: 6px;
+    }
 
     /* Grid & Steel Shield Cards */
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(390px, 1fr)); gap: 20px; }
-    .card {
-      background: var(--shield); border: 1px solid var(--border); border-radius: 12px;
-      padding: 18px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(390px, 1fr));
+      gap: 20px;
     }
-    .card.admin-accent { border-top: 3px solid var(--amber); }
-    .card.rag-accent { border-top: 3px solid var(--cyan); }
-    h2 {
-      margin: 0 0 12px; font-size: 0.98rem; text-transform: uppercase; letter-spacing: 0.06em;
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    .card.admin-accent h2 { color: var(--amber); }
-    .card.rag-accent h2 { color: var(--cyan); }
 
-    label { display: block; font-size: 0.8rem; color: var(--gray); margin: 10px 0 4px; font-weight: 600; }
-    input, select, textarea {
-      width: 100%; padding: 9px 11px; border-radius: 7px; border: 1px solid var(--border);
-      background: var(--void); color: var(--text); font-size: 0.88rem;
+    .card {
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
     }
-    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--cyan); }
+
+    .card.admin-accent {
+      border-top: 3px solid var(--amber);
+    }
+
+    .card.rag-accent {
+      border-top: 3px solid var(--cyan);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 0.98rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card.admin-accent h2 {
+      color: var(--amber);
+    }
+
+    .card.rag-accent h2 {
+      color: var(--cyan);
+    }
+
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--gray);
+      margin: 10px 0 4px;
+      font-weight: 600;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 9px 11px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--void);
+      color: var(--text);
+      font-size: 0.88rem;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--cyan);
+    }
 
     button {
-      margin-top: 12px; padding: 8px 14px; border: none; border-radius: 7px;
-      background: var(--cyan); color: var(--void); font-weight: 700; font-size: 0.84rem;
-      cursor: pointer; transition: opacity 0.15s ease;
+      margin-top: 12px;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 7px;
+      background: var(--cyan);
+      color: var(--void);
+      font-weight: 700;
+      font-size: 0.84rem;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
     }
-    button:hover { opacity: 0.9; }
-    button.amber { background: var(--amber); color: #fff; }
-    button.danger { background: var(--err); color: #fff; padding: 4px 9px; margin: 0; font-size: 0.75rem; }
 
-    table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 0.83rem; }
-    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
-    th { color: var(--gray); font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.05em; }
-    code { background: var(--void); padding: 2px 6px; border-radius: 4px; color: var(--cyan); font-size: 0.8rem; }
+    button:hover {
+      opacity: 0.9;
+    }
 
-    .badge { padding: 2px 8px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
-    .ok { background: rgba(34, 197, 94, 0.18); color: var(--ok); }
-    .err { background: rgba(239, 68, 68, 0.2); color: var(--err); }
-    .rag { background: var(--cyan-soft); color: var(--cyan); border: 1px solid rgba(0,229,255,0.35); }
-    .clean { background: var(--amber-soft); color: #FFB38A; border: 1px solid rgba(245,90,0,0.4); }
+    button.amber {
+      background: var(--amber);
+      color: #fff;
+    }
+
+    button.danger {
+      background: var(--err);
+      color: #fff;
+      padding: 4px 9px;
+      margin: 0;
+      font-size: 0.75rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 0.83rem;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 7px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      color: var(--gray);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.05em;
+    }
+
+    code {
+      background: var(--void);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--cyan);
+      font-size: 0.8rem;
+    }
+
+    .badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .ok {
+      background: rgba(34, 197, 94, 0.18);
+      color: var(--ok);
+    }
+
+    .err {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--err);
+    }
+
+    .rag {
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+    }
+
+    .clean {
+      background: var(--amber-soft);
+      color: #FFB38A;
+      border: 1px solid rgba(245, 90, 0, 0.4);
+    }
 
     pre {
-      background: var(--void); border: 1px solid var(--border); padding: 10px;
-      border-radius: 7px; overflow-x: auto; font-size: 0.78rem; color: var(--text);
+      background: var(--void);
+      border: 1px solid var(--border);
+      padding: 10px;
+      border-radius: 7px;
+      overflow-x: auto;
+      font-size: 0.78rem;
+      color: var(--text);
     }
   </style>
 </head>
+
 <body>
   <header class="topbar">
     <div class="brand">
@@ -108,12 +294,16 @@
       <div class="projects-pill">ARK <strong id="ark-version">...</strong></div>
       <div class="projects-pill">PROJECTS DEPLOYED <strong id="proj-count">0</strong></div>
       <div class="offline-banner">&#9888; Strict Air-Gap &bull; Offline Mode</div>
-      <a href="/portal/" style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">User Portal</a>
+      <a href="/portal/"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">User
+        Portal</a>
       <button style="margin-top:0" onclick="refreshAll()">Refresh</button>
     </div>
   </header>
 
-  <div id="ui-alert" style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:16px; font-size:0.85rem;"></div>
+  <div id="ui-alert"
+    style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:16px; font-size:0.85rem;">
+  </div>
 
   <div class="grid">
     <!-- Health -->
@@ -130,14 +320,25 @@
       <label>Isolation Mode</label>
       <select id="proj-rag">
         <option value="true">RAG-Enabled (Qdrant + Company_Common + Project KB)</option>
-        <option value="false">Clean Project (Isolated vLLM / No RAG)</option>
+        <option value="false">Clean Project (Isolated LLM / No RAG)</option>
       </select>
       <label>System Prompt (optional)</label>
       <textarea id="proj-prompt" rows="2" placeholder="Custom instructions..."></textarea>
       <label>LLM Model Override (optional, blank = global default)</label>
       <input id="proj-llm" placeholder="ark-llm" />
       <button onclick="createProject()">Deploy Project</button>
-      <table id="proj-table"><thead><tr><th>Slug</th><th>Mode</th><th>LLM</th><th>Gateway Endpoint</th><th>Action</th></tr></thead><tbody></tbody></table>
+      <table id="proj-table">
+        <thead>
+          <tr>
+            <th>Slug</th>
+            <th>Mode</th>
+            <th>LLM</th>
+            <th>Gateway Endpoint</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
 
     <!-- API Keys -->
@@ -151,7 +352,17 @@
       <input id="key-rpm" type="number" value="60" />
       <button class="amber" onclick="createKey()">Issue Scoped Key</button>
       <pre id="key-output" style="display:none"></pre>
-      <table id="key-table"><thead><tr><th>Project</th><th>Label</th><th>Prefix</th><th>Action</th></tr></thead><tbody></tbody></table>
+      <table id="key-table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Label</th>
+            <th>Prefix</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
 
     <!-- Backup & Snapshot -->
@@ -164,7 +375,8 @@
       <hr style="border-color: var(--border); margin: 16px 0;" />
       <label>Restore Full Backup Bundle</label>
       <select id="restore-backup-select"></select>
-      <button class="danger" style="margin-top:10px;padding:8px 14px;font-size:0.84rem;" onclick="restoreSelectedBackup()">Verify &amp; Restore Backup</button>
+      <button class="danger" style="margin-top:10px;padding:8px 14px;font-size:0.84rem;"
+        onclick="restoreSelectedBackup()">Verify &amp; Restore Backup</button>
       <hr style="border-color: var(--border); margin: 16px 0;" />
       <label>Upload Company_Common.snapshot</label>
       <input id="snap-file" type="file" accept=".snapshot" />
@@ -188,37 +400,75 @@
       <label>JSON Config</label>
       <textarea id="conn-config" rows="3">{"path": "/mnt/shares/project_alpha"}</textarea>
       <button onclick="createConnector()">Add Connector</button>
-      <table id="conn-table"><thead><tr><th>Project</th><th>Type</th><th>Status</th><th>Action</th></tr></thead><tbody></tbody></table>
+      <table id="conn-table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
 
-    <!-- LLM & Model Management -->
+    <!-- LLM Backend Connection & Gateway -->
     <div class="card admin-accent">
-      <h2>LLM &amp; Model Management</h2>
-      <div id="vllm-live-info" style="font-size:0.82rem;color:var(--gray);margin-bottom:8px;">Loading vLLM status...</div>
+      <h2>LLM Backend Connection &amp; Gateway</h2>
+      <div id="vllm-live-info" style="font-size:0.82rem;color:var(--gray);margin-bottom:8px;">Loading LLM backend
+        status...</div>
+      <div id="llm-backend-console-ref"
+        style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:rgba(0,229,255,0.08);border:1px solid var(--cyan);font-size:0.84rem;">
+        ARK LLM Backend Console:
+        <a id="llm-backend-console-link" href="#" target="_blank" rel="noopener noreferrer"
+          style="color:var(--cyan);font-weight:700;margin-left:6px;">Open LLM Backend Config Page &rarr;</a>
+      </div>
       <label>Default Gateway LLM (<code>/projects/&lt;slug&gt;/v1</code>)</label>
       <div style="display:flex;gap:8px;align-items:center;">
         <input id="default-llm-model" placeholder="ark-llm" style="flex:1;" />
         <button class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveDefaultLlm()">Save Default</button>
       </div>
-      <table id="model-table">
-        <thead><tr><th>Directory</th><th>Arch</th><th>Size</th><th>Role</th><th>Action</th></tr></thead>
-        <tbody></tbody>
-      </table>
       <hr style="border-color: var(--border); margin: 16px 0;" />
-      <label>Stage Offline Model Archive (.tar.zst, .tar.gz, .tar)</label>
-      <input id="model-archive-file" type="file" accept=".tar,.gz,.tgz,.zst,.tzst" />
-      <button onclick="uploadModelArchive()">Upload &amp; Stage Model</button>
+      <label>LLM Backend Provider</label>
+      <select id="llm-backend-type" onchange="toggleBackendAdminField()">
+        <option value="ark_llm">ARK LLM Backend (vLLM Server)</option>
+        <option value="third_party">3rd-Party OpenAI-Compatible API</option>
+      </select>
+      <label>OpenAI API Base URL (including <code>/v1</code>)</label>
+      <input id="llm-api-base-url" placeholder="http://vllm:8000/v1" />
+      <label>API Key (leave blank to keep existing)</label>
+      <input id="llm-api-key" type="password" placeholder="Optional / unchanged" />
+      <label>Custom Health URL (optional, blank = <code>/models</code>)</label>
+      <input id="llm-health-url" placeholder="Leave blank for OpenAI /models check" />
+      <div id="llm-backend-admin-wrap">
+        <label>ARK LLM Backend Config Page URL</label>
+        <input id="llm-backend-admin-url" placeholder="http://localhost:8095" />
+      </div>
+      <button class="amber" onclick="saveLlmBackend()">Save LLM Backend Settings</button>
       <pre id="model-ops-output" style="display:none"></pre>
     </div>
 
     <!-- Audit Logs -->
     <div class="card admin-accent">
       <h2>Security &amp; Audit Events (Local + SIEM)</h2>
-      <table id="audit-table"><thead><tr><th>Time</th><th>Event</th><th>Actor</th><th>Project</th><th>Status</th></tr></thead><tbody></tbody></table>
+      <table id="audit-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Event</th>
+            <th>Actor</th>
+            <th>Project</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
     </div>
   </div>
 
-  <footer id="ark-footer" style="margin-top:22px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
+  <footer id="ark-footer"
+    style="margin-top:22px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
     ARK Control Plane &bull; Apache-2.0 License
   </footer>
 
@@ -256,9 +506,9 @@
     }
 
     async function refreshAll() {
-      const [ver, health, projects, keys, backupCfg, backups, conns, audits, modelsInfo] = await Promise.all([
-        api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'), api('/connectors'), api('/audit?limit=15'), api('/models')
-      ]);
+      const [ver, health, projects, keys, backupCfg, backups, conns, audits, modelsInfo, llmBackend] = await Promise.all([
+          api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'), api('/connectors'), api('/audit?limit=15'), api('/models'), api('/llm-backend')
+        ]);
 
       const verLabel = `v${ver.version}`;
       document.getElementById('ark-version').textContent = verLabel;
@@ -341,47 +591,39 @@
         )
       );
 
-      const live = modelsInfo.vllm_live || {};
+      const live = modelsInfo.llm_live || modelsInfo.vllm_live || {};
       const liveModels = (live.models || []).join(', ') || 'none';
+      const endpoint = (modelsInfo.configured && modelsInfo.configured.llm_api_base_url) || '-';
       document.getElementById('vllm-live-info').replaceChildren(
-        document.createTextNode('vLLM: '),
+        document.createTextNode('LLM Backend: '),
         el('span', { className: `badge ${live.reachable ? 'ok' : 'err'}`, text: live.reachable ? 'online' : 'unreachable' }),
-        document.createTextNode(' Served: '),
-        el('code', { text: liveModels }),
-        document.createTextNode(' \u2022 Configured: '),
-        el('code', { text: (modelsInfo.configured && modelsInfo.configured.llm_model_dir) || '-' })
+        document.createTextNode(' Endpoint: '),
+        el('code', { text: endpoint }),
+        document.createTextNode(' \u2022 Served: '),
+        el('code', { text: liveModels })
       );
       document.getElementById('default-llm-model').value = modelsInfo.default_llm_model || '';
-      document.querySelector('#model-table tbody').replaceChildren(
-        ...(modelsInfo.local_models || []).map(m => {
-          const arch = (m.architectures && m.architectures[0]) || m.model_type || '-';
-          const roleBadge = m.active_role
-            ? el('span', { className: 'badge ok', text: m.active_role })
-            : el('span', { style: 'color:var(--gray)', text: 'staged' });
-          const actions = [
-            el('button', {
-              style: 'margin:0 4px 0 0;padding:4px 8px;font-size:0.75rem;',
-              text: 'Switch CLI',
-              onClick: () => planModelSwitch(m.dir)
-            })
-          ];
-          if (!m.active_role) {
-            actions.push(el('button', { className: 'danger', text: 'Del', onClick: () => deleteLocalModel(m.dir) }));
-          }
-          return el('tr', {}, [
-            el('td', {}, el('code', { text: m.dir })),
-            el('td', { text: arch }),
-            el('td', { text: `${m.size_gib} GiB (${m.weight_files}w)` }),
-            el('td', {}, roleBadge),
-            el('td', { style: 'white-space:nowrap;' }, actions)
-          ]);
-        })
-      );
+
+      const refBox = document.getElementById('llm-backend-console-ref');
+      const refLink = document.getElementById('llm-backend-console-link');
+      if (llmBackend.backend_type === 'ark_llm' && llmBackend.backend_admin_url) {
+        refLink.href = llmBackend.backend_admin_url;
+        refBox.style.display = 'block';
+      } else {
+        refBox.style.display = 'none';
+      }
+      document.getElementById('llm-backend-type').value = llmBackend.backend_type || 'ark_llm';
+      document.getElementById('llm-api-base-url').value = llmBackend.api_base_url || '';
+      document.getElementById('llm-api-key').value = '';
+      document.getElementById('llm-api-key').placeholder = llmBackend.api_key_set ? 'Configured (leave blank to keep)' : 'Optional (no API key set)';
+      document.getElementById('llm-health-url').value = llmBackend.health_url === `${llmBackend.api_base_url}/models` ? '' : (llmBackend.health_url || '');
+      document.getElementById('llm-backend-admin-url').value = llmBackend.backend_admin_url || '';
+      toggleBackendAdminField();
     }
 
     async function createProject() {
       await api('/projects', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: document.getElementById('proj-name').value,
           rag_enabled: document.getElementById('proj-rag').value === 'true',
@@ -396,7 +638,7 @@
       const next = prompt(`Set LLM model for '${slug}' (leave blank to use global default):`, current || '');
       if (next === null) return;
       await api(`/projects/${encodeURIComponent(slug)}/model`, {
-        method: 'PATCH', headers: {'Content-Type': 'application/json'},
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ llm_model: next })
       });
       refreshAll();
@@ -410,7 +652,7 @@
 
     async function createKey() {
       const res = await api('/keys', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_slug: document.getElementById('key-proj').value,
           label: document.getElementById('key-label').value,
@@ -430,7 +672,7 @@
 
     async function saveBackupDir() {
       const res = await api('/settings/backup', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ backup_dir: document.getElementById('backup-dir').value })
       });
       showOps(res);
@@ -447,7 +689,7 @@
       if (!name) return alert('No backup bundle selected.');
       if (!confirm(`Verify checksums and restore databases and Qdrant snapshots from '${name}'? This will overwrite current state.`)) return;
       const res = await api('/backups/restore', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ backup_name: name, restore_databases: true, restore_qdrant: true })
       });
       showOps(res);
@@ -465,7 +707,7 @@
 
     async function createConnector() {
       await api('/connectors', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_slug: document.getElementById('conn-proj').value,
           connector_type: document.getElementById('conn-type').value,
@@ -482,58 +724,50 @@
       refreshAll();
     }
 
-    async function saveDefaultLlm() {
-      const res = await api('/models/default', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+    function toggleBackendAdminField() {
+        const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
+        document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
+      }
+
+    async function saveLlmBackend() {
+          const res = await api('/llm-backend', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              backend_type: document.getElementById('llm-backend-type').value,
+              api_base_url: document.getElementById('llm-api-base-url').value,
+              api_key: document.getElementById('llm-api-key').value || null,
+              health_url: document.getElementById('llm-health-url').value,
+              backend_admin_url: document.getElementById('llm-backend-admin-url').value,
+            })
+          });
+          showModelOps(res);
+          refreshAll();
+        }
+
+            async function saveDefaultLlm() {
+            const res = await api('/models/default', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model_name: document.getElementById('default-llm-model').value })
-      });
-      showModelOps(res);
-      refreshAll();
-    }
-
-    async function planModelSwitch(modelDir) {
-      const res = await api('/models/switch-plan', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ model_dir: modelDir, model_type: 'llm' })
-      });
-      showModelOps({
-        note: 'Run on the ARK host to switch vLLM weights & recreate container:',
-        command: res.command,
-        rollback: res.rollback_command
-      });
-      refreshAll();
-    }
-
-    async function deleteLocalModel(modelDir) {
-      if (!confirm(`Delete local model directory '${modelDir}'?`)) return;
-      const res = await api(`/models/${encodeURIComponent(modelDir)}`, { method: 'DELETE' });
-      showModelOps(res);
-      refreshAll();
-    }
-
-    async function uploadModelArchive() {
-      const f = document.getElementById('model-archive-file').files[0];
-      if (!f) return alert('Select a model archive (.tar.zst, .tar.gz, .tar) first.');
-      const fd = new FormData();
-      fd.append('file', f);
-      const res = await api('/models/upload', { method: 'POST', body: fd });
-      showModelOps(res);
-      refreshAll();
-    }
+            });
+          showModelOps(res);
+          refreshAll();
+        }
 
     function showModelOps(obj) {
-      const out = document.getElementById('model-ops-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(obj, null, 2);
-    }
+          const out = document.getElementById('model-ops-output');
+          out.style.display = 'block';
+          out.textContent = JSON.stringify(obj, null, 2);
+        }
 
     function showOps(obj) {
-      const out = document.getElementById('ops-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(obj, null, 2);
-    }
+          const out = document.getElementById('ops-output');
+          out.style.display = 'block';
+          out.textContent = JSON.stringify(obj, null, 2);
+        }
 
     refreshAll();
   </script>
 </body>
+
 </html>

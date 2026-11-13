@@ -25,6 +25,7 @@ from backup_utils import (  # noqa: E402
     validate_backup_name,
     verify_backup_manifest,
 )
+from llm_backend import build_llm_headers, resolve_llm_backend_config  # noqa: E402
 from mock_inference import deterministic_embedding  # noqa: E402
 from security import authorize_proxy_request, normalize_groups  # noqa: E402
 from version import get_ark_version, get_version_info  # noqa: E402
@@ -287,6 +288,53 @@ class TestVersionAndLicense(unittest.TestCase):
             info = get_version_info()
             self.assertEqual(info["version"], "2027.01.2")
             self.assertEqual(info["git_commit"], "abc1234")
+
+
+class TestLlmBackendConfig(unittest.TestCase):
+    def test_explicit_external_openai_backend(self) -> None:
+        cfg = resolve_llm_backend_config(
+            {
+                "LLM_BACKEND_TYPE": "third_party",
+                "LLM_BACKEND_ADMIN_URL": "http://should-be-hidden:8095",
+                "LLM_API_BASE_URL": "https://llm.corp.internal/v1/",
+                "LLM_API_KEY": "sk-external-123",
+            }
+        )
+        self.assertEqual(cfg["backend_type"], "third_party")
+        self.assertEqual(cfg["backend_admin_url"], "")
+        self.assertEqual(cfg["api_base_url"], "https://llm.corp.internal/v1")
+        self.assertEqual(cfg["api_key"], "sk-external-123")
+        self.assertEqual(cfg["health_url"], "https://llm.corp.internal/v1/models")
+        self.assertEqual(
+            build_llm_headers(cfg["api_key"], json_content=True),
+            {"Content-Type": "application/json", "Authorization": "Bearer sk-external-123"},
+        )
+
+    def test_ark_llm_backend_includes_admin_url(self) -> None:
+        cfg = resolve_llm_backend_config(
+            {
+                "LLM_BACKEND_TYPE": "ark_llm",
+                "LLM_BACKEND_ADMIN_URL": "http://gpu-server.internal:8095/",
+                "LLM_API_BASE_URL": "http://gpu-server.internal:8000/v1",
+            }
+        )
+        self.assertEqual(cfg["backend_type"], "ark_llm")
+        self.assertEqual(cfg["backend_admin_url"], "http://gpu-server.internal:8095")
+
+    def test_legacy_vllm_url_fallback(self) -> None:
+        cfg = resolve_llm_backend_config(
+            {
+                "VLLM_URL": "http://10.0.0.50:8000/",
+                "VLLM_API_KEY": "sk-vllm-legacy",
+            }
+        )
+        self.assertEqual(cfg["api_base_url"], "http://10.0.0.50:8000/v1")
+        self.assertEqual(cfg["api_key"], "sk-vllm-legacy")
+        self.assertEqual(cfg["health_url"], "http://10.0.0.50:8000/v1/models")
+
+    def test_no_api_key_omits_authorization_header(self) -> None:
+        self.assertEqual(build_llm_headers("", json_content=True), {"Content-Type": "application/json"})
+        self.assertEqual(build_llm_headers(""), {})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARK LLM Backend Console</title>
+  <style>
+    :root {
+      --bg: #0A0E17;
+      --panel: #1E293B;
+      --panel-alt: #131B2E;
+      --amber: #F55A00;
+      --cyan: #00E5FF;
+      --text: #E2E8F0;
+      --gray: #64748B;
+      --border: #2C3A52;
+      --danger: #EF4444;
+      --ok: #10B981;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px;
+      background: var(--bg); color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand img { height: 42px; width: 42px; }
+    h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.02em; }
+    .subtitle { color: var(--gray); font-size: 0.85rem; margin-top: 2px; }
+    .pill-offline {
+      background: rgba(245, 90, 0, 0.14); border: 1px solid var(--amber);
+      color: var(--amber); padding: 6px 12px; border-radius: 999px;
+      font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em;
+    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 18px;
+    }
+    .card.amber-accent { border-top: 3px solid var(--amber); }
+    .card.cyan-accent { border-top: 3px solid var(--cyan); }
+    h2 { margin: 0 0 12px; font-size: 1.05rem; color: var(--text); }
+    label { display: block; font-size: 0.8rem; color: var(--gray); margin: 10px 0 4px; }
+    input {
+      width: 100%; padding: 9px 10px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--panel-alt);
+      color: var(--text); font-size: 0.9rem;
+    }
+    button {
+      margin-top: 12px; padding: 9px 14px; border: none; border-radius: 6px;
+      background: var(--cyan); color: #05131A; font-weight: 700; cursor: pointer;
+    }
+    button.amber { background: var(--amber); color: #FFF; }
+    button.danger { background: var(--danger); color: #FFF; padding: 4px 8px; font-size: 0.75rem; margin: 0; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.84rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+    th { color: var(--gray); font-weight: 600; }
+    .badge { padding: 2px 8px; border-radius: 999px; font-size: 0.74rem; font-weight: 700; }
+    .badge.ok { background: rgba(16, 185, 129, 0.15); color: var(--ok); }
+    .badge.err { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+    pre {
+      background: var(--panel-alt); border: 1px solid var(--border);
+      padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 0.78rem;
+      color: var(--cyan); margin-top: 10px;
+    }
+    .alert {
+      display: none; margin-bottom: 14px; padding: 10px 14px; border-radius: 8px;
+      background: rgba(239, 68, 68, 0.14); border: 1px solid var(--danger); color: #FECACA;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="/static/ark-logo.svg" alt="ARK Shield Logo" />
+      <div>
+        <h1>ARK LLM Backend Console <span id="ark-ver" style="font-size:0.78rem;color:var(--gray);font-weight:500;"></span></h1>
+        <div class="subtitle">Dedicated vLLM Inference &amp; Local Model Weight Management</div>
+      </div>
+    </div>
+    <div class="pill-offline">AIR-GAPPED LLM BACKEND &bull; ZERO TELEMETRY</div>
+  </header>
+
+  <div id="ui-alert" class="alert"></div>
+
+  <div class="grid">
+    <div class="card cyan-accent">
+      <h2>vLLM Inference Status</h2>
+      <div id="vllm-status-list">Loading...</div>
+      <div id="auth-box" style="display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <label>Backend Admin Token (<code>LLM_ADMIN_TOKEN</code> / <code>LLM_API_KEY</code>)</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="admin-token-input" type="password" placeholder="Enter bearer token for model changes" style="flex:1;" />
+          <button class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveToken()">Save Token</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card amber-accent">
+      <h2>Stage Offline Model Archive</h2>
+      <label>Upload Model Archive (<code>.tar.zst</code>, <code>.tar.gz</code>, <code>.tar</code>)</label>
+      <input id="model-archive-file" type="file" accept=".tar,.gz,.tgz,.zst,.tzst" />
+      <button onclick="uploadModelArchive()">Upload &amp; Stage Model</button>
+      <pre id="model-ops-output" style="display:none"></pre>
+    </div>
+
+    <div class="card amber-accent" style="grid-column: 1 / -1;">
+      <h2>Local LLM Weight Directories (<code>/models</code>)</h2>
+      <table id="model-table">
+        <thead>
+          <tr><th>Directory</th><th>Architecture</th><th>Size</th><th>Status</th><th>Action</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer style="margin-top:22px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
+    ARK LLM Backend &bull; Apache-2.0 License
+  </footer>
+
+  <script>
+    const el = (tag, props = {}, ...children) => {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(props)) {
+        if (k === 'className') node.className = v;
+        else if (k === 'text') node.textContent = v;
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
+        else node.setAttribute(k, v);
+      }
+      for (const child of children.flat()) {
+        if (child !== null && child !== undefined) {
+          node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+        }
+      }
+      return node;
+    };
+
+    const showError = (msg) => {
+      const box = document.getElementById('ui-alert');
+      box.textContent = msg;
+      box.style.display = msg ? 'block' : 'none';
+    };
+
+    const showOps = (obj) => {
+      const pre = document.getElementById('model-ops-output');
+      pre.style.display = 'block';
+      pre.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+    };
+
+    const getToken = () => sessionStorage.getItem('ark_llm_admin_token') || '';
+    function saveToken() {
+      sessionStorage.setItem('ark_llm_admin_token', document.getElementById('admin-token-input').value.trim());
+      showError('');
+      refresh();
+    }
+
+    async function api(path, opts = {}) {
+      const headers = new Headers(opts.headers || {});
+      const tok = getToken();
+      if (tok) headers.set('Authorization', `Bearer ${tok}`);
+      const res = await fetch(path, { ...opts, headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || err.error || res.statusText);
+      }
+      return res.json();
+    }
+
+    async function refresh() {
+      try {
+        showError('');
+        const st = await api('/api/status');
+        document.getElementById('ark-ver').textContent = `v${st.version}`;
+        document.getElementById('auth-box').style.display = st.auth_required ? 'block' : 'none';
+        if (st.auth_required && getToken()) {
+          document.getElementById('admin-token-input').value = getToken();
+        }
+
+        const live = st.vllm_live || {};
+        const cfg = st.configured || {};
+        document.getElementById('vllm-status-list').replaceChildren(
+          el('div', { style: 'margin:6px 0' },
+            'vLLM Health: ',
+            el('span', { className: `badge ${st.vllm_health === 'healthy' ? 'ok' : 'err'}`, text: st.vllm_health })
+          ),
+          el('div', { style: 'margin:6px 0' },
+            'OpenAI API: ',
+            el('span', { className: `badge ${live.reachable ? 'ok' : 'err'}`, text: live.reachable ? 'online' : 'unreachable' }),
+            ' ',
+            el('code', { text: (live.models || []).join(', ') || 'none' })
+          ),
+          el('div', { style: 'margin:6px 0;color:var(--gray);font-size:0.82rem;' },
+            'Configured Dir: ', el('code', { text: cfg.llm_model_dir || '-' }),
+            ' • Served Name: ', el('code', { text: cfg.llm_served_name || '-' })
+          )
+        );
+
+        document.querySelector('#model-table tbody').replaceChildren(
+          ...(st.local_models || []).map(m => {
+            const arch = (m.architectures && m.architectures[0]) || m.model_type || '-';
+            const badge = m.active
+              ? el('span', { className: 'badge ok', text: 'active' })
+              : el('span', { style: 'color:var(--gray)', text: 'staged' });
+            const actions = [
+              el('button', {
+                style: 'margin:0 6px 0 0;padding:4px 8px;font-size:0.75rem;',
+                text: 'Switch CLI',
+                onClick: () => planSwitch(m.dir)
+              })
+            ];
+            if (!m.active) {
+              actions.push(el('button', { className: 'danger', text: 'Delete', onClick: () => deleteModel(m.dir) }));
+            }
+            return el('tr', {}, [
+              el('td', {}, el('code', { text: m.dir })),
+              el('td', { text: arch }),
+              el('td', { text: `${m.size_gib} GiB (${m.weight_files}w)` }),
+              el('td', {}, badge),
+              el('td', {}, actions),
+            ]);
+          })
+        );
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function planSwitch(modelDir) {
+      try {
+        const res = await api('/api/models/switch-plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_dir: modelDir })
+        });
+        showOps({
+          note: 'Run on the LLM host to switch vLLM weights & recreate container:',
+          command: res.command,
+          rollback: res.rollback_command
+        });
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function deleteModel(modelDir) {
+      if (!confirm(`Delete local model directory '${modelDir}'?`)) return;
+      try {
+        const res = await api(`/api/models/${encodeURIComponent(modelDir)}`, { method: 'DELETE' });
+        showOps(res);
+        refresh();
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function uploadModelArchive() {
+      const f = document.getElementById('model-archive-file').files[0];
+      if (!f) return alert('Select a model archive (.tar.zst, .tar.gz, .tar) first.');
+      const fd = new FormData();
+      fd.append('file', f);
+      try {
+        const res = await api('/api/models/upload', { method: 'POST', body: fd });
+        showOps(res);
+        refresh();
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    refresh();
+  </script>
+</body>
+</html>

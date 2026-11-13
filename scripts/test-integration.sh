@@ -171,8 +171,10 @@ main() {
     -e POSTGRES_PASSWORD="${PG_PASS}" \
     -e QDRANT_URL="http://qdrant:6333" \
     -e QDRANT_API_KEY="${QDRANT_KEY}" \
-    -e VLLM_URL="http://vllm:8000" \
-    -e VLLM_API_KEY="${VLLM_KEY}" \
+    -e LLM_BACKEND_TYPE="ark_llm" \
+    -e LLM_BACKEND_ADMIN_URL="http://localhost:8095" \
+    -e LLM_API_BASE_URL="http://vllm:8000/v1" \
+    -e LLM_API_KEY="${VLLM_KEY}" \
     -e LLM_SERVED_NAME="ark-llm" \
     -e ARK_MODELS_DIR="/models" \
     -e TEI_EMBED_URL="http://tei-embed:80" \
@@ -198,7 +200,17 @@ main() {
     caddy:2-alpine >/dev/null
   docker network connect "${CONTROL_NET}" ark-test-caddy >/dev/null
 
-  sleep 3
+  log "Waiting for ark-admin readiness..."
+  for _ in $(seq 1 30); do
+    if docker exec ark-test-ark-admin python3 -c "import urllib.request, urllib.error
+try:
+    urllib.request.urlopen('http://localhost:8090/admin-console/api/version', timeout=2)
+except urllib.error.HTTPError:
+    pass" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
 
   # 1. Test Keycloak OIDC Discovery through Caddy
   log "1/8 Testing Keycloak OIDC discovery via Caddy..."
@@ -269,6 +281,7 @@ assert v_portal.json()['version'] == '${ARK_VERSION}', v_portal.json()
 h = requests.get('http://localhost:8090/admin-console/api/health', headers=H_ADMIN, timeout=10)
 h.raise_for_status()
 assert h.json()['version'] == '${ARK_VERSION}', h.json()
+assert h.json()['services'].get('llm_backend') == 'healthy', h.json()
 "
   pass "Admin SSO forward_auth, peer bypass block (403), ark-admins RBAC, and version endpoints verified."
 
@@ -404,8 +417,10 @@ H = {
 m = requests.get('http://localhost:8090/admin-console/api/models', headers=H, timeout=10)
 m.raise_for_status()
 info = m.json()
+assert info['llm_live']['reachable'] is True, info
 assert info['vllm_live']['reachable'] is True, info
-assert 'ark-llm' in info['vllm_live']['models'], info
+assert 'ark-llm' in info['llm_live']['models'], info
+assert info['configured']['llm_api_base_url'] == 'http://vllm:8000/v1', info
 dirs = {x['dir'] for x in info['local_models']}
 assert 'Qwen--Qwen2.5-14B-Instruct' in dirs and 'Qwen--Qwen2.5-32B-Instruct' in dirs, dirs
 
@@ -422,6 +437,29 @@ requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/m
 r_plan = requests.post('http://localhost:8090/admin-console/api/models/switch-plan', headers=H, json={'model_dir': 'Qwen--Qwen2.5-32B-Instruct', 'model_type': 'llm'})
 r_plan.raise_for_status()
 assert './scripts/update-llm.sh --type llm --model-dir Qwen--Qwen2.5-32B-Instruct' in r_plan.json()['command']
+
+# Verify runtime LLM backend switching (ark_llm <-> third_party)
+b_get = requests.get('http://localhost:8090/admin-console/api/llm-backend', headers=H)
+b_get.raise_for_status()
+assert b_get.json()['backend_type'] == 'ark_llm', b_get.json()
+assert b_get.json()['backend_admin_url'] == 'http://localhost:8095', b_get.json()
+
+b_tp = requests.post('http://localhost:8090/admin-console/api/llm-backend', headers=H, json={
+    'backend_type': 'third_party',
+    'api_base_url': 'http://vllm:8000/v1',
+    'backend_admin_url': 'http://should-be-cleared:8095',
+})
+b_tp.raise_for_status()
+assert b_tp.json()['backend_type'] == 'third_party', b_tp.json()
+assert b_tp.json()['backend_admin_url'] == '', b_tp.json()
+
+b_restore = requests.post('http://localhost:8090/admin-console/api/llm-backend', headers=H, json={
+    'backend_type': 'ark_llm',
+    'api_base_url': 'http://vllm:8000/v1',
+    'backend_admin_url': 'http://localhost:8095',
+})
+b_restore.raise_for_status()
+assert b_restore.json()['backend_admin_url'] == 'http://localhost:8095', b_restore.json()
 "
   pass "LLM & Model Management endpoints verified."
 
