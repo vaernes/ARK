@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-# ARK Company_Common Knowledge Base Snapshot Exporter
+# ARK Project Knowledge Base Snapshot Exporter
 # Creates a Qdrant collection snapshot at HQ and writes <collection>.snapshot
 # along with its <collection>.snapshot.sha256 verification file.
 # ==============================================================================
@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 OUTPUT_DIR="${REPO_ROOT}/artifacts/snapshots"
-COLLECTION_NAME="Company_Common"
+COLLECTION_NAME=""
 ENV_FILE="${REPO_ROOT}/.env"
 
 log()  { printf '[%s] [INFO]  %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
@@ -19,13 +19,13 @@ err()  { printf '[%s] [ERROR] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2;
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [OPTIONS]
+Usage: $(basename "$0") --collection NAME [OPTIONS]
 
 Exports a Qdrant collection snapshot + .sha256 file from the running ARK Qdrant instance.
 
 Options:
+  -c, --collection NAME    Qdrant collection name (required, e.g. Project_Alpha)
   -o, --output-dir PATH    Destination directory (default: ${OUTPUT_DIR})
-  -c, --collection NAME    Qdrant collection name (default: ${COLLECTION_NAME})
   -e, --env-file PATH      Path to .env file (default: ${REPO_ROOT}/.env)
   -h, --help               Show this help message and exit
 EOF
@@ -49,6 +49,8 @@ main() {
   require_cmd curl
   require_cmd python3
   require_cmd sha256sum
+
+  [[ -n "${COLLECTION_NAME}" ]] || { usage; err "--collection NAME is required."; }
 
   if [[ -f "${ENV_FILE}" ]]; then
     set -a

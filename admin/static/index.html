@@ -303,12 +303,14 @@
       <div class="projects-pill">PROJECTS DEPLOYED <strong id="proj-count">0</strong></div>
       <div class="offline-banner">&#9888; Strict Air-Gap &bull; Offline Mode</div>
       <a href="/"
-        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Open WebUI</a>
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Open
+        WebUI</a>
       <a href="/portal/"
         style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">User
         Portal</a>
       <a href="/oauth2/sign_out"
-        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--gray);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Sign Out</a>
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--gray);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Sign
+        Out</a>
       <button style="margin-top:0" onclick="refreshAll()">Refresh</button>
     </div>
   </header>
@@ -331,9 +333,11 @@
       <input id="proj-name" placeholder="Project_Alpha" />
       <label>Isolation Mode</label>
       <select id="proj-rag">
-        <option value="true">RAG-Enabled (Qdrant + Company_Common + Project KB)</option>
+        <option value="true">RAG-Enabled (Isolated Qdrant Project KB)</option>
         <option value="false">Clean Project (Isolated LLM / No RAG)</option>
       </select>
+      <label>Attach RAG From Other Projects (optional, comma-separated slugs)</label>
+      <input id="proj-extra-rag" placeholder="e.g. shared-kb, security-policies" />
       <label>System Prompt (optional)</label>
       <textarea id="proj-prompt" rows="2" placeholder="Custom instructions..."></textarea>
       <label>LLM Model Override (optional, blank = global default)</label>
@@ -423,7 +427,7 @@
 
     <!-- Backup & Snapshot -->
     <div class="card admin-accent">
-      <h2>Backup &amp; Company_Common Sync</h2>
+      <h2>Backup &amp; Project KB Snapshot Sync</h2>
       <label>Backup Destination Directory</label>
       <input id="backup-dir" />
       <button class="amber" onclick="saveBackupDir()">Save Backup Path</button>
@@ -434,14 +438,15 @@
       <button class="danger" style="margin-top:10px;padding:8px 14px;font-size:0.84rem;"
         onclick="restoreSelectedBackup()">Verify &amp; Restore Backup</button>
       <hr style="border-color: var(--border); margin: 16px 0;" />
-      <label>Company_Common Knowledge Base Snapshot</label>
+      <label>Project Knowledge Base Snapshot</label>
+      <select id="snap-proj" onchange="updateSnapshotDownloadLink()"></select>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-        <button onclick="exportCommonSnapshot()" style="margin-top:0;">Export Company_Common Snapshot</button>
-        <a id="download-common-snap" href="/admin-console/api/snapshots/company-common/download"
-          download="Company_Common.snapshot"
-          style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--cyan);padding:8px 12px;border-radius:6px;font-size:0.84rem;font-weight:600;">Download .snapshot</a>
+          Project Snapshot</button>
+          <a id="download-proj-snap" href="#"
+            style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--cyan);padding:8px 12px;border-radius:6px;font-size:0.84rem;font-weight:600;">Download
+            .snapshot</a>
       </div>
-      <label>Upload Company_Common.snapshot</label>
+      <label>Upload Project .snapshot</label>
       <input id="snap-file" type="file" accept=".snapshot" />
       <button onclick="uploadSnapshot()">Upload &amp; Recover Snapshot</button>
       <pre id="ops-output" style="display:none"></pre>
@@ -527,7 +532,8 @@
 
       <div id="edit-source-box"
         style="display:none;margin:10px 0;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--void);">
-        <strong style="font-size:0.86rem;color:var(--cyan);">Edit Ingest Source <span id="edit-source-title"></span></strong>
+        <strong style="font-size:0.86rem;color:var(--cyan);">Edit Ingest Source <span
+            id="edit-source-title"></span></strong>
         <input id="edit-source-id" type="hidden" />
         <label>Source Name</label>
         <input id="edit-source-name" />
@@ -586,7 +592,8 @@
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;">
         <button style="margin-top:0;" onclick="loadProjectIndexedDocs()">View Indexed Docs</button>
         <button style="margin-top:0;" onclick="resetProjectIndex(false)">Reset Cache</button>
-        <button class="danger" style="padding:7px 11px;font-size:0.8rem;" onclick="resetProjectIndex(true)">Reset Cache + Vectors</button>
+        <button class="danger" style="padding:7px 11px;font-size:0.8rem;" onclick="resetProjectIndex(true)">Reset Cache
+          + Vectors</button>
       </div>
       <div id="indexed-docs-status" style="font-size:0.8rem;color:var(--muted);margin-top:6px;"></div>
       <table id="indexed-docs-table" style="display:none;margin-top:8px;">
@@ -608,7 +615,8 @@
       <div id="vllm-live-info" style="font-size:0.82rem;color:var(--gray);margin-bottom:8px;">Loading LLM backend
         status...</div>
       <div id="embed-model-warning"
-        style="display:none;margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(245,90,0,0.14);border:1px solid var(--amber);color:#FCD34D;font-size:0.83rem;"></div>
+        style="display:none;margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(245,90,0,0.14);border:1px solid var(--amber);color:#FCD34D;font-size:0.83rem;">
+      </div>
       <div id="llm-backend-console-ref"
         style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:rgba(0,229,255,0.08);border:1px solid var(--cyan);font-size:0.84rem;">
         ARK LLM Backend Console:
@@ -651,7 +659,8 @@
         </thead>
         <tbody></tbody>
       </table>
-      <label style="margin-top:12px;">Upload Offline Model Archive (<code>.tar.gz</code> / <code>.tar</code> / <code>.zip</code>)</label>
+      <label style="margin-top:12px;">Upload Offline Model Archive (<code>.tar.gz</code> / <code>.tar</code> /
+        <code>.zip</code>)</label>
       <div style="display:flex;gap:8px;align-items:center;">
         <input id="model-archive-file" type="file" accept=".tar,.tar.gz,.tgz,.zip" style="flex:1;" />
         <button style="margin-top:0;white-space:nowrap;" onclick="uploadModelArchive()">Upload Model</button>
@@ -768,10 +777,10 @@
       if (auditEvtEl && auditEvtEl.value.trim()) auditParams.set('event_type', auditEvtEl.value.trim());
 
       const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, knownUsers] = await Promise.all([
-          api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
-          api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?' + auditParams.toString()), api('/models'), api('/llm-backend'),
-          api('/users')
-        ]);
+        api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
+        api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?' + auditParams.toString()), api('/models'), api('/llm-backend'),
+        api('/users')
+      ]);
 
       loadedSources = sources || [];
       loadedAudits = audits || [];
@@ -794,7 +803,14 @@
         ...projects.map(p =>
           el('tr', {}, [
             el('td', { text: p.slug }),
-            el('td', {}, el('span', { className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`, text: p.rag_enabled ? 'RAG' : 'Clean' })),
+            el('td', {}, el('span', {
+              className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`,
+              text: p.rag_enabled
+                ? ((p.extra_rag_projects && p.extra_rag_projects.length)
+                  ? `RAG (+${p.extra_rag_projects.join(', ')})`
+                  : 'RAG')
+                : 'Clean'
+            })),
             el('td', {}, el('code', { text: p.effective_llm_model || '-' })),
             el('td', { text: String(p.member_count ?? 0) }),
             el('td', {}, el('code', { text: `/projects/${p.slug}/v1` })),
@@ -804,6 +820,11 @@
                 text: 'Access',
                 onClick: () => focusProjectAccess(p.slug)
               }),
+              ...(p.rag_enabled ? [el('button', {
+                style: 'margin:0;padding:4px 7px;font-size:0.74rem;',
+                text: 'RAG',
+                onClick: () => setProjectRagLinks(p.slug, p.extra_rag_projects || [])
+              })] : []),
               el('button', {
                 style: 'margin:0;padding:4px 7px;font-size:0.74rem;',
                 text: 'LLM',
@@ -822,6 +843,16 @@
 
       const makeProjOpts = () => projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }));
       document.getElementById('key-proj').replaceChildren(...makeProjOpts());
+      const ragProjs = projects.filter(p => p.rag_enabled);
+      const snapSelect = document.getElementById('snap-proj');
+      const prevSnap = snapSelect.value;
+      snapSelect.replaceChildren(
+        ...(ragProjs.length
+          ? ragProjs.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
+          : [el('option', { value: '', text: '(No RAG projects)' })])
+      );
+      if (prevSnap && ragProjs.some(p => p.slug === prevSnap)) snapSelect.value = prevSnap;
+      updateSnapshotDownloadLink();
       const connProjSel = document.getElementById('conn-proj');
       const prevConnProj = connProjSel.value;
       connProjSel.replaceChildren(...makeProjOpts());
@@ -999,15 +1030,22 @@
     }
 
     async function createProject() {
+      const rawExtra = document.getElementById('proj-extra-rag').value || '';
+      const extraRagProjects = rawExtra
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
       await api('/projects', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: document.getElementById('proj-name').value,
           rag_enabled: document.getElementById('proj-rag').value === 'true',
+          extra_rag_projects: extraRagProjects,
           system_prompt: document.getElementById('proj-prompt').value,
           llm_model: document.getElementById('proj-llm').value
         })
       });
+      document.getElementById('proj-extra-rag').value = '';
       refreshAll();
     }
 
@@ -1017,6 +1055,20 @@
       await api(`/projects/${encodeURIComponent(slug)}/model`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ llm_model: next })
+      });
+      refreshAll();
+    }
+
+    async function setProjectRagLinks(slug, currentList) {
+      const next = prompt(
+        `Linked external RAG project slugs for '${slug}' (comma-separated, leave blank to clear):`,
+        (currentList || []).join(', ')
+      );
+      if (next === null) return;
+      const links = next.split(',').map(s => s.trim()).filter(Boolean);
+      await api(`/projects/${encodeURIComponent(slug)}/rag-projects`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extra_rag_projects: links })
       });
       refreshAll();
     }
@@ -1136,346 +1188,366 @@
       refreshAll();
     }
 
-    async function exportCommonSnapshot() {
-      const res = await api('/snapshots/company-common/export', { method: 'POST' });
-      showOps(res);
-    }
-
-    async function uploadSnapshot() {
-      const f = document.getElementById('snap-file').files[0];
-      if (!f) return alert('Select a .snapshot file first.');
-      const fd = new FormData();
-      fd.append('file', f);
-      const res = await api('/snapshots/upload', { method: 'POST', body: fd });
-      showOps(res);
-    }
-
-    function renderIngestMode() {
-      const kind = document.getElementById('ingest-kind').value;
-      document.getElementById('ingest-plugin-wrap').style.display = kind === 'plugin' ? 'block' : 'none';
-      document.getElementById('ingest-pipeline-wrap').style.display = kind === 'pipeline_yaml' ? 'block' : 'none';
-      document.getElementById('ingest-script-wrap').style.display = kind === 'script' ? 'block' : 'none';
-    }
-
-    function renderPluginFields() {
-      const pid = document.getElementById('conn-type').value;
-      const plugin = loadedPlugins.find(p => p.id === pid);
-      const container = document.getElementById('plugin-dynamic-fields');
-      if (!plugin) {
-        container.replaceChildren();
-        return;
-      }
-      const props = (plugin.config_schema && plugin.config_schema.properties) || {};
-      const secrets = new Set(plugin.secret_fields || []);
-      const nodes = [];
-      for (const [key, spec] of Object.entries(props)) {
-        nodes.push(el('label', { text: spec.title || key }));
-        if (spec.type === 'boolean') {
-          const sel = el('select', { 'data-plugin-field': key }, [
-            el('option', { value: 'true', text: 'true' }),
-            el('option', { value: 'false', text: 'false' })
-          ]);
-          sel.value = spec.default === false ? 'false' : 'true';
-          nodes.push(sel);
-        } else {
-          const inpType = (secrets.has(key) || spec.format === 'password') ? 'password' : (spec.type === 'integer' ? 'number' : 'text');
-          const inp = el('input', {
-            type: inpType,
-            'data-plugin-field': key,
-            'data-field-type': spec.type || 'string',
-            placeholder: spec.description || '',
-            value: spec.default !== undefined ? String(spec.default) : ''
-          });
-          nodes.push(inp);
+      function updateSnapshotDownloadLink() {
+        const slug = document.getElementById('snap-proj').value;
+        const link = document.getElementById('download-proj-snap');
+        if (!slug) {
+          link.href = '#';
+          link.onclick = (e) => {
+            e.preventDefault();
+            alert('Select a RAG-enabled project first.');
+          };
+          return;
         }
+        link.href = `/admin-console/api/projects/${encodeURIComponent(slug)}/snapshot/download`;
+        link.onclick = null;
       }
-      container.replaceChildren(...nodes);
-    }
 
-    function collectPluginConfig() {
-      const cfg = {};
-      document.querySelectorAll('#plugin-dynamic-fields [data-plugin-field]').forEach(node => {
-        const key = node.getAttribute('data-plugin-field');
-        const ftype = node.getAttribute('data-field-type');
-        if (node.tagName === 'SELECT') cfg[key] = node.value === 'true';
-        else if (ftype === 'integer') cfg[key] = parseInt(node.value || '0', 10);
-        else cfg[key] = node.value;
-      });
-      return cfg;
-    }
-
-    function buildIngestPayload() {
-      const kind = document.getElementById('ingest-kind').value;
-      const chunkStrategy = document.getElementById('ingest-chunk-strategy').value;
-      return {
-        project_slug: document.getElementById('conn-proj').value,
-        name: document.getElementById('conn-name').value || 'Ingest Source',
-        source_kind: kind,
-        plugin_id: kind === 'plugin' ? document.getElementById('conn-type').value : '',
-        config: kind === 'plugin' ? collectPluginConfig() : (kind === 'script' ? JSON.parse(document.getElementById('script-config').value || '{}') : {}),
-        pipeline_spec: kind === 'pipeline_yaml' ? document.getElementById('pipeline-yaml').value : '',
-        script_name: kind === 'script' ? document.getElementById('ingest-script-select').value : '',
-        chunk_config: { strategy: chunkStrategy, chunk_size: 1200, overlap: 200 },
-        sync_mode: document.getElementById('ingest-sync-mode').value,
-        schedule_cron: document.getElementById('ingest-schedule').value
-      };
-    }
-
-    async function createIngestSource() {
-      await api('/ingest-sources', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildIngestPayload())
-      });
-      refreshAll();
-    }
-
-    async function dryRunIngestSource() {
-      const p = buildIngestPayload();
-      const res = await api('/ingest-sources/dry-run', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_kind: p.source_kind,
-          plugin_id: p.plugin_id,
-          config: p.config,
-          pipeline_spec: p.pipeline_spec,
-          script_name: p.script_name,
-          limit: 5
-        })
-      });
-      const out = document.getElementById('ingest-preview-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(res, null, 2);
-    }
-
-    function editSource(id) {
-      const s = loadedSources.find(x => x.id === id);
-      if (!s) return;
-      document.getElementById('edit-source-id').value = String(s.id);
-      document.getElementById('edit-source-title').textContent = `#${s.id} (${s.project_slug})`;
-      document.getElementById('edit-source-name').value = s.name || '';
-      document.getElementById('edit-source-sync-mode').value = s.sync_mode || 'incremental';
-      document.getElementById('edit-source-schedule').value = s.schedule_cron || '';
-      document.getElementById('edit-source-enabled').value = s.enabled === false ? 'false' : 'true';
-      const pipeWrap = document.getElementById('edit-source-pipeline-wrap');
-      if (s.source_kind === 'pipeline_yaml') {
-        pipeWrap.style.display = 'block';
-        document.getElementById('edit-source-pipeline').value = s.pipeline_spec || '';
-      } else {
-        pipeWrap.style.display = 'none';
-        document.getElementById('edit-source-pipeline').value = '';
+      async function exportProjectSnapshot() {
+        const slug = document.getElementById('snap-proj').value;
+        if (!slug) return alert('Select a RAG-enabled project first.');
+        const res = await api(`/projects/${encodeURIComponent(slug)}/snapshot/export`, { method: 'POST' });
+        updateSnapshotDownloadLink();
+        showOps(res);
       }
-      const box = document.getElementById('edit-source-box');
-      box.style.display = 'block';
-      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
 
-    function cancelSourceEdit() {
-      document.getElementById('edit-source-box').style.display = 'none';
-    }
-
-    async function saveSourceEdit() {
-      const id = parseInt(document.getElementById('edit-source-id').value, 10);
-      if (!id) return;
-      const s = loadedSources.find(x => x.id === id);
-      const payload = {
-        name: document.getElementById('edit-source-name').value,
-        sync_mode: document.getElementById('edit-source-sync-mode').value,
-        schedule_cron: document.getElementById('edit-source-schedule').value,
-        enabled: document.getElementById('edit-source-enabled').value === 'true'
-      };
-      if (s && s.source_kind === 'pipeline_yaml') {
-        payload.pipeline_spec = document.getElementById('edit-source-pipeline').value;
+      async function uploadSnapshot() {
+        const slug = document.getElementById('snap-proj').value;
+        if (!slug) return alert('Select a RAG-enabled project first.');
+        const f = document.getElementById('snap-file').files[0];
+        if (!f) return alert('Select a .snapshot file first.');
+        const fd = new FormData();
+        fd.append('file', f);
+        const res = await api(`/projects/${encodeURIComponent(slug)}/snapshot/upload`, { method: 'POST', body: fd });
+        showOps(res);
       }
-      await api(`/ingest-sources/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      cancelSourceEdit();
-      refreshAll();
-    }
 
-    async function syncSource(id) {
-      const res = await api(`/ingest-sources/${id}/sync?async_mode=true`, { method: 'POST' });
-      const out = document.getElementById('ingest-preview-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(res, null, 2);
-      setTimeout(refreshAll, 1200);
-    }
+      function renderIngestMode() {
+        const kind = document.getElementById('ingest-kind').value;
+        document.getElementById('ingest-plugin-wrap').style.display = kind === 'plugin' ? 'block' : 'none';
+        document.getElementById('ingest-pipeline-wrap').style.display = kind === 'pipeline_yaml' ? 'block' : 'none';
+        document.getElementById('ingest-script-wrap').style.display = kind === 'script' ? 'block' : 'none';
+      }
 
-    async function deleteSource(id) {
-      if (!confirm(`Delete ingest source #${id}?`)) return;
-      const deleteVectors = confirm('Also delete Qdrant vectors indexed by this source?\nOK = Delete vectors too, Cancel = Keep existing vectors');
-      await api(`/ingest-sources/${id}?delete_vectors=${deleteVectors}`, { method: 'DELETE' });
-      refreshAll();
-    }
+      function renderPluginFields() {
+        const pid = document.getElementById('conn-type').value;
+        const plugin = loadedPlugins.find(p => p.id === pid);
+        const container = document.getElementById('plugin-dynamic-fields');
+        if (!plugin) {
+          container.replaceChildren();
+          return;
+        }
+        const props = (plugin.config_schema && plugin.config_schema.properties) || {};
+        const secrets = new Set(plugin.secret_fields || []);
+        const nodes = [];
+        for (const [key, spec] of Object.entries(props)) {
+          nodes.push(el('label', { text: spec.title || key }));
+          if (spec.type === 'boolean') {
+            const sel = el('select', { 'data-plugin-field': key }, [
+              el('option', { value: 'true', text: 'true' }),
+              el('option', { value: 'false', text: 'false' })
+            ]);
+            sel.value = spec.default === false ? 'false' : 'true';
+            nodes.push(sel);
+          } else {
+            const inpType = (secrets.has(key) || spec.format === 'password') ? 'password' : (spec.type === 'integer' ? 'number' : 'text');
+            const inp = el('input', {
+              type: inpType,
+              'data-plugin-field': key,
+              'data-field-type': spec.type || 'string',
+              placeholder: spec.description || '',
+              value: spec.default !== undefined ? String(spec.default) : ''
+            });
+            nodes.push(inp);
+          }
+        }
+        container.replaceChildren(...nodes);
+      }
 
-    function showJobLog(j) {
-      const out = document.getElementById('ingest-preview-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify({
-        id: j.id,
-        project_slug: j.project_slug,
-        trigger_type: j.trigger_type,
-        status: j.status,
-        stats: j.stats,
-        log_excerpt: j.log_excerpt
-      }, null, 2);
-    }
+      function collectPluginConfig() {
+        const cfg = {};
+        document.querySelectorAll('#plugin-dynamic-fields [data-plugin-field]').forEach(node => {
+          const key = node.getAttribute('data-plugin-field');
+          const ftype = node.getAttribute('data-field-type');
+          if (node.tagName === 'SELECT') cfg[key] = node.value === 'true';
+          else if (ftype === 'integer') cfg[key] = parseInt(node.value || '0', 10);
+          else cfg[key] = node.value;
+        });
+        return cfg;
+      }
 
-    async function loadProjectIndexedDocs() {
-      const slug = document.getElementById('conn-proj').value;
-      if (!slug) return alert('Select a project first.');
-      const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/documents?limit=200`);
-      const docs = res.documents || [];
-      document.getElementById('indexed-docs-status').textContent = `Showing ${docs.length} indexed document(s) in '${slug}'.`;
-      const tbl = document.getElementById('indexed-docs-table');
-      tbl.style.display = 'table';
-      const tbody = tbl.querySelector('tbody');
-      if (!docs.length) {
+      function buildIngestPayload() {
+        const kind = document.getElementById('ingest-kind').value;
+        const chunkStrategy = document.getElementById('ingest-chunk-strategy').value;
+        return {
+          project_slug: document.getElementById('conn-proj').value,
+          name: document.getElementById('conn-name').value || 'Ingest Source',
+          source_kind: kind,
+          plugin_id: kind === 'plugin' ? document.getElementById('conn-type').value : '',
+          config: kind === 'plugin' ? collectPluginConfig() : (kind === 'script' ? JSON.parse(document.getElementById('script-config').value || '{}') : {}),
+          pipeline_spec: kind === 'pipeline_yaml' ? document.getElementById('pipeline-yaml').value : '',
+          script_name: kind === 'script' ? document.getElementById('ingest-script-select').value : '',
+          chunk_config: { strategy: chunkStrategy, chunk_size: 1200, overlap: 200 },
+          sync_mode: document.getElementById('ingest-sync-mode').value,
+          schedule_cron: document.getElementById('ingest-schedule').value
+        };
+      }
+
+      async function createIngestSource() {
+        await api('/ingest-sources', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildIngestPayload())
+        });
+        refreshAll();
+      }
+
+      async function dryRunIngestSource() {
+        const p = buildIngestPayload();
+        const res = await api('/ingest-sources/dry-run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_kind: p.source_kind,
+            plugin_id: p.plugin_id,
+            config: p.config,
+            pipeline_spec: p.pipeline_spec,
+            script_name: p.script_name,
+            limit: 5
+          })
+        });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+      }
+
+      function editSource(id) {
+        const s = loadedSources.find(x => x.id === id);
+        if (!s) return;
+        document.getElementById('edit-source-id').value = String(s.id);
+        document.getElementById('edit-source-title').textContent = `#${s.id} (${s.project_slug})`;
+        document.getElementById('edit-source-name').value = s.name || '';
+        document.getElementById('edit-source-sync-mode').value = s.sync_mode || 'incremental';
+        document.getElementById('edit-source-schedule').value = s.schedule_cron || '';
+        document.getElementById('edit-source-enabled').value = s.enabled === false ? 'false' : 'true';
+        const pipeWrap = document.getElementById('edit-source-pipeline-wrap');
+        if (s.source_kind === 'pipeline_yaml') {
+          pipeWrap.style.display = 'block';
+          document.getElementById('edit-source-pipeline').value = s.pipeline_spec || '';
+        } else {
+          pipeWrap.style.display = 'none';
+          document.getElementById('edit-source-pipeline').value = '';
+        }
+        const box = document.getElementById('edit-source-box');
+        box.style.display = 'block';
+        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      function cancelSourceEdit() {
+        document.getElementById('edit-source-box').style.display = 'none';
+      }
+
+      async function saveSourceEdit() {
+        const id = parseInt(document.getElementById('edit-source-id').value, 10);
+        if (!id) return;
+        const s = loadedSources.find(x => x.id === id);
+        const payload = {
+          name: document.getElementById('edit-source-name').value,
+          sync_mode: document.getElementById('edit-source-sync-mode').value,
+          schedule_cron: document.getElementById('edit-source-schedule').value,
+          enabled: document.getElementById('edit-source-enabled').value === 'true'
+        };
+        if (s && s.source_kind === 'pipeline_yaml') {
+          payload.pipeline_spec = document.getElementById('edit-source-pipeline').value;
+        }
+        await api(`/ingest-sources/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        cancelSourceEdit();
+        refreshAll();
+      }
+
+      async function syncSource(id) {
+        const res = await api(`/ingest-sources/${id}/sync?async_mode=true`, { method: 'POST' });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+        setTimeout(refreshAll, 1200);
+      }
+
+      async function deleteSource(id) {
+        if (!confirm(`Delete ingest source #${id}?`)) return;
+        const deleteVectors = confirm('Also delete Qdrant vectors indexed by this source?\nOK = Delete vectors too, Cancel = Keep existing vectors');
+        await api(`/ingest-sources/${id}?delete_vectors=${deleteVectors}`, { method: 'DELETE' });
+        refreshAll();
+      }
+
+      function showJobLog(j) {
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify({
+          id: j.id,
+          project_slug: j.project_slug,
+          trigger_type: j.trigger_type,
+          status: j.status,
+          stats: j.stats,
+          log_excerpt: j.log_excerpt
+        }, null, 2);
+      }
+
+      async function loadProjectIndexedDocs() {
+        const slug = document.getElementById('conn-proj').value;
+        if (!slug) return alert('Select a project first.');
+        const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/documents?limit=200`);
+        const docs = res.documents || [];
+        document.getElementById('indexed-docs-status').textContent = `Showing ${docs.length} indexed document(s) in '${slug}'.`;
+        const tbl = document.getElementById('indexed-docs-table');
+        tbl.style.display = 'table';
+        const tbody = tbl.querySelector('tbody');
+        if (!docs.length) {
+          tbody.replaceChildren(
+            el('tr', {}, el('td', { colSpan: 4, style: 'color:var(--muted)', text: 'No indexed documents tracked for this project.' }))
+          );
+          return;
+        }
         tbody.replaceChildren(
-          el('tr', {}, el('td', { colSpan: 4, style: 'color:var(--muted)', text: 'No indexed documents tracked for this project.' }))
+          ...docs.map(d =>
+            el('tr', {}, [
+              el('td', {}, el('code', { text: d.doc_id })),
+              el('td', { text: d.filename || '-' }),
+              el('td', { text: String(d.chunk_count ?? 0) }),
+              el('td', {}, el('button', {
+                className: 'danger',
+                text: 'Delete',
+                onClick: () => deleteIndexedDoc(slug, d.doc_id, d.source_key)
+              }))
+            ])
+          )
         );
-        return;
       }
-      tbody.replaceChildren(
-        ...docs.map(d =>
-          el('tr', {}, [
-            el('td', {}, el('code', { text: d.doc_id })),
-            el('td', { text: d.filename || '-' }),
-            el('td', { text: String(d.chunk_count ?? 0) }),
-            el('td', {}, el('button', {
-              className: 'danger',
-              text: 'Delete',
-              onClick: () => deleteIndexedDoc(slug, d.doc_id, d.source_key)
-            }))
-          ])
-        )
-      );
-    }
 
-    async function deleteIndexedDoc(slug, docId, sourceKey) {
-      if (!confirm(`Delete indexed document '${docId}' from '${slug}'?`)) return;
-      const qs = sourceKey ? `?source_key=${encodeURIComponent(sourceKey)}` : '';
-      await api(`/projects/${encodeURIComponent(slug)}/ingest/documents/${encodeURIComponent(docId)}${qs}`, {
-        method: 'DELETE'
-      });
-      await loadProjectIndexedDocs();
+      async function deleteIndexedDoc(slug, docId, sourceKey) {
+        if (!confirm(`Delete indexed document '${docId}' from '${slug}'?`)) return;
+        const qs = sourceKey ? `?source_key=${encodeURIComponent(sourceKey)}` : '';
+        await api(`/projects/${encodeURIComponent(slug)}/ingest/documents/${encodeURIComponent(docId)}${qs}`, {
+          method: 'DELETE'
+        });
+        await loadProjectIndexedDocs();
+        refreshAll();
+      }
+
+      async function resetProjectIndex(clearVectors) {
+        const slug = document.getElementById('conn-proj').value;
+        if (!slug) return alert('Select a project first.');
+        const actionMsg = clearVectors
+          ? `Clear deduplication cache AND delete all Qdrant vectors for '${slug}'?`
+          : `Reset content-hash cache (keeping vectors until next re-sync) for '${slug}'?`;
+        if (!confirm(actionMsg)) return;
+        const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/reset?clear_vectors=${Boolean(clearVectors)}`, {
+          method: 'POST'
+        });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+        await loadProjectIndexedDocs();
+        refreshAll();
+      }
+
+      async function uploadProjectFile() {
+        const proj = document.getElementById('conn-proj').value;
+        const f = document.getElementById('direct-upload-file').files[0];
+        if (!proj || !f) return alert('Select a project and a file first.');
+        const fd = new FormData();
+        fd.append('file', f);
+        fd.append('chunk_strategy', document.getElementById('ingest-chunk-strategy').value);
+        const res = await api(`/projects/${encodeURIComponent(proj)}/ingest/files`, { method: 'POST', body: fd });
+        const out = document.getElementById('ingest-preview-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(res, null, 2);
+        refreshAll();
+      }
+
+      function toggleBackendAdminField() {
+        const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
+        document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
+      }
+
+      async function saveLlmBackend() {
+        const res = await api('/llm-backend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            backend_type: document.getElementById('llm-backend-type').value,
+            api_base_url: document.getElementById('llm-api-base-url').value,
+            api_key: document.getElementById('llm-api-key').value || null,
+            health_url: document.getElementById('llm-health-url').value,
+            backend_admin_url: document.getElementById('llm-backend-admin-url').value,
+          })
+        });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function saveDefaultLlm() {
+        const res = await api('/models/default', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_name: document.getElementById('default-llm-model').value })
+        });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function uploadModelArchive() {
+        const f = document.getElementById('model-archive-file').files[0];
+        if (!f) return alert('Select a model archive (.tar.gz / .tar / .zip) first.');
+        const fd = new FormData();
+        fd.append('file', f);
+        const res = await api('/models/upload', { method: 'POST', body: fd });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function switchPlanModel(modelDir, modelType) {
+        const res = await api('/models/switch-plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_dir: modelDir, model_type: modelType || 'llm' })
+        });
+        showModelOps(res);
+      }
+
+      async function deleteLocalModel(modelDir) {
+        if (!confirm(`Delete local model directory '${modelDir}' from /models?`)) return;
+        const res = await api(`/models/${encodeURIComponent(modelDir)}`, { method: 'DELETE' });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      function exportAuditJson() {
+        const blob = new Blob([JSON.stringify(loadedAudits || [], null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'ark-audit-export.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function showModelOps(obj) {
+        const out = document.getElementById('model-ops-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(obj, null, 2);
+      }
+
+      function showOps(obj) {
+        const out = document.getElementById('ops-output');
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(obj, null, 2);
+      }
+
       refreshAll();
-    }
-
-    async function resetProjectIndex(clearVectors) {
-      const slug = document.getElementById('conn-proj').value;
-      if (!slug) return alert('Select a project first.');
-      const actionMsg = clearVectors
-        ? `Clear deduplication cache AND delete all Qdrant vectors for '${slug}'?`
-        : `Reset content-hash cache (keeping vectors until next re-sync) for '${slug}'?`;
-      if (!confirm(actionMsg)) return;
-      const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/reset?clear_vectors=${Boolean(clearVectors)}`, {
-        method: 'POST'
-      });
-      const out = document.getElementById('ingest-preview-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(res, null, 2);
-      await loadProjectIndexedDocs();
-      refreshAll();
-    }
-
-    async function uploadProjectFile() {
-      const proj = document.getElementById('conn-proj').value;
-      const f = document.getElementById('direct-upload-file').files[0];
-      if (!proj || !f) return alert('Select a project and a file first.');
-      const fd = new FormData();
-      fd.append('file', f);
-      fd.append('chunk_strategy', document.getElementById('ingest-chunk-strategy').value);
-      const res = await api(`/projects/${encodeURIComponent(proj)}/ingest/files`, { method: 'POST', body: fd });
-      const out = document.getElementById('ingest-preview-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(res, null, 2);
-      refreshAll();
-    }
-
-    function toggleBackendAdminField() {
-      const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
-      document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
-    }
-
-    async function saveLlmBackend() {
-      const res = await api('/llm-backend', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          backend_type: document.getElementById('llm-backend-type').value,
-          api_base_url: document.getElementById('llm-api-base-url').value,
-          api_key: document.getElementById('llm-api-key').value || null,
-          health_url: document.getElementById('llm-health-url').value,
-          backend_admin_url: document.getElementById('llm-backend-admin-url').value,
-        })
-      });
-      showModelOps(res);
-      refreshAll();
-    }
-
-    async function saveDefaultLlm() {
-      const res = await api('/models/default', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_name: document.getElementById('default-llm-model').value })
-      });
-      showModelOps(res);
-      refreshAll();
-    }
-
-    async function uploadModelArchive() {
-      const f = document.getElementById('model-archive-file').files[0];
-      if (!f) return alert('Select a model archive (.tar.gz / .tar / .zip) first.');
-      const fd = new FormData();
-      fd.append('file', f);
-      const res = await api('/models/upload', { method: 'POST', body: fd });
-      showModelOps(res);
-      refreshAll();
-    }
-
-    async function switchPlanModel(modelDir, modelType) {
-      const res = await api('/models/switch-plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_dir: modelDir, model_type: modelType || 'llm' })
-      });
-      showModelOps(res);
-    }
-
-    async function deleteLocalModel(modelDir) {
-      if (!confirm(`Delete local model directory '${modelDir}' from /models?`)) return;
-      const res = await api(`/models/${encodeURIComponent(modelDir)}`, { method: 'DELETE' });
-      showModelOps(res);
-      refreshAll();
-    }
-
-    function exportAuditJson() {
-      const blob = new Blob([JSON.stringify(loadedAudits || [], null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'ark-audit-export.json';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    }
-
-    function showModelOps(obj) {
-      const out = document.getElementById('model-ops-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(obj, null, 2);
-    }
-
-    function showOps(obj) {
-      const out = document.getElementById('ops-output');
-      out.style.display = 'block';
-      out.textContent = JSON.stringify(obj, null, 2);
-    }
-
-    refreshAll();
   </script>
 </body>
 

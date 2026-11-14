@@ -13,7 +13,7 @@ This guide covers day-to-day usage of **ARK (Air-gapped Retrieval & Knowledge)**
 
 ### 2. Using Project Chats in Open WebUI
 1. In the top-left **Model selector**, choose the Assistant for the project you are working on:
-   - **RAG Project Assistant** (e.g., `Project Alpha Assistant`): Searches both the shared `Company_Common` knowledge base and your project's isolated documents (`Project_Alpha`), and includes source citations.
+   - **RAG Project Assistant** (e.g., `Project Alpha Assistant`): Searches your project's isolated documents (`Project_Alpha`), plus any other RAG projects explicitly linked to it read-only (e.g., `Shared_KB`), and includes source citations.
    - **Clean Project Assistant** (e.g., `Clean Sandbox Assistant`): Isolated chat without document retrieval—useful for general drafting, coding, or brainstorming.
 2. **Keep projects separated:** Start a new chat when switching between projects so conversation context never mixes.
 3. **Uploading project files:** In your project's Workspace/Knowledge tab (if granted write access), upload PDFs, Word, Excel, PowerPoint, or text files. ARK extracts text offline via Apache Tika and indexes it into that project's isolated Qdrant collection only.
@@ -59,7 +59,7 @@ curl https://ark.corp.internal/projects/project-alpha/v1/chat/completions \
 In the **Create Project** panel:
 - **Project Name:** Enter a name such as `Project_Alpha` or `Clean_Sandbox`.
 - **Mode:**
-  - **RAG-Enabled:** Creates isolated Qdrant collections (`Company_Common` + `Project_Alpha`), Open WebUI Knowledge Bases, an RBAC group (`project-alpha`), and `Project Alpha Assistant`.
+  - **RAG-Enabled:** Creates an isolated Qdrant collection (`Project_Alpha`), an Open WebUI Knowledge Base, an RBAC group (`project-alpha`), and `Project Alpha Assistant`. Optionally enter comma-separated RAG project slugs (or click **RAG** in the project table later) to attach another project's knowledge base read-only when needed.
   - **Clean Project (No RAG):** Creates an isolated project and `Clean Sandbox Assistant` backed directly by `vLLM` without any document retrieval.
 - **System Prompt (optional):** Override the default assistant instructions.
 
@@ -82,14 +82,16 @@ In the **Data Ingestion (Plugins, Pipelines & Scripts)** panel, select a **RAG-e
 
 All modes support **Incremental** (content-hash deduplication + stale chunk cleanup) or **Full Mirror** (prunes deleted documents) sync modes, configurable chunking (`chars`, `markdown`, `lines`, `none`), and schedules (`@15m`, `@hourly`, `@daily`).
 
-### 5. Updating `Company_Common` from HQ
-1. Obtain the latest `Company_Common.snapshot` (and `.sha256`) exported from HQ.
-2. Either:
-   - **Admin UI:** Upload `Company_Common.snapshot` in the **Backup & Company_Common Sync** panel, **or**
-   - **CLI:** Run `./scripts/sync-company-kb.sh --snapshot /path/to/Company_Common.snapshot`.
+### 5. Exporting & Importing Project KB Snapshots
+1. To export a project's Qdrant snapshot for transfer (e.g., HQ to an office deployment):
+   - **Admin UI:** In **Backup & Project KB Snapshot Sync**, select the RAG project, click **Export Project Snapshot**, then click **Download .snapshot**.
+   - **CLI:** Run `./scripts/export-company-kb.sh --collection Shared_KB --out ./Shared_KB.snapshot`.
+2. To import a `.snapshot` (and optional `.sha256`) into a RAG project's collection:
+   - **Admin UI:** Select the target RAG project in **Backup & Project KB Snapshot Sync**, choose the `.snapshot` file, and click **Upload & Recover Snapshot**.
+   - **CLI:** Run `./scripts/sync-company-kb.sh --collection Shared_KB --snapshot /path/to/Shared_KB.snapshot`.
 
 ### 6. Backups, Restore & Changing the Backup Directory
-In the **Backup & Company_Common Sync** panel:
+In the **Backup & Project KB Snapshot Sync** panel:
 - **Change Backup Location:** Update **Backup Destination Directory** (e.g., `/backups/nas`) and click **Save Backup Path**.
 - **Run Backup:** Click **Run Full Backup Now** to create a timestamped bundle (`ark-backup-<UTC>/`) containing compressed `pg_dump` archives (`openwebui.sql.gz`, `keycloak.sql.gz`, `ark_admin.sql.gz`), downloaded Qdrant snapshot files (`qdrant/<collection>/<snapshot>.snapshot`), and a SHA-256 `manifest.json`.
 - **Verify & Restore:** Select a backup bundle under **Restore Full Backup Bundle** and click **Verify & Restore Backup** (or use `./scripts/restore-backup.sh` on the host; see [docs/INSTALL.md](INSTALL.md#8-phase-7--backup-verification--full-stack-restore-disaster-recovery)).

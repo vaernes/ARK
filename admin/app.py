@@ -3,9 +3,9 @@ ARK Control Plane & Per-Project API Gateway (`ark-admin`).
 
 Provides:
 - Web Admin Console (/admin-console/) protected by Keycloak + oauth2-proxy
-- Project Lifecycle Management (RAG-enabled and clean non-RAG projects)
+- Project Lifecycle Management (RAG-enabled, linked RAG, and clean non-RAG projects)
 - Scoped Per-Project OpenAI API Gateway (/projects/{slug}/v1/chat/completions)
-- Company_Common Qdrant Snapshot Upload
+- Project Qdrant Snapshot Export & Upload
 - Live Service Health Dashboard
 - Configurable Backup & Restore (runtime-editable backup directory)
 - M-Files, SharePoint On-Prem, and SMB/Folder Document Connectors
@@ -195,6 +195,7 @@ def init_db() -> None:
                 ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT 'admin';
                 ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT[] NOT NULL DEFAULT ARRAY['chat']::TEXT[];
                 ALTER TABLE projects ADD COLUMN IF NOT EXISTS llm_model TEXT NOT NULL DEFAULT '';
+                ALTER TABLE projects ADD COLUMN IF NOT EXISTS extra_rag_projects TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
 
                 CREATE TABLE IF NOT EXISTS audit_logs (
                     id BIGSERIAL PRIMARY KEY,
@@ -619,8 +620,13 @@ def normalize_project(name: str) -> tuple[str, str, str, str]:
 class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     rag_enabled: bool = True
+    extra_rag_projects: list[str] = Field(default_factory=list)
     system_prompt: str = ""
     llm_model: str = ""
+
+
+class ProjectRagLinksRequest(BaseModel):
+    extra_rag_projects: list[str] = Field(default_factory=list)
 
 
 class DefaultModelRequest(BaseModel):
@@ -764,7 +770,7 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT slug, name, group_name, model_id, rag_enabled, created_at "
+                "SELECT slug, name, group_name, model_id, rag_enabled, extra_rag_projects, created_at "
                 "FROM projects ORDER BY created_at DESC"
             )
             rows = cur.fetchall()
@@ -780,8 +786,9 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
                 "group_name": r[2],
                 "model_id": r[3],
                 "rag_enabled": r[4],
+                "extra_rag_projects": list(r[5] or []),
                 "user_role": role,
-                "created_at": r[5].isoformat(),
+                "created_at": r[6].isoformat(),
             }
         )
     return result
@@ -914,6 +921,104 @@ def admin_version() -> dict[str, Any]:
     return get_version_info()
 
 
+def _resolve_extra_rag_projects(
+    cur: psycopg.Cursor[Any],
+    owner_slug: str,
+    raw_links: list[str] | None,
+) -> tuple[list[str], list[str]]:
+    seen: set[str] = set()
+    requested: list[str] = []
+    for item in raw_links or []:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        tokens = [t for t in re.split(r"[^A-Za-z0-9]+", text) if t]
+        if not tokens:
+            raise HTTPException(status_code=400, detail=f"Invalid linked RAG project identifier: '{text}'.")
+        linked_slug = "-".join(t.lower() for t in tokens)
+        if linked_slug == owner_slug:
+            raise HTTPException(status_code=400, detail=f"Project '{owner_slug}' cannot link its own RAG to itself.")
+        if linked_slug not in seen:
+            seen.add(linked_slug)
+            requested.append(linked_slug)
+
+    if not requested:
+        return [], []
+
+    cur.execute(
+        "SELECT slug, collection_name, rag_enabled FROM projects WHERE slug = ANY(%s)",
+        (requested,),
+    )
+    rows = {r[0]: (r[1], bool(r[2])) for r in cur.fetchall()}
+    resolved_slugs: list[str] = []
+    resolved_cols: list[str] = []
+    for linked_slug in requested:
+        if linked_slug not in rows:
+            raise HTTPException(status_code=400, detail=f"Linked RAG project '{linked_slug}' does not exist.")
+        col_name, linked_rag = rows[linked_slug]
+        if not linked_rag or not col_name:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project '{linked_slug}' does not have RAG enabled and cannot be linked.",
+            )
+        resolved_slugs.append(linked_slug)
+        resolved_cols.append(col_name)
+    return resolved_slugs, resolved_cols
+
+
+def _sync_openwebui_kbs(
+    headers: dict[str, str],
+    grp_id: str,
+    kb_specs: list[tuple[str, list[str]]],
+) -> list[dict[str, Any]]:
+    kbs = requests.get(f"{OPENWEBUI_URL}/api/v1/knowledge/", headers=headers, timeout=15).json()
+    kb_items: list[dict[str, Any]] = []
+    for kb_name, write_ids in kb_specs:
+        kb = next((k for k in kbs if k.get("name") == kb_name), None)
+        if not kb:
+            kb = requests.post(
+                f"{OPENWEBUI_URL}/api/v1/knowledge/create",
+                headers=headers,
+                json={
+                    "name": kb_name,
+                    "description": f"ARK Knowledge Base: {kb_name}",
+                    "access_control": {
+                        "read": {"group_ids": [grp_id], "user_ids": []},
+                        "write": {"group_ids": write_ids, "user_ids": []},
+                    },
+                },
+                timeout=15,
+            ).json()
+        else:
+            ac = kb.get("access_control") or {}
+            read_ac = ac.get("read") or {}
+            read_groups = list(read_ac.get("group_ids") or [])
+            if grp_id not in read_groups:
+                updated_ac = {
+                    **ac,
+                    "read": {
+                        **read_ac,
+                        "group_ids": [*read_groups, grp_id],
+                        "user_ids": list(read_ac.get("user_ids") or []),
+                    },
+                }
+                try:
+                    requests.post(
+                        f"{OPENWEBUI_URL}/api/v1/knowledge/{kb['id']}/update",
+                        headers=headers,
+                        json={
+                            "name": kb.get("name") or kb_name,
+                            "description": kb.get("description") or f"ARK Knowledge Base: {kb_name}",
+                            "access_control": updated_ac,
+                        },
+                        timeout=15,
+                    )
+                except Exception as exc:
+                    logger.warning("Open WebUI knowledge read-ACL sync warning for '%s': %s", kb_name, exc)
+        kb_items.append({"id": kb["id"], "name": kb["name"], "type": "collection"})
+    return kb_items
+
+
 @app.get("/admin-console/api/projects")
 def list_projects() -> list[dict[str, Any]]:
     default_llm = get_default_llm_model()
@@ -921,7 +1026,7 @@ def list_projects() -> list[dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT p.slug, p.name, p.collection_name, p.group_name, p.model_id, p.rag_enabled, "
-                "p.system_prompt, p.llm_model, p.created_at, COALESCE(m.cnt, 0) "
+                "p.extra_rag_projects, p.system_prompt, p.llm_model, p.created_at, COALESCE(m.cnt, 0) "
                 "FROM projects p "
                 "LEFT JOIN (SELECT project_slug, COUNT(*) AS cnt FROM project_members GROUP BY project_slug) m "
                 "ON m.project_slug = p.slug "
@@ -936,11 +1041,12 @@ def list_projects() -> list[dict[str, Any]]:
             "group_name": r[3],
             "model_id": r[4],
             "rag_enabled": r[5],
-            "system_prompt": r[6],
-            "llm_model": r[7],
-            "effective_llm_model": r[7].strip() if r[7] and r[7].strip() else default_llm,
-            "created_at": r[8].isoformat(),
-            "member_count": int(r[9]),
+            "extra_rag_projects": list(r[6] or []),
+            "system_prompt": r[7],
+            "llm_model": r[8],
+            "effective_llm_model": r[8].strip() if r[8] and r[8].strip() else default_llm,
+            "created_at": r[9].isoformat(),
+            "member_count": int(r[10]),
         }
         for r in rows
     ]
@@ -950,10 +1056,23 @@ def list_projects() -> list[dict[str, Any]]:
 def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
     slug, collection, display, model_id = normalize_project(req.name)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            extra_slugs, extra_cols = _resolve_extra_rag_projects(cur, slug, req.extra_rag_projects)
+    if not req.rag_enabled and extra_slugs:
+        raise HTTPException(
+            status_code=400,
+            detail="Clean (non-RAG) projects cannot link external project knowledge bases.",
+        )
+
     default_prompt = req.system_prompt.strip() or (
         f"You are the dedicated AI Assistant for {display}. "
         + (
-            f"Answer strictly from 'Company_Common' and '{collection}' knowledge bases and cite sources."
+            (
+                f"Answer strictly from the '{collection}' and linked ({', '.join(extra_cols)}) knowledge bases and cite sources."
+                if extra_cols
+                else f"Answer strictly from the '{collection}' knowledge base and cite sources."
+            )
             if req.rag_enabled
             else "Operate as a clean, isolated assistant without external document retrieval."
         )
@@ -962,13 +1081,12 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
     if req.rag_enabled:
         qdrant = get_qdrant()
         existing = {c.name for c in qdrant.get_collections().collections}
-        for col in ("Company_Common", collection):
-            if col not in existing:
-                qdrant.create_collection(
-                    collection_name=col,
-                    vectors_config=VectorParams(size=EMBED_VECTOR_SIZE, distance=Distance.COSINE),
-                    on_disk_payload=True,
-                )
+        if collection not in existing:
+            qdrant.create_collection(
+                collection_name=collection,
+                vectors_config=VectorParams(size=EMBED_VECTOR_SIZE, distance=Distance.COSINE),
+                on_disk_payload=True,
+            )
 
     effective_llm = get_effective_llm_model(req.llm_model)
 
@@ -1008,24 +1126,8 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
 
             kb_items: list[dict[str, Any]] = []
             if req.rag_enabled:
-                kbs = requests.get(f"{OPENWEBUI_URL}/api/v1/knowledge/", headers=headers, timeout=15).json()
-                for kb_name, write_ids in (("Company_Common", []), (collection, [grp_id])):
-                    kb = next((k for k in kbs if k.get("name") == kb_name), None)
-                    if not kb:
-                        kb = requests.post(
-                            f"{OPENWEBUI_URL}/api/v1/knowledge/create",
-                            headers=headers,
-                            json={
-                                "name": kb_name,
-                                "description": f"ARK Knowledge Base: {kb_name}",
-                                "access_control": {
-                                    "read": {"group_ids": [grp_id], "user_ids": []},
-                                    "write": {"group_ids": write_ids, "user_ids": []},
-                                },
-                            },
-                            timeout=15,
-                        ).json()
-                    kb_items.append({"id": kb["id"], "name": kb["name"], "type": "collection"})
+                kb_specs = [(collection, [grp_id])] + [(ext_col, []) for ext_col in extra_cols]
+                kb_items = _sync_openwebui_kbs(headers, grp_id, kb_specs)
 
             models = requests.get(f"{OPENWEBUI_URL}/api/v1/models/", headers=headers, timeout=15).json()
             existing_model = next((m for m in models if m.get("id") == model_id), None)
@@ -1056,15 +1158,26 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO projects (slug, name, collection_name, group_name, model_id, rag_enabled, system_prompt, llm_model)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO projects (slug, name, collection_name, group_name, model_id, rag_enabled, extra_rag_projects, system_prompt, llm_model)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (slug) DO UPDATE
                 SET name = EXCLUDED.name,
                     rag_enabled = EXCLUDED.rag_enabled,
+                    extra_rag_projects = EXCLUDED.extra_rag_projects,
                     system_prompt = EXCLUDED.system_prompt,
                     llm_model = EXCLUDED.llm_model
                 """,
-                (slug, display, collection if req.rag_enabled else None, slug, model_id, req.rag_enabled, default_prompt, req.llm_model.strip()),
+                (
+                    slug,
+                    display,
+                    collection if req.rag_enabled else None,
+                    slug,
+                    model_id,
+                    req.rag_enabled,
+                    extra_slugs if req.rag_enabled else [],
+                    default_prompt,
+                    req.llm_model.strip(),
+                ),
             )
         conn.commit()
 
@@ -1072,13 +1185,19 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
         "project.create",
         actor=actor,
         project_slug=slug,
-        details={"rag_enabled": req.rag_enabled, "llm_model": effective_llm, "webui_status": webui_status},
+        details={
+            "rag_enabled": req.rag_enabled,
+            "extra_rag_projects": extra_slugs if req.rag_enabled else [],
+            "llm_model": effective_llm,
+            "webui_status": webui_status,
+        },
     )
     return {
         "slug": slug,
         "name": display,
         "collection_name": collection if req.rag_enabled else None,
         "rag_enabled": req.rag_enabled,
+        "extra_rag_projects": extra_slugs if req.rag_enabled else [],
         "llm_model": req.llm_model.strip(),
         "effective_llm_model": effective_llm,
         "webui_status": webui_status,
@@ -1137,6 +1256,74 @@ def update_project_model(slug: str, req: ProjectModelRequest, request: Request) 
     return {"slug": slug, "llm_model": target, "effective_llm_model": effective, "webui_sync": webui_sync}
 
 
+@app.patch("/admin-console/api/projects/{slug}/rag-projects")
+def update_project_rag_projects(slug: str, req: ProjectRagLinksRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, collection_name, rag_enabled, model_id FROM projects WHERE slug = %s",
+                (slug,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Project not found.")
+            display, collection_name, rag_enabled, model_id = row
+            if not rag_enabled or not collection_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Only RAG-enabled projects can link external project knowledge bases.",
+                )
+            linked_slugs, linked_cols = _resolve_extra_rag_projects(cur, slug, req.extra_rag_projects)
+            cur.execute(
+                "UPDATE projects SET extra_rag_projects = %s WHERE slug = %s",
+                (linked_slugs, slug),
+            )
+        conn.commit()
+
+    webui_sync = "skipped_no_api_key"
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+            groups = requests.get(f"{OPENWEBUI_URL}/api/v1/groups/", headers=headers, timeout=15).json()
+            grp = next((g for g in groups if g.get("name") == slug), None)
+            models = requests.get(f"{OPENWEBUI_URL}/api/v1/models/", headers=headers, timeout=15).json()
+            existing = next((m for m in models if m.get("id") == model_id), None)
+            if grp and existing:
+                kb_specs = [(collection_name, [grp["id"]])] + [(ext_col, []) for ext_col in linked_cols]
+                kb_items = _sync_openwebui_kbs(headers, grp["id"], kb_specs)
+                payload = {
+                    **existing,
+                    "name": existing.get("name") or f"{display} Assistant",
+                    "meta": {**(existing.get("meta") or {}), "knowledge": kb_items},
+                }
+                requests.post(
+                    f"{OPENWEBUI_URL}/api/v1/models/model/update?id={quote(model_id, safe='')}",
+                    headers=headers,
+                    json=payload,
+                    timeout=15,
+                ).raise_for_status()
+                webui_sync = "synced"
+            else:
+                webui_sync = "model_or_group_not_in_webui"
+        except Exception as exc:
+            logger.warning("Open WebUI rag links sync warning for '%s': %s", slug, exc)
+            webui_sync = f"warning: {exc}"
+
+    audit.record(
+        "project.rag_links_update",
+        actor=actor,
+        project_slug=slug,
+        details={"extra_rag_projects": linked_slugs, "extra_collections": linked_cols, "webui_sync": webui_sync},
+    )
+    return {
+        "slug": slug,
+        "extra_rag_projects": linked_slugs,
+        "extra_collections": linked_cols,
+        "webui_sync": webui_sync,
+    }
+
+
 @app.delete("/admin-console/api/projects/{slug}")
 def delete_project(slug: str, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
@@ -1147,13 +1334,19 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
                 (slug,),
             )
             row = cur.fetchone()
+            if row:
+                cur.execute(
+                    "UPDATE projects SET extra_rag_projects = array_remove(extra_rag_projects, %s) "
+                    "WHERE %s = ANY(extra_rag_projects)",
+                    (slug, slug),
+                )
         conn.commit()
     if not row:
         raise HTTPException(status_code=404, detail="Project not found.")
 
     display, collection_name, rag_enabled, model_id = row
     qdrant_deleted = False
-    if rag_enabled and collection_name and collection_name != "Company_Common":
+    if rag_enabled and collection_name:
         try:
             get_qdrant().delete_collection(collection_name=collection_name)
             qdrant_deleted = True
@@ -1169,7 +1362,7 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
                 headers=headers,
                 timeout=15,
             )
-            if collection_name and collection_name != "Company_Common":
+            if collection_name:
                 kbs_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/knowledge/", headers=headers, timeout=15)
                 if kbs_resp.ok:
                     kb = next((k for k in kbs_resp.json() if k.get("name") == collection_name), None)
@@ -1460,30 +1653,77 @@ def revoke_key(key_id: int, request: Request) -> dict[str, str]:
     return {"status": "revoked"}
 
 
-@app.post("/admin-console/api/snapshots/upload")
-async def upload_common_snapshot(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+def _get_project_rag_collection(slug: str) -> tuple[str, str]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name, collection_name, rag_enabled FROM projects WHERE slug = %s", (slug,))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    display, collection_name, rag_enabled = row
+    if not rag_enabled or not collection_name:
+        raise HTTPException(status_code=400, detail=f"Project '{slug}' does not have RAG enabled.")
+    return display, collection_name
+
+
+async def _upload_project_snapshot(
+    request: Request,
+    slug: str,
+    file: UploadFile,
+) -> dict[str, Any]:
     actor = get_actor(request)
+    _, collection_name = _get_project_rag_collection(slug)
     headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
     raw = await file.read()
+    snap_name = file.filename or f"{collection_name}.snapshot"
     resp = await run_in_threadpool(
         lambda: requests.post(
-            f"{QDRANT_URL}/collections/Company_Common/snapshots/upload?priority=snapshot",
+            f"{QDRANT_URL}/collections/{quote(collection_name, safe='')}/snapshots/upload?priority=snapshot",
             headers=headers,
-            files={"snapshot": (file.filename or "Company_Common.snapshot", raw)},
+            files={"snapshot": (snap_name, raw)},
             timeout=300,
         )
     )
     if not resp.ok:
-        audit.record("snapshot.upload", actor=actor, status="error", details={"error": resp.text})
+        audit.record(
+            "snapshot.upload",
+            actor=actor,
+            project_slug=slug,
+            status="error",
+            details={"collection": collection_name, "error": resp.text},
+        )
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
-    audit.record("snapshot.upload", actor=actor, details={"filename": file.filename, "bytes": len(raw)})
-    return {"status": "ok", "filename": file.filename}
+    audit.record(
+        "snapshot.upload",
+        actor=actor,
+        project_slug=slug,
+        details={"collection": collection_name, "filename": snap_name, "bytes": len(raw)},
+    )
+    return {"status": "ok", "project_slug": slug, "collection": collection_name, "filename": snap_name}
 
 
-@app.post("/admin-console/api/snapshots/company-common/export")
-def export_company_common_snapshot(request: Request) -> dict[str, Any]:
+@app.post("/admin-console/api/projects/{slug}/snapshot/upload")
+async def upload_project_snapshot(slug: str, request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    return await _upload_project_snapshot(request, slug, file)
+
+
+@app.post("/admin-console/api/snapshots/upload")
+async def upload_snapshot(
+    request: Request,
+    file: UploadFile = File(...),
+    project_slug: str = Form(default=""),
+) -> dict[str, Any]:
+    slug = project_slug.strip().lower()
+    if not slug:
+        raise HTTPException(status_code=400, detail="project_slug is required to upload a project Qdrant snapshot.")
+    return await _upload_project_snapshot(request, slug, file)
+
+
+@app.post("/admin-console/api/projects/{slug}/snapshot/export")
+def export_project_snapshot(slug: str, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
+    _, collection_name = _get_project_rag_collection(slug)
     try:
         backup_root = validate_backup_dir(get_backup_setting()["backup_dir"])
     except ValueError as exc:
@@ -1492,14 +1732,15 @@ def export_company_common_snapshot(request: Request) -> dict[str, Any]:
 
     qdrant = get_qdrant()
     existing_cols = {c.name for c in qdrant.get_collections().collections}
-    if "Company_Common" not in existing_cols:
-        raise HTTPException(status_code=404, detail="Collection 'Company_Common' does not exist yet.")
+    if collection_name not in existing_cols:
+        raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' does not exist yet.")
 
-    snap = qdrant.create_snapshot(collection_name="Company_Common")
+    snap = qdrant.create_snapshot(collection_name=collection_name)
     headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
-    snap_url = f"{QDRANT_URL.rstrip('/')}/collections/Company_Common/snapshots/{quote(snap.name, safe='')}"
-    out_file = backup_root / "Company_Common.snapshot"
-    tmp_file = backup_root / f".Company_Common.snapshot.{os.getpid()}.tmp"
+    snap_url = f"{QDRANT_URL.rstrip('/')}/collections/{quote(collection_name, safe='')}/snapshots/{quote(snap.name, safe='')}"
+    snap_filename = f"{collection_name}.snapshot"
+    out_file = backup_root / snap_filename
+    tmp_file = backup_root / f".{snap_filename}.{os.getpid()}.tmp"
     try:
         with requests.get(snap_url, headers=headers, stream=True, timeout=300) as resp:
             resp.raise_for_status()
@@ -1510,22 +1751,30 @@ def export_company_common_snapshot(request: Request) -> dict[str, Any]:
         tmp_file.replace(out_file)
     except Exception as exc:
         tmp_file.unlink(missing_ok=True)
-        audit.record("snapshot.export", actor=actor, status="error", details={"error": str(exc)})
+        audit.record(
+            "snapshot.export",
+            actor=actor,
+            project_slug=slug,
+            status="error",
+            details={"collection": collection_name, "error": str(exc)},
+        )
         raise HTTPException(status_code=500, detail=f"Snapshot export failed: {exc}") from exc
 
     digest = sha256_file(out_file)
-    sha_file = backup_root / "Company_Common.snapshot.sha256"
-    sha_file.write_text(f"{digest}  Company_Common.snapshot\n", encoding="utf-8")
+    sha_file = backup_root / f"{snap_filename}.sha256"
+    sha_file.write_text(f"{digest}  {snap_filename}\n", encoding="utf-8")
     size_bytes = out_file.stat().st_size
 
     audit.record(
         "snapshot.export",
         actor=actor,
-        details={"collection": "Company_Common", "file": out_file.name, "sha256": digest, "bytes": size_bytes},
+        project_slug=slug,
+        details={"collection": collection_name, "file": out_file.name, "sha256": digest, "bytes": size_bytes},
     )
     return {
         "status": "ok",
-        "collection": "Company_Common",
+        "project_slug": slug,
+        "collection": collection_name,
         "file": out_file.name,
         "path": str(out_file),
         "sha256": digest,
@@ -1533,16 +1782,18 @@ def export_company_common_snapshot(request: Request) -> dict[str, Any]:
     }
 
 
-@app.get("/admin-console/api/snapshots/company-common/download")
-def download_company_common_snapshot() -> FileResponse:
+@app.get("/admin-console/api/projects/{slug}/snapshot/download")
+def download_project_snapshot(slug: str) -> FileResponse:
+    _, collection_name = _get_project_rag_collection(slug)
     try:
         backup_root = validate_backup_dir(get_backup_setting()["backup_dir"])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    snap_file = backup_root / "Company_Common.snapshot"
+    snap_filename = f"{collection_name}.snapshot"
+    snap_file = backup_root / snap_filename
     if not snap_file.is_file():
-        raise HTTPException(status_code=404, detail="Company_Common.snapshot has not been exported yet.")
-    return FileResponse(path=str(snap_file), filename="Company_Common.snapshot", media_type="application/octet-stream")
+        raise HTTPException(status_code=404, detail=f"{snap_filename} has not been exported yet.")
+    return FileResponse(path=str(snap_file), filename=snap_filename, media_type="application/octet-stream")
 
 
 @app.get("/admin-console/api/settings/backup")
@@ -2460,7 +2711,7 @@ def admin_reset_project_ingest(slug: str, request: Request, clear_vectors: bool 
         conn.commit()
 
     vectors_recreated = False
-    if clear_vectors and rag_enabled and collection_name and collection_name != "Company_Common":
+    if clear_vectors and rag_enabled and collection_name:
         qdrant = get_qdrant()
         try:
             qdrant.delete_collection(collection_name=collection_name)
@@ -2773,11 +3024,14 @@ def authenticate_project_key(slug: str, authorization: str | None = Header(defau
     token = authorization.removeprefix("Bearer ").strip()
     key_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
+    extra_collections: list[str] = []
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT k.id, k.label, k.rate_limit_rpm, k.revoked, p.collection_name, p.rag_enabled, p.system_prompt, p.model_id, p.llm_model, k.scopes
+                SELECT k.id, k.label, k.rate_limit_rpm, k.revoked,
+                       p.collection_name, p.rag_enabled, p.extra_rag_projects,
+                       p.system_prompt, p.model_id, p.llm_model, k.scopes
                 FROM api_keys k
                 JOIN projects p ON p.slug = k.project_slug
                 WHERE k.key_hash = %s AND k.project_slug = %s
@@ -2785,12 +3039,22 @@ def authenticate_project_key(slug: str, authorization: str | None = Header(defau
                 (key_hash, slug),
             )
             row = cur.fetchone()
+            if row and not row[3] and row[5] and row[6]:
+                extra_slugs = [str(s) for s in row[6] if s]
+                if extra_slugs:
+                    cur.execute(
+                        "SELECT slug, collection_name FROM projects "
+                        "WHERE rag_enabled = TRUE AND collection_name IS NOT NULL AND slug = ANY(%s)",
+                        (extra_slugs,),
+                    )
+                    col_by_slug = {r[0]: r[1] for r in cur.fetchall()}
+                    extra_collections = [col_by_slug[s] for s in extra_slugs if s in col_by_slug]
 
     if not row or row[3]:
         audit.record("api.auth_failed", actor="unknown", project_slug=slug, status="denied")
         raise HTTPException(status_code=403, detail="Invalid or revoked project API key.")
 
-    key_id, label, rpm, _, collection_name, rag_enabled, system_prompt, model_id, llm_model, raw_scopes = row
+    key_id, label, rpm, _, collection_name, rag_enabled, _, system_prompt, model_id, llm_model, raw_scopes = row
     now = time.monotonic()
     with rate_buckets_lock:
         bucket = rate_buckets[f"{slug}:{key_id}"]
@@ -2804,6 +3068,7 @@ def authenticate_project_key(slug: str, authorization: str | None = Header(defau
     return {
         "key_label": label,
         "collection_name": collection_name,
+        "extra_collections": extra_collections,
         "rag_enabled": rag_enabled,
         "system_prompt": system_prompt,
         "model_id": model_id,
@@ -2879,9 +3144,11 @@ def _prepare_rag_and_llm_request(
             query_vec = embed_texts(TEI_EMBED_URL, [retrieval_query], model=EMBED_MODEL_ID)[0]
             qdrant = get_qdrant()
             candidates: list[dict[str, Any]] = []
-            for col in ("Company_Common", auth["collection_name"]):
-                if not col:
-                    continue
+            cols_to_query: list[str] = []
+            for col in [auth.get("collection_name"), *list(auth.get("extra_collections") or [])]:
+                if col and col not in cols_to_query:
+                    cols_to_query.append(col)
+            for col in cols_to_query:
                 try:
                     hits = qdrant.query_points(collection_name=col, query=query_vec, limit=6).points
                     for hit in hits:

@@ -14,7 +14,7 @@ Follow this checklist when adding a new API endpoint, document connector, or con
    - If new persistent state is needed in `ark_admin`, update `config/postgres/init.sql` (and any startup migrations in `admin/app.py` if existing DBs must upgrade cleanly).
 2. **Connectors (`admin/connectors.py`)**
    - Keep ingestion offline-safe (Apache Tika + TEI embeddings + Qdrant).
-   - Scope ingested chunks strictly to the target project's Qdrant collection; never write into another project's collection or `Company_Common` unless explicitly intended.
+   - Scope ingested chunks strictly to the target project's Qdrant collection; never write into another project's collection unless explicitly intended.
 3. **API & Gateway (`admin/app.py`)**
    - Admin endpoints under `/admin-console/` rely on `oauth2-proxy` headers (`X-Forwarded-User`, `X-Forwarded-Email`) injected by Caddy.
    - Project API endpoints under `/projects/<slug>/v1/` must validate the `ark_proj_*` key against the target `<slug>` and enforce rate limits.

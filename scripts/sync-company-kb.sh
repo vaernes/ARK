@@ -2,16 +2,16 @@
 set -euo pipefail
 
 # ==============================================================================
-# ARK Company_Common Knowledge Base Snapshot Sync
+# ARK Project Knowledge Base Snapshot Sync
 # Imports a Qdrant .snapshot file exported from HQ into the offline office
-# Qdrant instance as the shared 'Company_Common' collection.
+# Qdrant instance into the specified project collection.
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SNAPSHOT_FILE=""
-COLLECTION_NAME="Company_Common"
+COLLECTION_NAME=""
 ENV_FILE="${REPO_ROOT}/.env"
 SKIP_CHECKSUM=false
 MIN_FREE_GB=10
@@ -22,13 +22,13 @@ err()  { printf '[%s] [ERROR] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2;
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") --snapshot PATH [OPTIONS]
+Usage: $(basename "$0") --snapshot PATH --collection NAME [OPTIONS]
 
-Restores a Qdrant snapshot into the offline ARK Qdrant instance.
+Restores a Qdrant snapshot into a target collection in the offline ARK Qdrant instance.
 
 Options:
   -f, --snapshot PATH      Path to the .snapshot file (required)
-  -c, --collection NAME    Target Qdrant collection name (default: ${COLLECTION_NAME})
+  -c, --collection NAME    Target Qdrant collection name (required, e.g. Project_Alpha)
   -e, --env-file PATH      Path to .env file (default: ${REPO_ROOT}/.env)
       --skip-checksum      Skip .sha256 verification if no checksum file is provided
   -h, --help               Show this help message and exit
@@ -56,6 +56,7 @@ main() {
   require_cmd df
 
   [[ -n "${SNAPSHOT_FILE}" ]] || { usage; err "--snapshot PATH is required."; }
+  [[ -n "${COLLECTION_NAME}" ]] || { usage; err "--collection NAME is required."; }
   [[ -f "${SNAPSHOT_FILE}" ]] || err "Snapshot file not found: ${SNAPSHOT_FILE}"
 
   if [[ -f "${ENV_FILE}" ]]; then

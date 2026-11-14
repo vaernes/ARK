@@ -296,8 +296,8 @@ assert h.json()['services'].get('llm_backend') == 'healthy', h.json()
   [[ "${raw_code}" == "403" ]] || fail "Expected 403 for raw /v1/*, got ${raw_code}"
   pass "Raw /v1/* bypass blocked (HTTP 403)."
 
-  # 4. Create RAG project + Clean project via ark-admin
-  log "4/8 Provisioning RAG project (Project_Alpha) and Clean project (Clean_Sandbox)..."
+  # 4. Create RAG projects + Clean project via ark-admin
+  log "4/8 Provisioning RAG projects (Project_Alpha, Shared_KB) and Clean project (Clean_Sandbox)..."
   docker exec ark-test-ark-admin python3 -c "
 import requests
 H = {
@@ -309,11 +309,13 @@ r1 = requests.post('http://localhost:8090/admin-console/api/projects', headers=H
 r1.raise_for_status()
 r2 = requests.post('http://localhost:8090/admin-console/api/projects', headers=H, json={'name': 'Clean_Sandbox', 'rag_enabled': False})
 r2.raise_for_status()
+r3 = requests.post('http://localhost:8090/admin-console/api/projects', headers=H, json={'name': 'Shared_KB', 'rag_enabled': True})
+r3.raise_for_status()
 "
-  pass "Created Project_Alpha (RAG) and Clean_Sandbox (Clean)."
+  pass "Created Project_Alpha (RAG), Shared_KB (RAG), and Clean_Sandbox (Clean)."
 
-  # 5. Issue API keys & ingest a sample document vector into Project_Alpha
-  log "5/8 Issuing scoped API keys and testing Qdrant RAG + Clean project routing..."
+  # 5. Issue API keys, link Shared_KB to Project_Alpha, & ingest sample document vectors
+  log "5/8 Issuing scoped API keys and testing project-linked Qdrant RAG + Clean project routing..."
   local keys_json
   keys_json=$(docker exec ark-test-ark-admin python3 -c "
 import json, requests
@@ -329,9 +331,19 @@ H = {
 k1 = requests.post('http://localhost:8090/admin-console/api/keys', headers=H, json={'project_slug': 'project-alpha', 'label': 'office-addin'}).json()['api_key']
 k2 = requests.post('http://localhost:8090/admin-console/api/keys', headers=H, json={'project_slug': 'clean-sandbox', 'label': 'ide-plugin'}).json()['api_key']
 
-vec = embed_texts('http://tei-embed:80', ['ARK Project Alpha secret specification'])[0]
+vec_alpha = embed_texts('http://tei-embed:80', ['ARK Project Alpha secret specification'])[0]
+vec_shared = embed_texts('http://tei-embed:80', ['ARK Shared KB policy v1'])[0]
 qc = QdrantClient(url='http://qdrant:6333', api_key='${QDRANT_KEY}')
-qc.upsert(collection_name='Project_Alpha', points=[PointStruct(id='11111111-1111-1111-1111-111111111111', vector=vec, payload={'text': 'ARK Project Alpha spec v1', 'filename': 'spec.pdf'})])
+qc.upsert(collection_name='Project_Alpha', points=[PointStruct(id='11111111-1111-1111-1111-111111111111', vector=vec_alpha, payload={'text': 'ARK Project Alpha spec v1', 'filename': 'spec.pdf'})])
+qc.upsert(collection_name='Shared_KB', points=[PointStruct(id='22222222-2222-2222-2222-222222222222', vector=vec_shared, payload={'text': 'ARK Shared KB policy v1', 'filename': 'shared-policy.pdf'})])
+
+bad_link = requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/rag-projects', headers=H, json={'extra_rag_projects': ['clean-sandbox']})
+assert bad_link.status_code == 400, f'Expected 400 linking clean project, got {bad_link.status_code}: {bad_link.text}'
+
+ok_link = requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/rag-projects', headers=H, json={'extra_rag_projects': ['shared-kb']})
+ok_link.raise_for_status()
+assert ok_link.json().get('extra_rag_projects') == ['shared-kb'], ok_link.json()
+
 print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
 ")
   local alpha_key clean_key
@@ -348,7 +360,7 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   alpha_headers_body=$(curl -ksi -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
     -H "Authorization: Bearer ${alpha_key}" \
     -H "Content-Type: application/json" \
-    -d '{"messages":[{"role":"system","content":"Always respond concisely."},{"role":"user","content":[{"type":"text","text":"Summarize spec"}]}]}')
+    -d '{"include_citations":true,"messages":[{"role":"system","content":"Always respond concisely."},{"role":"user","content":[{"type":"text","text":"Summarize spec and policy"}]}]}')
   alpha_resp="${alpha_headers_body}"
   if ! echo "${alpha_resp}" | grep -q "RAG_CONTEXT_INJECTED=True"; then
     docker logs --tail 30 ark-test-caddy >&2 || true
@@ -356,9 +368,12 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
     fail "Expected RAG_CONTEXT_INJECTED=True, got: ${alpha_resp}"
   fi
   echo "${alpha_resp}" | grep -q "HAS_CLIENT_INSTRUCTIONS=True" || fail "Expected client system prompt to be preserved (HAS_CLIENT_INSTRUCTIONS=True), got: ${alpha_resp}"
-  echo "${alpha_resp}" | grep -qiE "^x-ark-rag-chunks:\s*[1-9]" || fail "Expected X-Ark-Rag-Chunks >= 1 response header, got headers+body: ${alpha_resp}"
+  echo "${alpha_resp}" | grep -qiE "^x-ark-rag-chunks:\s*2\b" || fail "Expected X-Ark-Rag-Chunks: 2 response header, got headers+body: ${alpha_resp}"
+  echo "${alpha_resp}" | grep -q "ark_citations" || fail "Expected ark_citations in response body, got: ${alpha_resp}"
+  echo "${alpha_resp}" | grep -q "Project_Alpha | spec.pdf" || fail "Expected Project_Alpha citation in response, got: ${alpha_resp}"
+  echo "${alpha_resp}" | grep -q "Shared_KB | shared-policy.pdf" || fail "Expected Shared_KB citation in response, got: ${alpha_resp}"
   echo "${alpha_resp}" | grep -q '"total_tokens":20' || fail "Expected token usage in chat completion response, got: ${alpha_resp}"
-  pass "Project_Alpha API Gateway retrieved Qdrant context, preserved client system prompt, handled multimodal content, and returned X-Ark-Rag-Chunks."
+  pass "Project_Alpha API Gateway retrieved own + linked Shared_KB Qdrant context, preserved client system prompt, handled multimodal content, and returned X-Ark-Rag-Chunks & citations."
 
   clean_resp=$(curl -ks -w "\nHTTP_CODE:%{http_code}" -X POST "https://localhost:8443/projects/clean-sandbox/v1/chat/completions" \
     -H "Authorization: Bearer ${clean_key}" \
@@ -768,19 +783,22 @@ if not rest.ok:
 rdata = rest.json()
 assert set(rdata['restored_databases']) == {'openwebui', 'keycloak', 'ark_admin'}, rdata
 assert 'Project_Alpha' in rdata['restored_collections'], rdata
+assert 'Shared_KB' in rdata['restored_collections'], rdata
 assert qc.count(collection_name='Project_Alpha').count == 1, 'Qdrant point was not restored!'
+assert qc.count(collection_name='Shared_KB').count == 1, 'Shared_KB Qdrant point was not restored!'
 proj_info = [p for p in requests.get('http://localhost:8090/admin-console/api/projects', headers=H).json() if p['slug'] == 'project-alpha'][0]
 assert proj_info['llm_model'] == '', proj_info
+assert proj_info['extra_rag_projects'] == ['shared-kb'], proj_info
 
-# Test Company_Common snapshot export & download endpoints on restored stack
-exp = requests.post('http://localhost:8090/admin-console/api/snapshots/company-common/export', headers=H, timeout=60)
+# Test Project_Alpha snapshot export & download endpoints on restored stack
+exp = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/snapshot/export', headers=H, timeout=60)
 exp.raise_for_status()
-assert exp.json().get('file') == 'Company_Common.snapshot', exp.json()
-dl = requests.get('http://localhost:8090/admin-console/api/snapshots/company-common/download', headers=H, timeout=60)
+assert exp.json().get('file') == 'Project_Alpha.snapshot', exp.json()
+dl = requests.get('http://localhost:8090/admin-console/api/projects/project-alpha/snapshot/download', headers=H, timeout=60)
 dl.raise_for_status()
-assert len(dl.content) > 0, 'Downloaded Company_Common.snapshot is empty'
+assert len(dl.content) > 0, 'Downloaded Project_Alpha.snapshot is empty'
 "
-  pass "Backup files, extra_archives, Company_Common snapshot export/download, manifest verification, and full restore verified."
+  pass "Backup files, extra_archives, Project_Alpha snapshot export/download, manifest verification, and full restore verified."
 
   # 8. Test Audit Logs (PostgreSQL + append-only audit.jsonl) & In-Container Unit Tests
   log "8/8 Verifying audit logs and running full unit tests inside container..."
@@ -799,6 +817,7 @@ for expected in (
     'project.create',
     'project.delete',
     'project.model_update',
+    'project.rag_links_update',
     'model.default_update',
     'model.switch_plan',
     'apikey.create',

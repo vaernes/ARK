@@ -119,15 +119,15 @@ Keycloak boots with the `ark` realm pre-imported from [config/keycloak/ark-realm
 
 ---
 
-## 7. Phase 6 — Initial Knowledge Sync & Project Setup
+## 7. Phase 6 — Initial Project Setup & Optional Snapshot Import
 
-1. **Sync `Company_Common` from HQ:**
-   ```bash
-   ./scripts/sync-company-kb.sh --snapshot /path/to/Company_Common.snapshot
-   ```
-2. **Generate an Open WebUI Admin API Key** (optional, for syncing Workspace Assistants into Open WebUI):
+1. **Generate an Open WebUI Admin API Key** (optional, for syncing Workspace Assistants into Open WebUI):
    - Sign in to `https://<your-ark-domain>` as an admin, go to **Settings → Account → API Keys**, and add `OPENWEBUI_API_KEY=...` to `.env`, then restart `ark-admin` (`docker compose up -d ark-admin`).
-3. **Create your first project** via the Admin UI (`https://<your-ark-domain>/admin-console/`) or via CLI (`python3 provisioning/bootstrap_ark.py --create-project "Project_Alpha"`).
+2. **Create your projects** via the Admin UI (`https://<your-ark-domain>/admin-console/`) or via CLI (`python3 provisioning/bootstrap_ark.py --create-project "Shared_KB"` and `--create-project "Project_Alpha" --extra-rag-project shared-kb` if you want `Project_Alpha` to search `Shared_KB` read-only).
+3. **Optionally sync a prebuilt project Qdrant snapshot** (e.g., exported from HQ):
+   ```bash
+   ./scripts/sync-company-kb.sh --collection Shared_KB --snapshot /path/to/Shared_KB.snapshot
+   ```
 
 ---
 
@@ -155,7 +155,7 @@ docker compose up -d
 ```
 
 ### 3. Restore via Admin Console
-For online rollback while `ark-admin` is running, select a verified bundle in **Backup & Company_Common Sync → Restore Full Backup Bundle** and click **Verify & Restore Backup** (calls `POST /admin-console/api/backups/restore`).
+For online rollback while `ark-admin` is running, select a verified bundle in **Backup & Project KB Snapshot Sync → Restore Full Backup Bundle** and click **Verify & Restore Backup** (calls `POST /admin-console/api/backups/restore`).
 
 ### 4. Post-Restore Verification
 1. Check container health: `docker compose ps`

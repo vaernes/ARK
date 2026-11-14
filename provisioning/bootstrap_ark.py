@@ -3,10 +3,10 @@
 ARK (Air-gapped Retrieval & Knowledge) Multi-Tenant Provisioning CLI.
 
 Idempotently initializes:
-1. Shared `Company_Common` and isolated project Qdrant collections.
+1. Isolated project Qdrant collection (`<Project_Name>`).
 2. Open WebUI RBAC user group (`<project-slug>`).
-3. Open WebUI Knowledge Bases (`Company_Common` + `<Project_Name>`).
-4. Dedicated Workspace Assistant model profile bound to both Knowledge Bases
+3. Open WebUI Knowledge Base (`<Project_Name>`) and any linked read-only project KBs.
+4. Dedicated Workspace Assistant model profile bound to those Knowledge Bases
    and locked to the project's RBAC group.
 """
 
@@ -32,8 +32,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 logger = logging.getLogger("ark-bootstrap")
-
-COMPANY_COMMON_COLLECTION = "Company_Common"
 
 
 class ProjectIdentifiers(BaseModel):
@@ -244,16 +242,18 @@ class OpenWebUIClient:
         base_model_id: str,
         knowledge_items: list[dict[str, Any]],
         group_id: str,
-        project_collection: str,
+        attached_collections: list[str],
     ) -> dict[str, Any]:
         """Idempotently create or update a Workspace Assistant locked to an RBAC group."""
         models = self._request("GET", "/api/v1/models/")
         existing = next((m for m in models if m.get("id") == model_id), None)
 
+        kb_label = " + ".join(attached_collections)
+        kb_prompt_list = ", ".join(f"'{c}'" for c in attached_collections)
         system_prompt = (
             f"You are the dedicated AI Assistant for {display_name} in an air-gapped enterprise environment. "
-            f"Answer strictly from the attached '{COMPANY_COMMON_COLLECTION}' and '{project_collection}' "
-            "knowledge bases when project or company context is requested. "
+            f"Answer strictly from the attached {kb_prompt_list} "
+            "knowledge base(s) when project context is requested. "
             "Cite source documents clearly and never fabricate information."
         )
 
@@ -265,7 +265,7 @@ class OpenWebUIClient:
                 "profile_image_url": "/static/favicon.svg",
                 "description": (
                     f"Isolated RAG Assistant for {display_name} "
-                    f"(Knowledge: {COMPANY_COMMON_COLLECTION} + {project_collection})."
+                    f"(Knowledge: {kb_label})."
                 ),
                 "capabilities": {
                     "vision": False,
@@ -308,19 +308,33 @@ class OpenWebUIClient:
         return created
 
 
-def provision_project(cfg: ProvisioningConfig, project_name: str) -> None:
+def provision_project(
+    cfg: ProvisioningConfig,
+    project_name: str,
+    extra_rag_projects: list[str] | None = None,
+) -> None:
     """Execute end-to-end provisioning for a single isolated project."""
     ids = ProjectIdentifiers.from_project_name(project_name)
+    extra_ids: list[ProjectIdentifiers] = []
+    seen_cols = {ids.collection_name}
+    for raw_extra in extra_rag_projects or []:
+        if not raw_extra or not raw_extra.strip():
+            continue
+        ext = ProjectIdentifiers.from_project_name(raw_extra)
+        if ext.collection_name not in seen_cols:
+            seen_cols.add(ext.collection_name)
+            extra_ids.append(ext)
+
     logger.info(
-        "Provisioning ARK project '%s' -> collection='%s', group='%s', assistant='%s'",
+        "Provisioning ARK project '%s' -> collection='%s', group='%s', assistant='%s', linked=%s",
         ids.raw_name,
         ids.collection_name,
         ids.group_name,
         ids.model_id,
+        [e.collection_name for e in extra_ids],
     )
 
     qdrant = QdrantClient(url=cfg.qdrant_url, api_key=cfg.qdrant_api_key or None, timeout=30)
-    ensure_qdrant_collection(qdrant, COMPANY_COMMON_COLLECTION, cfg.vector_size)
     ensure_qdrant_collection(qdrant, ids.collection_name, cfg.vector_size)
 
     webui = OpenWebUIClient(
@@ -335,26 +349,32 @@ def provision_project(cfg: ProvisioningConfig, project_name: str) -> None:
     )
     group_id = group["id"]
 
-    common_kb = webui.ensure_knowledge_base(
-        name=COMPANY_COMMON_COLLECTION,
-        description="Shared read-only company-wide knowledge base synchronized from HQ.",
-        read_group_ids=[group_id],
-        write_group_ids=[],
-    )
     project_kb = webui.ensure_knowledge_base(
         name=ids.collection_name,
         description=f"Strictly isolated knowledge base for {ids.display_name}.",
         read_group_ids=[group_id],
         write_group_ids=[group_id],
     )
+    knowledge_items = [project_kb]
+    attached_collections = [ids.collection_name]
+    for ext in extra_ids:
+        ensure_qdrant_collection(qdrant, ext.collection_name, cfg.vector_size)
+        ext_kb = webui.ensure_knowledge_base(
+            name=ext.collection_name,
+            description=f"Shared read-only knowledge base from {ext.display_name}.",
+            read_group_ids=[group_id],
+            write_group_ids=[],
+        )
+        knowledge_items.append(ext_kb)
+        attached_collections.append(ext.collection_name)
 
     webui.ensure_assistant_model(
         model_id=ids.model_id,
         display_name=ids.display_name,
         base_model_id=cfg.base_model,
-        knowledge_items=[common_kb, project_kb],
+        knowledge_items=knowledge_items,
         group_id=group_id,
-        project_collection=ids.collection_name,
+        attached_collections=attached_collections,
     )
 
     logger.info(
@@ -385,6 +405,12 @@ def parse_args() -> argparse.Namespace:
         "--create-project",
         required=True,
         help="Project name to provision (e.g. 'Project_Alpha').",
+    )
+    parser.add_argument(
+        "--extra-rag-project",
+        action="append",
+        default=[],
+        help="Optional project name/slug whose RAG collection should be attached read-only (repeatable).",
     )
     parser.add_argument(
         "--env-file",
@@ -428,7 +454,7 @@ def main() -> int:
     )
 
     try:
-        provision_project(cfg, args.create_project)
+        provision_project(cfg, args.create_project, extra_rag_projects=args.extra_rag_project)
     except Exception as exc:
         logger.error("Provisioning failed: %s", exc)
         return 1

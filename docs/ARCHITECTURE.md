@@ -108,7 +108,7 @@ ark-stack/
 │   ├── dev-up.sh                    # Local GPU-less interactive dev stack
 │   ├── install-offline.sh           # Office: verifies checksums, loads & starts ARK
 │   ├── restore-backup.sh            # Disaster-recovery verify & restore CLI
-│   ├── sync-company-kb.sh           # Imports Company_Common Qdrant snapshots
+│   ├── sync-company-kb.sh           # Imports project Qdrant collection snapshots
 │   ├── test-integration.sh          # Automated GPU-less integration test suite
 │   └── update-llm.sh                # Atomic offline LLM/embed/rerank updater
 └── tests/
