@@ -62,13 +62,35 @@ class MockHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/v1/chat/completions":
+            def _msg_text(val: Any) -> str:
+                if isinstance(val, str):
+                    return val
+                if isinstance(val, list):
+                    parts = []
+                    for item in val:
+                        if isinstance(item, str):
+                            parts.append(item)
+                        elif isinstance(item, dict) and item.get("type") == "text":
+                            parts.append(str(item.get("text", "")))
+                    return " ".join(p for p in parts if p).strip()
+                return str(val or "")
+
             messages = body.get("messages", [])
-            sys_msg = next((m.get("content", "") for m in messages if m.get("role") == "system"), "")
-            user_msg = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+            sys_msg = "\n".join(
+                _msg_text(m.get("content", ""))
+                for m in messages
+                if m.get("role") == "system"
+            )
+            user_msg = next(
+                (_msg_text(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"),
+                "",
+            )
             has_rag = "Retrieved Context:" in sys_msg
+            has_client = "Client Instructions:" in sys_msg
             reply = (
                 f"[MOCK-LLM] Received: '{user_msg}'. "
-                f"RAG_CONTEXT_INJECTED={has_rag}."
+                f"RAG_CONTEXT_INJECTED={has_rag}. "
+                f"HAS_CLIENT_INSTRUCTIONS={has_client}."
             )
             model_name = body.get("model", "ark-llm")
             cmpl_id = f"chatcmpl-mock-{int(time.time())}"
@@ -111,6 +133,11 @@ class MockHandler(BaseHTTPRequestHandler):
                             "finish_reason": "stop",
                         }
                     ],
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 8,
+                        "total_tokens": 20,
+                    },
                 },
             )
             return

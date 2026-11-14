@@ -14,11 +14,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import psycopg
 import requests
@@ -30,6 +33,104 @@ from requests_ntlm import HttpNtlmAuth
 from ingest import SUPPORTED_EXTENSIONS, ChunkConfig, IngestDocument, apply_chunking
 
 SUPPORTED_SOURCE_TYPES = {"http_json", "http_paginated", "sql_query", "filesystem_glob", "csv", "ndjson"}
+
+_FORBIDDEN_INGEST_PREFIXES = (
+    "/app",
+    "/backups",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var/log",
+    "/var/run",
+)
+_INTERNAL_SQL_DBS = {"ark_admin", "keycloak", "openwebui"}
+_FORBIDDEN_SQL_RE = re.compile(
+    r"\b("
+    r"INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|COPY|CALL|DO|EXECUTE|MERGE|REPLACE|"
+    r"VACUUM|ATTACH|DETACH|PRAGMA|PG_READ_FILE|PG_READ_BINARY_FILE|PG_LS_DIR|PG_STAT_FILE|LO_IMPORT|LO_EXPORT|DBLINK"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _allowed_ingest_roots() -> list[Path]:
+    raw_env = os.environ.get("ARK_ALLOWED_INGEST_PATHS", "").strip()
+    if raw_env:
+        roots = [Path(p.strip()).resolve() for p in raw_env.split(",") if p.strip()]
+        if roots:
+            return roots
+    return [Path("/shares").resolve(), Path(tempfile.gettempdir()).resolve()]
+
+
+def validate_allowed_ingest_path(raw_path: str) -> Path:
+    """Confine pipeline filesystem paths to configured safe root directories."""
+    cleaned = str(raw_path or "").strip()
+    if not cleaned:
+        raise ValueError("Filesystem ingest path cannot be empty.")
+    if any(ch in cleaned for ch in ("\x00", "\n", "\r")):
+        raise ValueError("Filesystem ingest path contains invalid control characters.")
+    raw_p = Path(cleaned)
+    if ".." in raw_p.parts:
+        raise ValueError("Filesystem ingest path must not contain '..' segments.")
+
+    resolved = raw_p.resolve()
+    resolved_str = str(resolved)
+    if resolved_str == "/":
+        raise ValueError("Filesystem ingest path cannot be '/'.")
+    for forbidden in _FORBIDDEN_INGEST_PREFIXES:
+        if resolved_str == forbidden or resolved_str.startswith(forbidden + "/"):
+            raise ValueError(f"Filesystem ingest path '{resolved_str}' is forbidden.")
+
+    allowed_roots = _allowed_ingest_roots()
+    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+        allowed_desc = ", ".join(str(r) for r in allowed_roots)
+        raise ValueError(f"Filesystem ingest path '{resolved_str}' is outside allowed directories ({allowed_desc}).")
+    return resolved
+
+
+def validate_readonly_sql_query(query: str) -> str:
+    """Ensure SQL ingest queries are single-statement read-only SELECT/WITH queries."""
+    raw = str(query or "").strip()
+    if not raw:
+        raise ValueError("SQL ingest query cannot be empty.")
+    # Strip SQL line and block comments before inspecting keywords
+    cleaned = re.sub(r"/\*.*?\*/", " ", raw, flags=re.S)
+    cleaned = re.sub(r"--[^\n]*", " ", cleaned).strip()
+    cleaned_no_semi = cleaned.rstrip(";").strip()
+    if not cleaned_no_semi:
+        raise ValueError("SQL ingest query cannot be empty.")
+    if ";" in cleaned_no_semi:
+        raise ValueError("Multiple SQL statements are not permitted in ingest pipelines.")
+    if not re.match(r"^(SELECT|WITH)\b", cleaned_no_semi, flags=re.IGNORECASE):
+        raise ValueError("Only read-only SELECT or WITH SQL queries are allowed in ingest pipelines.")
+    m = _FORBIDDEN_SQL_RE.search(cleaned_no_semi)
+    if m:
+        raise ValueError(f"Forbidden SQL keyword/function '{m.group(1)}' in read-only ingest query.")
+    return raw
+
+
+def _validate_sql_dsn(dsn: str) -> None:
+    if os.environ.get("ARK_ALLOW_INTERNAL_SQL_INGEST", "").lower() in {"1", "true", "yes"}:
+        return
+    parsed = urlparse(dsn)
+    db_name = ""
+    if parsed.scheme and parsed.path:
+        db_name = parsed.path.lstrip("/").split("/", 1)[0].strip().lower()
+    else:
+        m = re.search(r"(?:dbname|database)\s*=\s*([^\s;]+)", dsn, flags=re.IGNORECASE)
+        if m:
+            db_name = m.group(1).strip().strip("'\"").lower()
+    if db_name in _INTERNAL_SQL_DBS:
+        raise ValueError(f"Direct SQL ingest from internal control-plane database '{db_name}' is not permitted.")
 
 
 class _TextExtractor(HTMLParser):
@@ -204,9 +305,11 @@ def _fetch_source_items(
         dsn = _resolve_secret(source.get("dsn") or "", secrets)
         if not dsn and source.get("dsn_secret"):
             dsn = str(secrets.get(source["dsn_secret"], ""))
-        query = str(source["query"])
+        query = validate_readonly_sql_query(str(source["query"]))
         if dsn.startswith("sqlite:///"):
             db_path = dsn.removeprefix("sqlite:///")
+            if db_path != ":memory:":
+                db_path = str(validate_allowed_ingest_path(db_path))
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
             try:
@@ -216,7 +319,9 @@ def _fetch_source_items(
                 return [dict(r) for r in rows]
             finally:
                 conn.close()
+        _validate_sql_dsn(dsn)
         with psycopg.connect(dsn) as conn:
+            conn.read_only = True
             with conn.cursor() as cur:
                 cur.execute(query)
                 cols = [d.name for d in (cur.description or [])]
@@ -224,24 +329,27 @@ def _fetch_source_items(
                 return [dict(zip(cols, r)) for r in rows]
 
     if stype == "filesystem_glob":
-        root = Path(str(source["path"]))
+        root = validate_allowed_ingest_path(str(source["path"]))
         if not root.is_dir():
             raise FileNotFoundError(f"Directory not found: {root}")
         pattern = str(source.get("glob") or "**/*")
         for fpath in sorted(root.glob(pattern)):
-            if not fpath.is_file():
+            resolved_fpath = fpath.resolve()
+            if resolved_fpath != root and root not in resolved_fpath.parents:
                 continue
-            rel = str(fpath.relative_to(root))
-            is_text = fpath.suffix.lower() in {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml", ".html"}
-            if not is_text and fpath.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            if not resolved_fpath.is_file():
+                continue
+            rel = str(resolved_fpath.relative_to(root))
+            is_text = resolved_fpath.suffix.lower() in {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml", ".html"}
+            if not is_text and resolved_fpath.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             items.append(
                 {
                     "id": rel,
-                    "filename": fpath.name,
+                    "filename": resolved_fpath.name,
                     "path": rel,
-                    "content": fpath.read_text(encoding="utf-8", errors="replace") if is_text else "",
-                    "_raw_bytes": None if is_text else fpath.read_bytes(),
+                    "content": resolved_fpath.read_text(encoding="utf-8", errors="replace") if is_text else "",
+                    "_raw_bytes": None if is_text else resolved_fpath.read_bytes(),
                 }
             )
             if limit is not None and len(items) >= limit:
@@ -250,7 +358,8 @@ def _fetch_source_items(
 
     if stype == "csv":
         if source.get("path"):
-            text = Path(str(source["path"])).read_text(encoding="utf-8", errors="replace")
+            csv_path = validate_allowed_ingest_path(str(source["path"]))
+            text = csv_path.read_text(encoding="utf-8", errors="replace")
         elif source.get("url"):
             resp = _build_http_session(source, secrets).get(str(source["url"]), timeout=60)
             resp.raise_for_status()
@@ -267,7 +376,8 @@ def _fetch_source_items(
 
     if stype == "ndjson":
         if source.get("path"):
-            text = Path(str(source["path"])).read_text(encoding="utf-8", errors="replace")
+            nd_path = validate_allowed_ingest_path(str(source["path"]))
+            text = nd_path.read_text(encoding="utf-8", errors="replace")
         elif source.get("url"):
             resp = _build_http_session(source, secrets).get(str(source["url"]), timeout=60)
             resp.raise_for_status()

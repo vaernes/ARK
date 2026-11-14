@@ -89,15 +89,45 @@ class IngestStats:
 # Secret Encryption Helpers (at-rest protection in PostgreSQL)
 # ------------------------------------------------------------------------------
 
+_FALLBACK_KEY_WARNED = False
+_SECRET_VALUE_PREFIX = "enc:v1:"
+
+
 def _resolve_fernet(secret_seed: str | None = None) -> Fernet:
-    raw = (
-        secret_seed
-        or os.environ.get("ARK_SECRETS_KEY", "")
-        or os.environ.get("ARK_PROXY_AUTH_SECRET", "")
-        or "ark-default-dev-secrets-key"
-    ).strip()
+    global _FALLBACK_KEY_WARNED
+    env_secrets_key = os.environ.get("ARK_SECRETS_KEY", "").strip()
+    env_proxy_key = os.environ.get("ARK_PROXY_AUTH_SECRET", "").strip()
+    raw = (secret_seed or env_secrets_key or env_proxy_key or "ark-default-dev-secrets-key").strip()
+    if not secret_seed and not env_secrets_key and not _FALLBACK_KEY_WARNED:
+        _FALLBACK_KEY_WARNED = True
+        if env_proxy_key:
+            logger.warning("ARK_SECRETS_KEY is unset; falling back to ARK_PROXY_AUTH_SECRET for secret encryption.")
+        else:
+            logger.warning("ARK_SECRETS_KEY is unset; using development fallback key for secret encryption.")
     digest = hashlib.sha256(raw.encode("utf-8")).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_secret_value(value: str, secret_seed: str | None = None) -> str:
+    """Encrypt an individual scalar secret string for at-rest storage."""
+    if not value:
+        return ""
+    if value.startswith(_SECRET_VALUE_PREFIX):
+        return value
+    token = _resolve_fernet(secret_seed).encrypt(value.encode("utf-8")).decode("ascii")
+    return f"{_SECRET_VALUE_PREFIX}{token}"
+
+
+def decrypt_secret_value(token: str, secret_seed: str | None = None) -> str:
+    """Decrypt an `enc:v1:` secret string; return plaintext legacy values unchanged."""
+    if not token or not token.startswith(_SECRET_VALUE_PREFIX):
+        return token
+    raw_tok = token[len(_SECRET_VALUE_PREFIX):].encode("ascii")
+    try:
+        return _resolve_fernet(secret_seed).decrypt(raw_tok).decode("utf-8")
+    except (InvalidToken, ValueError, TypeError) as exc:
+        logger.warning("Failed to decrypt secret value: %s", exc)
+        return ""
 
 
 def encrypt_secrets(secrets_dict: dict[str, Any], secret_seed: str | None = None) -> bytes:

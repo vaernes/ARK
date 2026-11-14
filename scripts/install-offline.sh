@@ -272,27 +272,118 @@ main() {
     fi
   fi
 
-  # Persist selected domain, backup directory, and LLM backend settings to .env
-  sed -i "s|^ARK_DOMAIN=.*|ARK_DOMAIN=${selected_domain}|" "${REPO_ROOT}/.env"
-  sed -i "s|^WEBUI_URL=.*|WEBUI_URL=https://${selected_domain}|" "${REPO_ROOT}/.env"
-  sed -i "s|^ARK_BACKUP_DIR=.*|ARK_BACKUP_DIR=${selected_backup}|" "${REPO_ROOT}/.env"
-  sed -i "s|^LLM_BACKEND_TYPE=.*|LLM_BACKEND_TYPE=${selected_backend_type}|" "${REPO_ROOT}/.env"
-  sed -i "s|^LLM_BACKEND_ADMIN_URL=.*|LLM_BACKEND_ADMIN_URL=${selected_backend_admin_url}|" "${REPO_ROOT}/.env"
-  sed -i "s|^LLM_API_BASE_URL=.*|LLM_API_BASE_URL=${selected_llm_url}|" "${REPO_ROOT}/.env"
-  if [[ -n "${selected_llm_key}" ]]; then
-    sed -i "s|^LLM_API_KEY=.*|LLM_API_KEY=${selected_llm_key}|" "${REPO_ROOT}/.env"
-  fi
+  # Persist selected domain, backup directory, and LLM backend settings safely in .env
+  # (and auto-replace placeholder secrets on first run), then idempotently update Keycloak JSON.
+  python3 - \
+    "${REPO_ROOT}/.env" \
+    "${REPO_ROOT}/config/keycloak/ark-realm.json" \
+    "${selected_domain}" \
+    "${selected_backup}" \
+    "${selected_backend_type}" \
+    "${selected_backend_admin_url}" \
+    "${selected_llm_url}" \
+    "${selected_llm_key}" <<'PYEOF'
+import base64
+import json
+import os
+import secrets
+import sys
+from pathlib import Path
 
-  # Update Keycloak realm redirect URIs & OIDC client secrets to match .env
-  if [[ -f "${REPO_ROOT}/config/keycloak/ark-realm.json" ]]; then
-    sed -i "s|https://ark\.local|https://${selected_domain}|g" "${REPO_ROOT}/config/keycloak/ark-realm.json"
-    if [[ -n "${OIDC_OPENWEBUI_CLIENT_SECRET:-}" ]]; then
-      sed -i "s|ark-openwebui-oidc-secret-change-me|${OIDC_OPENWEBUI_CLIENT_SECRET}|g" "${REPO_ROOT}/config/keycloak/ark-realm.json"
-    fi
-    if [[ -n "${OIDC_OAUTH2_PROXY_CLIENT_SECRET:-}" ]]; then
-      sed -i "s|ark-oauth2-proxy-secret-change-me|${OIDC_OAUTH2_PROXY_CLIENT_SECRET}|g" "${REPO_ROOT}/config/keycloak/ark-realm.json"
-    fi
-  fi
+env_path = Path(sys.argv[1])
+realm_path = Path(sys.argv[2])
+domain = sys.argv[3]
+backup_dir = sys.argv[4]
+backend_type = sys.argv[5]
+backend_admin_url = sys.argv[6]
+llm_url = sys.argv[7]
+llm_key = sys.argv[8]
+
+lines = env_path.read_text(encoding="utf-8").splitlines()
+updates = {
+    "ARK_DOMAIN": domain,
+    "WEBUI_URL": f"https://{domain}",
+    "ARK_BACKUP_DIR": backup_dir,
+    "LLM_BACKEND_TYPE": backend_type,
+    "LLM_BACKEND_ADMIN_URL": backend_admin_url,
+    "LLM_API_BASE_URL": llm_url,
+}
+def is_placeholder(val: str) -> bool:
+    low = val.strip().lower()
+    return (not low) or ("replace-with-" in low) or ("change-me" in low)
+
+if llm_key and not is_placeholder(llm_key):
+    updates["LLM_API_KEY"] = llm_key
+
+env_map: dict[str, str] = {}
+for raw in lines:
+    s = raw.strip()
+    if s and not s.startswith("#") and "=" in s:
+        k, v = s.split("=", 1)
+        env_map[k.strip()] = v.strip()
+
+secret_generators = {
+    "POSTGRES_PASSWORD": lambda: secrets.token_hex(24),
+    "KEYCLOAK_ADMIN_PASSWORD": lambda: secrets.token_hex(20),
+    "OIDC_OPENWEBUI_CLIENT_SECRET": lambda: secrets.token_hex(24),
+    "OIDC_OAUTH2_PROXY_CLIENT_SECRET": lambda: secrets.token_hex(24),
+    "OAUTH2_PROXY_COOKIE_SECRET": lambda: base64.urlsafe_b64encode(os.urandom(32)).decode(),
+    "ARK_PROXY_AUTH_SECRET": lambda: secrets.token_hex(32),
+    "WEBUI_SECRET_KEY": lambda: secrets.token_hex(32),
+    "QDRANT_API_KEY": lambda: f"qdrant-ark-{secrets.token_hex(24)}",
+    "VLLM_API_KEY": lambda: f"sk-ark-{secrets.token_hex(24)}",
+    "ARK_SECRETS_KEY": lambda: base64.urlsafe_b64encode(os.urandom(32)).decode(),
+    "LLM_ADMIN_TOKEN": lambda: secrets.token_hex(24),
+}
+
+generated_keys: list[str] = []
+for key, gen in secret_generators.items():
+    if is_placeholder(env_map.get(key, "")):
+        updates[key] = gen()
+        generated_keys.append(key)
+
+if "LLM_API_KEY" not in updates and is_placeholder(env_map.get("LLM_API_KEY", "")):
+    updates["LLM_API_KEY"] = updates.get("VLLM_API_KEY") or env_map.get("VLLM_API_KEY", "")
+
+new_lines: list[str] = []
+seen: set[str] = set()
+for raw in lines:
+    s = raw.strip()
+    if s and not s.startswith("#") and "=" in s:
+        k = s.split("=", 1)[0].strip()
+        seen.add(k)
+        if k in updates:
+            new_lines.append(f"{k}={updates[k]}")
+            env_map[k] = updates[k]
+            continue
+    new_lines.append(raw)
+
+for k, v in updates.items():
+    if k not in seen:
+        new_lines.append(f"{k}={v}")
+        env_map[k] = v
+
+env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+if generated_keys:
+    print(f"Auto-generated strong secrets in .env for: {', '.join(generated_keys)}")
+
+if realm_path.exists():
+    realm = json.loads(realm_path.read_text(encoding="utf-8"))
+    origin = f"https://{domain}"
+    for client in realm.get("clients", []):
+        cid = client.get("clientId")
+        if cid == "open-webui":
+            if env_map.get("OIDC_OPENWEBUI_CLIENT_SECRET"):
+                client["secret"] = env_map["OIDC_OPENWEBUI_CLIENT_SECRET"]
+            client["redirectUris"] = [f"{origin}/oauth/oidc/callback"]
+            client["webOrigins"] = [origin]
+        elif cid == "oauth2-proxy":
+            if env_map.get("OIDC_OAUTH2_PROXY_CLIENT_SECRET"):
+                client["secret"] = env_map["OIDC_OAUTH2_PROXY_CLIENT_SECRET"]
+            client["redirectUris"] = [f"{origin}/oauth2/callback"]
+            client["webOrigins"] = [origin]
+    realm_path.write_text(json.dumps(realm, indent=2) + "\n", encoding="utf-8")
+PYEOF
 
   mkdir -p \
     "${REPO_ROOT}/data/qdrant" \

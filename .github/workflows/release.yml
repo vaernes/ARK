@@ -114,8 +114,8 @@ jobs:
           mkdir -p dist "${STAGE_DIR}"
           cp -a \
             VERSION LICENSE NOTICE CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md \
-            README.md AGENTS.md .env.example docker-compose.yml docker-compose.test.yml \
-            admin config docs provisioning scripts tests \
+            README.md AGENTS.md .env.example docker-compose.yml docker-compose.llm.yml docker-compose.test.yml \
+            admin llm-admin config docs provisioning scripts tests \
             "${STAGE_DIR}/"
           printf '%s\n' "${VERSION}" > "${STAGE_DIR}/VERSION"
           python3 - "${STAGE_DIR}/README.md" "${VERSION}" <<'PYEOF'

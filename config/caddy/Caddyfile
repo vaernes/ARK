@@ -23,6 +23,13 @@
 		-Server
 	}
 
+	# 0. Control-plane health probe
+	handle /healthz {
+		reverse_proxy ark-admin:8090 {
+			header_up -X-Ark-Proxy-Secret
+		}
+	}
+
 	# 1. Keycloak Identity Broker (/auth/)
 	handle /auth/* {
 		reverse_proxy keycloak:8080 {
@@ -76,7 +83,7 @@
 	}
 
 	# 4. Per-Project Scoped OpenAI API Gateway (/projects/<slug>/v1/*)
-	@project_api path_regexp ^/projects/[^/]+/v1/
+	@project_api path_regexp ^/projects/[^/]+/v1(/|$)
 	handle @project_api {
 		reverse_proxy ark-admin:8090 {
 			header_up -X-Ark-Proxy-Secret

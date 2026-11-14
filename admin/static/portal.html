@@ -98,6 +98,7 @@
       <div class="pill">Groups: <strong id="me-groups">-</strong></div>
       <a class="nav-link" href="/">Open WebUI Chat</a>
       <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
+      <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
     </div>
   </header>
 
@@ -108,7 +109,7 @@
       <h2>My Accessible Projects</h2>
       <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Use any project's Base URL below in IDE plugins (Continue/Cline), Office add-ins, or scripts with your personal <code>ark_proj_*</code> key.</p>
       <table id="proj-table">
-        <thead><tr><th>Project</th><th>Mode</th><th>OpenAI Base URL</th></tr></thead>
+        <thead><tr><th>Project</th><th>Mode</th><th>Role</th><th>OpenAI Base URL</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -129,6 +130,9 @@
         <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
           <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
         </label>
+      </div>
+      <div id="key-scope-hint" style="display:none;font-size:0.78rem;color:var(--gray);margin-bottom:8px;">
+        Read-only (<code>viewer</code>) members can issue <code>chat</code> keys only.
       </div>
       <button class="amber" onclick="createKey()">Generate API Key</button>
       <pre id="key-output" style="display:none"></pre>
@@ -178,8 +182,27 @@
       return node;
     }
 
+    let portalProjects = [];
+
+    function updateScopeControlsForProject() {
+      const slug = document.getElementById('key-proj').value;
+      const proj = portalProjects.find(p => p.slug === slug);
+      const isViewer = Boolean(proj && proj.user_role === 'viewer');
+      const ingestBox = document.getElementById('key-scope-ingest');
+      const hintEl = document.getElementById('key-scope-hint');
+      if (isViewer) {
+        ingestBox.checked = false;
+        ingestBox.disabled = true;
+        hintEl.style.display = 'block';
+      } else {
+        ingestBox.disabled = false;
+        hintEl.style.display = 'none';
+      }
+    }
+
     async function refresh() {
       const [ver, me, projects, keys] = await Promise.all([api('/version'), api('/me'), api('/projects'), api('/keys')]);
+      portalProjects = projects || [];
       const verLabel = `v${ver.version}`;
       document.getElementById('ark-version').textContent = verLabel;
       document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel} • ${ver.license} License • Strict Air-Gap Mode`;
@@ -197,6 +220,7 @@
             el('tr', {}, [
               el('td', { text: p.name }),
               el('td', {}, el('span', { className: `badge ${p.rag_enabled ? 'rag' : 'clean'}`, text: p.rag_enabled ? 'RAG' : 'Clean' })),
+              el('td', { text: p.user_role || 'member' }),
               el('td', {}, el('code', { text: `${origin}/projects/${p.slug}/v1` }))
             ])
           )
@@ -204,16 +228,22 @@
       } else {
         projBody.replaceChildren(
           el('tr', {}, el('td', {
-            colspan: '3',
+            colspan: '4',
             style: 'color:var(--gray)',
             text: 'No projects assigned to your groups yet. Ask an administrator to add your group or deploy a project.'
           }))
         );
       }
 
-      document.getElementById('key-proj').replaceChildren(
+      const projSelect = document.getElementById('key-proj');
+      const prevSlug = projSelect.value;
+      projSelect.replaceChildren(
         ...projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
       );
+      if (prevSlug && projects.some(p => p.slug === prevSlug)) {
+        projSelect.value = prevSlug;
+      }
+      updateScopeControlsForProject();
 
       const keyBody = document.querySelector('#key-table tbody');
       if (keys.length) {
@@ -241,7 +271,8 @@
       if (!proj) return showError('No accessible project selected.');
       const scopes = [];
       if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
-      if (document.getElementById('key-scope-ingest').checked) scopes.push('ingest');
+      const ingestEl = document.getElementById('key-scope-ingest');
+      if (!ingestEl.disabled && ingestEl.checked) scopes.push('ingest');
       const res = await api('/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -263,6 +294,7 @@
       refresh();
     }
 
+    document.getElementById('key-proj').addEventListener('change', updateScopeControlsForProject);
     refresh();
   </script>
 </body>

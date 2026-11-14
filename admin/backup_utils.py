@@ -240,4 +240,20 @@ def verify_backup_manifest(backup_dir: Path) -> dict[str, Any]:
         if expected_sha and actual_sha != expected_sha:
             raise ValueError(f"SHA-256 mismatch for {rel_path}: expected {expected_sha}, got {actual_sha}")
 
+    extra_archives = manifest.get("extra_archives") or {}
+    if isinstance(extra_archives, dict):
+        for archive_key, entry in extra_archives.items():
+            if not isinstance(entry, dict):
+                continue
+            rel_file = entry.get("file", "")
+            if not rel_file:
+                continue
+            target = (root / rel_file).resolve()
+            if root not in target.parents or not target.is_file():
+                raise FileNotFoundError(f"Missing extra archive '{archive_key}' in backup: {rel_file}")
+            expected_sha = entry.get("sha256", "")
+            actual_sha = sha256_file(target)
+            if expected_sha and actual_sha != expected_sha:
+                raise ValueError(f"SHA-256 mismatch for {rel_file}: expected {expected_sha}, got {actual_sha}")
+
     return manifest

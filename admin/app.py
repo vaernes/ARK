@@ -36,11 +36,12 @@ import threading
 import psycopg
 import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
+from starlette.concurrency import run_in_threadpool
 
 from audit import AuditLogger
 from llm_backend import build_llm_headers, normalize_backend_type, resolve_llm_backend_config
@@ -55,9 +56,11 @@ from backup_utils import (
 from ingest import (
     ChunkConfig,
     IngestDocument,
+    decrypt_secret_value,
     decrypt_secrets,
     delete_document_points,
     embed_texts,
+    encrypt_secret_value,
     encrypt_secrets,
     process_ingest_documents,
     split_config_and_secrets,
@@ -69,7 +72,14 @@ from plugins import (
     execute_plugin,
     list_ingest_scripts,
 )
-from security import authorize_proxy_request, normalize_groups
+from security import (
+    authorize_proxy_request,
+    extract_message_text,
+    is_schedule_due,
+    merge_system_and_context_messages,
+    normalize_groups,
+    schedule_interval_seconds,
+)
 from version import get_ark_version, get_version_info
 
 logging.basicConfig(
@@ -115,6 +125,7 @@ PG_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 ARK_VERSION = get_ark_version()
 audit = AuditLogger(db_dsn=DB_DSN, log_file=AUDIT_LOG_FILE)
 rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+rate_buckets_lock = threading.Lock()
 ingest_executor = ThreadPoolExecutor(max_workers=ARK_INGEST_MAX_CONCURRENT_JOBS, thread_name_prefix="ark-ingest")
 _scheduler_started = False
 
@@ -269,10 +280,22 @@ def init_db() -> None:
             cur.execute(
                 """
                 INSERT INTO system_settings (key, value)
-                VALUES ('backup_dir', %s), ('default_llm_model', %s)
+                VALUES ('backup_dir', %s), ('default_llm_model', %s), ('indexed_embed_model_id', %s)
                 ON CONFLICT (key) DO NOTHING
                 """,
-                (DEFAULT_BACKUP_DIR, LLM_SERVED_NAME),
+                (DEFAULT_BACKUP_DIR, LLM_SERVED_NAME, EMBED_MODEL_ID),
+            )
+            cur.execute(
+                """
+                UPDATE ingest_jobs
+                SET status = 'failed',
+                    finished_at = NOW(),
+                    log_excerpt = CASE
+                        WHEN COALESCE(log_excerpt, '') = '' THEN '[ERROR] Interrupted by ark-admin service restart.'
+                        ELSE log_excerpt || E'\n[ERROR] Interrupted by ark-admin service restart.'
+                    END
+                WHERE status IN ('queued', 'running')
+                """
             )
             cur.execute(
                 """
@@ -288,19 +311,42 @@ def init_db() -> None:
         conn.commit()
 
 
-def _schedule_interval_seconds(expr: str) -> int | None:
-    cleaned = (expr or "").strip().lower()
-    if not cleaned:
-        return None
-    presets = {"@15m": 900, "@hourly": 3600, "@daily": 86400}
-    if cleaned in presets:
-        return presets[cleaned]
-    m = re.fullmatch(r"every:(\d+)([mh])", cleaned)
-    if m:
-        val = int(m.group(1))
-        unit = m.group(2)
-        return max(60, val * (3600 if unit == "h" else 60))
+def _record_indexed_embed_model() -> None:
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO system_settings (key, value, updated_at) VALUES ('indexed_embed_model_id', %s, NOW()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                    (EMBED_MODEL_ID,),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("Unable to persist indexed_embed_model_id: %s", exc)
+
+
+def _get_indexed_embed_model_warning() -> str | None:
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT EXISTS (SELECT 1 FROM ingest_documents LIMIT 1)")
+                has_docs = bool(cur.fetchone()[0])
+                if not has_docs:
+                    return None
+                cur.execute("SELECT value FROM system_settings WHERE key = 'indexed_embed_model_id'")
+                row = cur.fetchone()
+        if row and row[0].strip() and row[0].strip() != EMBED_MODEL_ID:
+            return (
+                f"Indexed documents were embedded with '{row[0].strip()}', "
+                f"which differs from active EMBED_MODEL_ID='{EMBED_MODEL_ID}'. "
+                "Reset and re-index project documents to avoid vector space mismatch."
+            )
+    except Exception as exc:
+        logger.debug("Unable to inspect indexed_embed_model_id: %s", exc)
     return None
+
+
+_schedule_interval_seconds = schedule_interval_seconds
 
 
 def _scheduler_loop() -> None:
@@ -316,14 +362,12 @@ def _scheduler_loop() -> None:
                     rows = cur.fetchall()
             now = datetime.now(timezone.utc)
             for source_id, sched, last_sync_at in rows:
-                interval = _schedule_interval_seconds(sched)
-                if interval is None:
+                if not is_schedule_due(sched, last_sync_at, now):
                     continue
-                if last_sync_at is None or (now - last_sync_at).total_seconds() >= interval:
-                    try:
-                        enqueue_ingest_source_job(source_id=source_id, triggered_by="scheduler", trigger_type="schedule")
-                    except Exception as exc:
-                        logger.warning("Scheduled ingest trigger failed for source %s: %s", source_id, exc)
+                try:
+                    enqueue_ingest_source_job(source_id=source_id, triggered_by="scheduler", trigger_type="schedule")
+                except Exception as exc:
+                    logger.warning("Scheduled ingest trigger failed for source %s: %s", source_id, exc)
         except Exception as exc:
             logger.debug("Ingest scheduler tick error: %s", exc)
 
@@ -358,16 +402,41 @@ def get_user_identities(request: Request) -> set[str]:
     return identities
 
 
-def _get_user_project_slugs(identities: set[str]) -> set[str]:
+def _get_user_project_roles(identities: set[str]) -> dict[str, str]:
     if not identities:
-        return set()
+        return {}
+    rank = {"viewer": 1, "member": 2, "editor": 3}
+    roles: dict[str, str] = {}
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT project_slug FROM project_members WHERE user_identifier = ANY(%s)",
+                "SELECT project_slug, role FROM project_members WHERE LOWER(user_identifier) = ANY(%s)",
                 (sorted(identities),),
             )
-            return {r[0] for r in cur.fetchall()}
+            for p_slug, p_role in cur.fetchall():
+                norm_role = (p_role or "member").strip().lower()
+                if p_slug not in roles or rank.get(norm_role, 0) > rank.get(roles[p_slug], 0):
+                    roles[p_slug] = norm_role
+    return roles
+
+
+def _get_user_project_slugs(identities: set[str]) -> set[str]:
+    return set(_get_user_project_roles(identities).keys())
+
+
+def resolve_user_project_role(
+    groups: set[str],
+    slug: str,
+    group_name: str,
+    member_roles: dict[str, str] | None = None,
+) -> str | None:
+    if "ark-admins" in groups:
+        return "admin"
+    if slug in groups or group_name in groups:
+        return "member"
+    if member_roles and slug in member_roles:
+        return member_roles[slug]
+    return None
 
 
 def user_has_project_access(
@@ -427,7 +496,7 @@ def get_llm_backend_settings() -> dict[str, str]:
     if rows.get("llm_api_base_url", "").strip():
         cfg["api_base_url"] = rows["llm_api_base_url"].strip().rstrip("/")
     if "llm_api_key" in rows:
-        cfg["api_key"] = rows["llm_api_key"].strip()
+        cfg["api_key"] = decrypt_secret_value(rows["llm_api_key"].strip())
     if "llm_health_url" in rows:
         cfg["health_url"] = rows["llm_health_url"].strip() or f"{cfg['api_base_url']}/models"
     elif "llm_api_base_url" in rows and not raw_health_override:
@@ -657,6 +726,11 @@ class PushDocumentsRequest(BaseModel):
     sync_mode: str = Field(default="incremental", pattern="^(incremental|full_mirror)$")
 
 
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.get("/admin-console/", response_class=HTMLResponse)
 def admin_ui() -> HTMLResponse:
     html_path = APP_DIR / "static" / "index.html"
@@ -686,7 +760,7 @@ def portal_version() -> dict[str, Any]:
 def portal_projects(request: Request) -> list[dict[str, Any]]:
     groups = get_user_groups(request)
     identities = get_user_identities(request)
-    member_slugs = _get_user_project_slugs(identities)
+    member_roles = _get_user_project_roles(identities)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -694,33 +768,38 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
                 "FROM projects ORDER BY created_at DESC"
             )
             rows = cur.fetchall()
-    return [
-        {
-            "slug": r[0],
-            "name": r[1],
-            "group_name": r[2],
-            "model_id": r[3],
-            "rag_enabled": r[4],
-            "created_at": r[5].isoformat(),
-        }
-        for r in rows
-        if user_has_project_access(groups, r[0], r[2], member_slugs)
-    ]
+    result: list[dict[str, Any]] = []
+    for r in rows:
+        role = resolve_user_project_role(groups, r[0], r[2], member_roles)
+        if role is None:
+            continue
+        result.append(
+            {
+                "slug": r[0],
+                "name": r[1],
+                "group_name": r[2],
+                "model_id": r[3],
+                "rag_enabled": r[4],
+                "user_role": role,
+                "created_at": r[5].isoformat(),
+            }
+        )
+    return result
 
 
 @app.get("/portal/api/keys")
 def portal_list_keys(request: Request) -> list[dict[str, Any]]:
     actor = get_actor(request)
     groups = get_user_groups(request)
-    identities = get_user_identities(request)
-    member_slugs = _get_user_project_slugs(identities)
+    identities = get_user_identities(request) or {actor.strip().lower()}
+    member_roles = _get_user_project_roles(identities)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT k.id, k.project_slug, k.label, k.key_prefix, k.rate_limit_rpm, k.revoked, k.created_at, p.group_name, k.scopes "
                 "FROM api_keys k JOIN projects p ON p.slug = k.project_slug "
-                "WHERE k.owner = %s AND k.revoked = FALSE ORDER BY k.created_at DESC",
-                (actor,),
+                "WHERE LOWER(k.owner) = ANY(%s) AND k.revoked = FALSE ORDER BY k.created_at DESC",
+                (sorted(identities),),
             )
             rows = cur.fetchall()
     return [
@@ -735,23 +814,34 @@ def portal_list_keys(request: Request) -> list[dict[str, Any]]:
             "scopes": list(r[8] or ["chat"]),
         }
         for r in rows
-        if user_has_project_access(groups, r[1], r[7], member_slugs)
+        if resolve_user_project_role(groups, r[1], r[7], member_roles) is not None
     ]
 
 
 @app.post("/portal/api/keys")
 def portal_create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
+    owner_norm = actor.strip().lower()
     groups = get_user_groups(request)
     identities = get_user_identities(request)
-    member_slugs = _get_user_project_slugs(identities)
+    member_roles = _get_user_project_roles(identities)
     scopes = _normalize_key_scopes(req.scopes)
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT group_name FROM projects WHERE slug = %s", (req.project_slug,))
             proj = cur.fetchone()
-            if not proj or not user_has_project_access(groups, req.project_slug, proj[0], member_slugs):
+            user_role = resolve_user_project_role(groups, req.project_slug, proj[0], member_roles) if proj else None
+            if not proj or user_role is None:
                 raise HTTPException(status_code=403, detail="You do not have access to this project.")
+            if user_role == "viewer" and "ingest" in scopes:
+                audit.record(
+                    "apikey.denied",
+                    actor=actor,
+                    project_slug=req.project_slug,
+                    status="denied",
+                    details={"reason": "viewer_cannot_create_ingest_key", "scopes": scopes},
+                )
+                raise HTTPException(status_code=403, detail="Viewer role may only create keys with 'chat' scope.")
 
             raw_key = f"ark_proj_{secrets.token_urlsafe(32)}"
             key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
@@ -759,7 +849,7 @@ def portal_create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]
             cur.execute(
                 "INSERT INTO api_keys (project_slug, label, key_prefix, key_hash, owner, rate_limit_rpm, scopes) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                (req.project_slug, req.label, prefix, key_hash, actor, req.rate_limit_rpm, scopes),
+                (req.project_slug, req.label, prefix, key_hash, owner_norm, req.rate_limit_rpm, scopes),
             )
             key_id = cur.fetchone()[0]
         conn.commit()
@@ -772,13 +862,14 @@ def portal_create_key(req: CreateKeyRequest, request: Request) -> dict[str, Any]
 def portal_revoke_key(key_id: int, request: Request) -> dict[str, str]:
     actor = get_actor(request)
     groups = get_user_groups(request)
+    identities = get_user_identities(request) or {actor.strip().lower()}
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT project_slug, owner FROM api_keys WHERE id = %s", (key_id,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="API key not found.")
-            if row[1] != actor and "ark-admins" not in groups:
+            if (row[1] or "").strip().lower() not in identities and "ark-admins" not in groups:
                 raise HTTPException(status_code=403, detail="You can only revoke your own API keys.")
             cur.execute("UPDATE api_keys SET revoked = TRUE WHERE id = %s", (key_id,))
         conn.commit()
@@ -892,7 +983,25 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
                 grp = requests.post(
                     f"{OPENWEBUI_URL}/api/v1/groups/create",
                     headers=headers,
-                    json={"name": slug, "description": f"RBAC group for {display}"},
+                    json={
+                        "name": slug,
+                        "description": f"RBAC group for {display}",
+                        "permissions": {
+                            "workspace": {
+                                "models": False,
+                                "knowledge": True,
+                                "prompts": True,
+                                "tools": False,
+                            },
+                            "chat": {
+                                "controls": True,
+                                "file_upload": True,
+                                "delete": True,
+                                "edit": True,
+                                "temporary": True,
+                            },
+                        },
+                    },
                     timeout=15,
                 ).json()
             grp_id = grp["id"]
@@ -925,6 +1034,7 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
                 "base_model_id": effective_llm,
                 "name": f"{display} Assistant",
                 "meta": {
+                    "profile_image_url": "/static/favicon.svg",
                     "description": f"{'RAG' if req.rag_enabled else 'Clean (No-RAG)'} Assistant for {display}",
                     "capabilities": {"vision": False, "usage": True, "citations": req.rag_enabled},
                     "knowledge": kb_items,
@@ -982,7 +1092,7 @@ def update_project_model(slug: str, req: ProjectModelRequest, request: Request) 
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE projects SET llm_model = %s WHERE slug = %s RETURNING model_id",
+                "UPDATE projects SET llm_model = %s WHERE slug = %s RETURNING model_id, name, system_prompt, rag_enabled",
                 (target, slug),
             )
             row = cur.fetchone()
@@ -990,14 +1100,41 @@ def update_project_model(slug: str, req: ProjectModelRequest, request: Request) 
     if not row:
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    model_id, display, sys_prompt, rag_enabled = row
     effective = get_effective_llm_model(target)
+    webui_sync = "skipped_no_api_key"
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+            models = requests.get(f"{OPENWEBUI_URL}/api/v1/models/", headers=headers, timeout=15).json()
+            existing = next((m for m in models if m.get("id") == model_id), None)
+            if existing:
+                payload = {
+                    **existing,
+                    "base_model_id": effective,
+                    "name": existing.get("name") or f"{display} Assistant",
+                    "params": {**(existing.get("params") or {}), "system": sys_prompt},
+                }
+                requests.post(
+                    f"{OPENWEBUI_URL}/api/v1/models/model/update?id={quote(model_id, safe='')}",
+                    headers=headers,
+                    json=payload,
+                    timeout=15,
+                ).raise_for_status()
+                webui_sync = "synced"
+            else:
+                webui_sync = "model_not_in_webui"
+        except Exception as exc:
+            logger.warning("Open WebUI model update sync warning for '%s': %s", slug, exc)
+            webui_sync = f"warning: {exc}"
+
     audit.record(
         "project.model_update",
         actor=actor,
         project_slug=slug,
-        details={"llm_model": target, "effective_llm_model": effective},
+        details={"llm_model": target, "effective_llm_model": effective, "webui_sync": webui_sync},
     )
-    return {"slug": slug, "llm_model": target, "effective_llm_model": effective}
+    return {"slug": slug, "llm_model": target, "effective_llm_model": effective, "webui_sync": webui_sync}
 
 
 @app.delete("/admin-console/api/projects/{slug}")
@@ -1006,7 +1143,7 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM projects WHERE slug = %s RETURNING name, collection_name, rag_enabled",
+                "DELETE FROM projects WHERE slug = %s RETURNING name, collection_name, rag_enabled, model_id",
                 (slug,),
             )
             row = cur.fetchone()
@@ -1014,7 +1151,7 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="Project not found.")
 
-    display, collection_name, rag_enabled = row
+    display, collection_name, rag_enabled, model_id = row
     qdrant_deleted = False
     if rag_enabled and collection_name and collection_name != "Company_Common":
         try:
@@ -1023,13 +1160,51 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("Qdrant collection cleanup failed for '%s': %s", collection_name, exc)
 
+    webui_cleanup = "skipped_no_api_key"
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}"}
+            requests.delete(
+                f"{OPENWEBUI_URL}/api/v1/models/model/delete?id={quote(model_id, safe='')}",
+                headers=headers,
+                timeout=15,
+            )
+            if collection_name and collection_name != "Company_Common":
+                kbs_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/knowledge/", headers=headers, timeout=15)
+                if kbs_resp.ok:
+                    kb = next((k for k in kbs_resp.json() if k.get("name") == collection_name), None)
+                    if kb and kb.get("id"):
+                        requests.delete(
+                            f"{OPENWEBUI_URL}/api/v1/knowledge/{kb['id']}/delete",
+                            headers=headers,
+                            timeout=15,
+                        )
+            grps_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/groups/", headers=headers, timeout=15)
+            if grps_resp.ok:
+                grp = next((g for g in grps_resp.json() if g.get("name") == slug), None)
+                if grp and grp.get("id"):
+                    requests.delete(
+                        f"{OPENWEBUI_URL}/api/v1/groups/id/{grp['id']}/delete",
+                        headers=headers,
+                        timeout=15,
+                    )
+            webui_cleanup = "cleaned"
+        except Exception as exc:
+            logger.warning("Open WebUI cleanup warning for '%s': %s", slug, exc)
+            webui_cleanup = f"warning: {exc}"
+
     audit.record(
         "project.delete",
         actor=actor,
         project_slug=slug,
-        details={"name": display, "collection_name": collection_name, "qdrant_deleted": qdrant_deleted},
+        details={
+            "name": display,
+            "collection_name": collection_name,
+            "qdrant_deleted": qdrant_deleted,
+            "webui_cleanup": webui_cleanup,
+        },
     )
-    return {"status": "deleted", "slug": slug, "qdrant_deleted": qdrant_deleted}
+    return {"status": "deleted", "slug": slug, "qdrant_deleted": qdrant_deleted, "webui_cleanup": webui_cleanup}
 
 
 def _sync_openwebui_project_member(slug: str, user_identifier: str, grant: bool) -> str:
@@ -1208,23 +1383,34 @@ def revoke_project_member(slug: str, user_identifier: str, request: Request) -> 
             if not cur.fetchone():
                 raise HTTPException(status_code=404, detail="Project not found.")
             cur.execute(
-                "DELETE FROM project_members WHERE project_slug = %s AND user_identifier = %s RETURNING user_identifier",
+                "DELETE FROM project_members WHERE project_slug = %s AND LOWER(user_identifier) = %s RETURNING user_identifier",
                 (slug, target),
             )
             deleted = cur.fetchone()
+            if not deleted:
+                conn.rollback()
+                raise HTTPException(status_code=404, detail="Project member not found.")
+            cur.execute(
+                "UPDATE api_keys SET revoked = TRUE WHERE project_slug = %s AND LOWER(owner) = %s AND revoked = FALSE",
+                (slug, target),
+            )
+            revoked_keys = int(cur.rowcount or 0)
         conn.commit()
-
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Project member not found.")
 
     webui_sync = _sync_openwebui_project_member(slug, target, grant=False)
     audit.record(
         "project.member_revoke",
         actor=actor,
         project_slug=slug,
-        details={"user_identifier": target, "webui_sync": webui_sync},
+        details={"user_identifier": target, "webui_sync": webui_sync, "revoked_keys": revoked_keys},
     )
-    return {"status": "removed", "project_slug": slug, "user_identifier": target, "webui_sync": webui_sync}
+    return {
+        "status": "removed",
+        "project_slug": slug,
+        "user_identifier": target,
+        "webui_sync": webui_sync,
+        "revoked_keys": revoked_keys,
+    }
 
 
 @app.get("/admin-console/api/keys")
@@ -1278,19 +1464,85 @@ def revoke_key(key_id: int, request: Request) -> dict[str, str]:
 async def upload_common_snapshot(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     actor = get_actor(request)
     headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
-    content = await file.read()
-    resp = requests.post(
-        f"{QDRANT_URL}/collections/Company_Common/snapshots/upload?priority=snapshot",
-        headers=headers,
-        files={"snapshot": (file.filename or "Company_Common.snapshot", content)},
-        timeout=300,
+    raw = await file.read()
+    resp = await run_in_threadpool(
+        lambda: requests.post(
+            f"{QDRANT_URL}/collections/Company_Common/snapshots/upload?priority=snapshot",
+            headers=headers,
+            files={"snapshot": (file.filename or "Company_Common.snapshot", raw)},
+            timeout=300,
+        )
     )
     if not resp.ok:
         audit.record("snapshot.upload", actor=actor, status="error", details={"error": resp.text})
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
-    audit.record("snapshot.upload", actor=actor, details={"filename": file.filename, "bytes": len(content)})
+    audit.record("snapshot.upload", actor=actor, details={"filename": file.filename, "bytes": len(raw)})
     return {"status": "ok", "filename": file.filename}
+
+
+@app.post("/admin-console/api/snapshots/company-common/export")
+def export_company_common_snapshot(request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    try:
+        backup_root = validate_backup_dir(get_backup_setting()["backup_dir"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    qdrant = get_qdrant()
+    existing_cols = {c.name for c in qdrant.get_collections().collections}
+    if "Company_Common" not in existing_cols:
+        raise HTTPException(status_code=404, detail="Collection 'Company_Common' does not exist yet.")
+
+    snap = qdrant.create_snapshot(collection_name="Company_Common")
+    headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+    snap_url = f"{QDRANT_URL.rstrip('/')}/collections/Company_Common/snapshots/{quote(snap.name, safe='')}"
+    out_file = backup_root / "Company_Common.snapshot"
+    tmp_file = backup_root / f".Company_Common.snapshot.{os.getpid()}.tmp"
+    try:
+        with requests.get(snap_url, headers=headers, stream=True, timeout=300) as resp:
+            resp.raise_for_status()
+            with tmp_file.open("wb") as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        fh.write(chunk)
+        tmp_file.replace(out_file)
+    except Exception as exc:
+        tmp_file.unlink(missing_ok=True)
+        audit.record("snapshot.export", actor=actor, status="error", details={"error": str(exc)})
+        raise HTTPException(status_code=500, detail=f"Snapshot export failed: {exc}") from exc
+
+    digest = sha256_file(out_file)
+    sha_file = backup_root / "Company_Common.snapshot.sha256"
+    sha_file.write_text(f"{digest}  Company_Common.snapshot\n", encoding="utf-8")
+    size_bytes = out_file.stat().st_size
+
+    audit.record(
+        "snapshot.export",
+        actor=actor,
+        details={"collection": "Company_Common", "file": out_file.name, "sha256": digest, "bytes": size_bytes},
+    )
+    return {
+        "status": "ok",
+        "collection": "Company_Common",
+        "file": out_file.name,
+        "path": str(out_file),
+        "sha256": digest,
+        "bytes": size_bytes,
+    }
+
+
+@app.get("/admin-console/api/snapshots/company-common/download")
+def download_company_common_snapshot() -> FileResponse:
+    try:
+        backup_root = validate_backup_dir(get_backup_setting()["backup_dir"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    snap_file = backup_root / "Company_Common.snapshot"
+    if not snap_file.is_file():
+        raise HTTPException(status_code=404, detail="Company_Common.snapshot has not been exported yet.")
+    return FileResponse(path=str(snap_file), filename="Company_Common.snapshot", media_type="application/octet-stream")
 
 
 @app.get("/admin-console/api/settings/backup")
@@ -1383,15 +1635,35 @@ def run_backup(request: Request) -> dict[str, Any]:
                 }
             )
 
+        extra_archives: dict[str, dict[str, Any]] = {}
+        for key, env_var, fallback in (
+            ("plugins", "ARK_PLUGINS_DIR", "/plugins"),
+            ("ingest_scripts", "ARK_INGEST_SCRIPTS_DIR", "/ingest-scripts"),
+        ):
+            src_dir = Path(os.environ.get(env_var, fallback))
+            if src_dir.is_dir() and any(not p.name.startswith(".") for p in src_dir.iterdir()):
+                arc_path = dest / f"{key}.tar.gz"
+                with tarfile.open(arc_path, "w:gz") as tf:
+                    for item in sorted(src_dir.iterdir()):
+                        if not item.name.startswith("."):
+                            tf.add(item, arcname=item.name)
+                extra_archives[key] = {
+                    "file": arc_path.name,
+                    "bytes": arc_path.stat().st_size,
+                    "sha256": sha256_file(arc_path),
+                }
+
         manifest = {
             "ark_version": ARK_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "databases": db_entries,
             "qdrant_snapshots": snapshot_entries,
+            "extra_archives": extra_archives,
         }
         manifest_path = dest / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     except Exception as exc:
+        shutil.rmtree(dest, ignore_errors=True)
         audit.record("backup.run", actor=actor, status="error", details={"destination": str(dest), "error": str(exc)})
         raise HTTPException(status_code=500, detail=f"Backup failed: {exc}") from exc
 
@@ -1645,6 +1917,8 @@ def _execute_ingest_source_job(job_id: int, source_id: int, triggered_by: str) -
             default_chunking=default_chunking,
         )
         stats_dict = stats.to_dict()
+        if stats.docs_upserted > 0:
+            _record_indexed_embed_model()
         status_text = (
             f"ok ({stats.docs_upserted} upserted, {stats.docs_skipped} skipped, "
             f"{stats.docs_deleted} deleted, {stats.chunks_upserted} chunks)"
@@ -2063,7 +2337,8 @@ async def admin_upload_project_file(
         raw_bytes=raw,
         chunking=ChunkConfig(strategy=chunk_strategy if chunk_strategy in {"chars", "markdown", "lines", "none"} else "chars"),
     )
-    stats = process_ingest_documents(
+    stats = await run_in_threadpool(
+        process_ingest_documents,
         documents=[doc],
         qdrant=get_qdrant(),
         db_dsn=DB_DSN,
@@ -2078,8 +2353,138 @@ async def admin_upload_project_file(
     )
     if stats.errors:
         raise HTTPException(status_code=500, detail="; ".join(stats.error_messages))
+    if stats.docs_upserted > 0:
+        _record_indexed_embed_model()
     audit.record("ingest.push", actor=actor, project_slug=slug, details={"doc_id": target_doc_id, **stats.to_dict()})
     return {"status": "ok", "doc_id": target_doc_id, **stats.to_dict()}
+
+
+@app.get("/admin-console/api/projects/{slug}/ingest/documents")
+def admin_list_project_documents(slug: str, limit: int = 200) -> dict[str, Any]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM projects WHERE slug = %s", (slug,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Project not found.")
+            cur.execute(
+                "SELECT source_key, doc_id, filename, content_hash, chunk_count, updated_at "
+                "FROM ingest_documents WHERE project_slug = %s ORDER BY updated_at DESC LIMIT %s",
+                (slug, min(max(limit, 1), 500)),
+            )
+            rows = cur.fetchall()
+    return {
+        "project_slug": slug,
+        "documents": [
+            {
+                "source_key": r[0],
+                "doc_id": r[1],
+                "filename": r[2],
+                "content_hash": r[3],
+                "chunk_count": r[4],
+                "updated_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.delete("/admin-console/api/projects/{slug}/ingest/documents/{doc_id:path}")
+def admin_delete_project_document(
+    slug: str,
+    doc_id: str,
+    request: Request,
+    source_key: str = "",
+) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT collection_name, rag_enabled FROM projects WHERE slug = %s", (slug,))
+            proj = cur.fetchone()
+            if not proj:
+                raise HTTPException(status_code=404, detail="Project not found.")
+            if source_key.strip():
+                cur.execute(
+                    "SELECT source_key FROM ingest_documents WHERE project_slug = %s AND doc_id = %s AND source_key = %s",
+                    (slug, doc_id, source_key.strip()),
+                )
+            else:
+                cur.execute(
+                    "SELECT source_key FROM ingest_documents WHERE project_slug = %s AND doc_id = %s",
+                    (slug, doc_id),
+                )
+            keys_found = [r[0] for r in cur.fetchall()]
+            if not keys_found:
+                raise HTTPException(status_code=404, detail="Indexed document not found.")
+
+            collection_name, rag_enabled = proj
+            if rag_enabled and collection_name:
+                qdrant = get_qdrant()
+                for sk in keys_found:
+                    delete_document_points(qdrant, collection_name, sk, doc_id)
+
+            if source_key.strip():
+                cur.execute(
+                    "DELETE FROM ingest_documents WHERE project_slug = %s AND doc_id = %s AND source_key = %s",
+                    (slug, doc_id, source_key.strip()),
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM ingest_documents WHERE project_slug = %s AND doc_id = %s",
+                    (slug, doc_id),
+                )
+            deleted_rows = int(cur.rowcount or 0)
+        conn.commit()
+
+    audit.record(
+        "ingest.document_delete",
+        actor=actor,
+        project_slug=slug,
+        details={"doc_id": doc_id, "source_keys": keys_found, "deleted_rows": deleted_rows},
+    )
+    return {"status": "deleted", "doc_id": doc_id, "deleted_rows": deleted_rows}
+
+
+@app.post("/admin-console/api/projects/{slug}/ingest/reset")
+def admin_reset_project_ingest(slug: str, request: Request, clear_vectors: bool = False) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT collection_name, rag_enabled FROM projects WHERE slug = %s", (slug,))
+            proj = cur.fetchone()
+            if not proj:
+                raise HTTPException(status_code=404, detail="Project not found.")
+            collection_name, rag_enabled = proj
+            cur.execute("DELETE FROM ingest_documents WHERE project_slug = %s", (slug,))
+            cleared_docs = int(cur.rowcount or 0)
+            cur.execute("UPDATE ingest_sources SET cursor_state = '{}'::jsonb WHERE project_slug = %s", (slug,))
+        conn.commit()
+
+    vectors_recreated = False
+    if clear_vectors and rag_enabled and collection_name and collection_name != "Company_Common":
+        qdrant = get_qdrant()
+        try:
+            qdrant.delete_collection(collection_name=collection_name)
+        except Exception:
+            pass
+        qdrant.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=EMBED_VECTOR_SIZE, distance=Distance.COSINE),
+            on_disk_payload=True,
+        )
+        vectors_recreated = True
+
+    audit.record(
+        "ingest.project_reset",
+        actor=actor,
+        project_slug=slug,
+        details={"cleared_docs": cleared_docs, "clear_vectors": clear_vectors, "vectors_recreated": vectors_recreated},
+    )
+    return {
+        "status": "reset",
+        "project_slug": slug,
+        "cleared_docs": cleared_docs,
+        "vectors_recreated": vectors_recreated,
+    }
 
 
 # Legacy /admin-console/api/connectors endpoints (backed by ingest_sources)
@@ -2160,7 +2565,7 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
     updates = {
         "llm_backend_type": backend_type,
         "llm_api_base_url": api_base_url,
-        "llm_api_key": new_api_key,
+        "llm_api_key": encrypt_secret_value(new_api_key) if new_api_key else "",
         "llm_health_url": health_url,
         "llm_backend_admin_url": backend_admin_url,
     }
@@ -2216,6 +2621,7 @@ def list_models() -> dict[str, Any]:
         },
         "llm_live": llm_live,
         "vllm_live": llm_live,
+        "embed_model_warning": _get_indexed_embed_model_warning(),
         "local_models": _scan_local_models(),
     }
 
@@ -2259,7 +2665,7 @@ async def upload_model_archive(request: Request, file: UploadFile = File(...)) -
                     break
                 total_bytes += len(chunk)
                 out.write(chunk)
-        extracted_dirs = _safe_extract_tar(tmp_path, ARK_MODELS_DIR)
+        extracted_dirs = await run_in_threadpool(_safe_extract_tar, tmp_path, ARK_MODELS_DIR)
     except HTTPException:
         audit.record("model.upload", actor=actor, status="error", details={"filename": filename})
         raise
@@ -2328,10 +2734,28 @@ def generate_model_switch_plan(req: ModelSwitchPlanRequest, request: Request) ->
 
 
 @app.get("/admin-console/api/audit")
-def get_audit_logs(limit: int = 50) -> list[dict[str, Any]]:
+def get_audit_logs(
+    limit: int = 50,
+    event_type: str = "",
+    project_slug: str = "",
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if event_type.strip():
+        clauses.append("event_type = %s")
+        params.append(event_type.strip())
+    if project_slug.strip():
+        clauses.append("project_slug = %s")
+        params.append(project_slug.strip())
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(min(max(limit, 1), 500))
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, created_at, event_type, actor, project_slug, status, details FROM audit_logs ORDER BY id DESC LIMIT %s", (min(limit, 500),))
+            cur.execute(
+                f"SELECT id, created_at, event_type, actor, project_slug, status, details "
+                f"FROM audit_logs {where_sql} ORDER BY id DESC LIMIT %s",
+                tuple(params),
+            )
             rows = cur.fetchall()
     return [
         {"id": r[0], "created_at": r[1].isoformat(), "event_type": r[2], "actor": r[3], "project_slug": r[4], "status": r[5], "details": r[6]}
@@ -2368,13 +2792,14 @@ def authenticate_project_key(slug: str, authorization: str | None = Header(defau
 
     key_id, label, rpm, _, collection_name, rag_enabled, system_prompt, model_id, llm_model, raw_scopes = row
     now = time.monotonic()
-    bucket = rate_buckets[f"{slug}:{key_id}"]
-    while bucket and now - bucket[0] > 60.0:
-        bucket.popleft()
-    if len(bucket) >= rpm:
-        audit.record("api.rate_limited", actor=f"key:{label}", project_slug=slug, status="denied")
-        raise HTTPException(status_code=429, detail="Project API rate limit exceeded.")
-    bucket.append(now)
+    with rate_buckets_lock:
+        bucket = rate_buckets[f"{slug}:{key_id}"]
+        while bucket and now - bucket[0] > 60.0:
+            bucket.popleft()
+        if len(bucket) >= rpm:
+            audit.record("api.rate_limited", actor=f"key:{label}", project_slug=slug, status="denied")
+            raise HTTPException(status_code=429, detail="Project API rate limit exceeded.")
+        bucket.append(now)
 
     return {
         "key_label": label,
@@ -2398,7 +2823,7 @@ def project_models(slug: str, auth: dict[str, Any] = Depends(authenticate_projec
     return {"object": "list", "data": [{"id": auth["model_id"], "object": "model", "owned_by": f"ark-{slug}"}]}
 
 
-def rerank_contexts(query: str, candidates: list[dict[str, str]], top_n: int = 4) -> list[str]:
+def rerank_contexts(query: str, candidates: list[dict[str, Any]], top_n: int = 4) -> list[str]:
     """Rerank retrieved Qdrant chunks via TEI Reranker, falling back to vector order."""
     if not candidates:
         return []
@@ -2412,26 +2837,48 @@ def rerank_contexts(query: str, candidates: list[dict[str, str]], top_n: int = 4
             )
             if resp.ok:
                 ranked = sorted(resp.json(), key=lambda r: r.get("score", 0.0), reverse=True)
-                ordered = [candidates[r["index"]] for r in ranked if 0 <= r.get("index", -1) < len(candidates)]
+                ordered = []
+                for r in ranked:
+                    idx = r.get("index", -1)
+                    if 0 <= idx < len(candidates):
+                        item = dict(candidates[idx])
+                        item["score"] = r.get("score")
+                        ordered.append(item)
         except Exception as exc:
             logger.warning("TEI rerank fallback to vector order: %s", exc)
     return [f"[{c['col']} | {c['src']}]\n{c['text']}" for c in ordered[:top_n]]
 
 
-@app.post("/projects/{slug}/v1/chat/completions")
-async def project_chat_completions(slug: str, request: Request, auth: dict[str, Any] = Depends(authenticate_project_key)) -> Any:
-    _require_key_scope(auth, "chat", slug)
-    body = await request.json()
+def _build_retrieval_query(messages: list[dict[str, Any]]) -> str:
+    user_turns = [extract_message_text(m.get("content")).strip() for m in messages if m.get("role") == "user"]
+    user_turns = [t for t in user_turns if t]
+    if not user_turns:
+        return ""
+    last_q = user_turns[-1]
+    if len(last_q) < 120 and len(user_turns) >= 2:
+        prev_q = user_turns[-2][:200].strip()
+        if prev_q:
+            return f"{prev_q}\n{last_q}"
+    return last_q
+
+
+def _prepare_rag_and_llm_request(
+    slug: str,
+    body: dict[str, Any],
+    auth: dict[str, Any],
+) -> tuple[str, dict[str, str], dict[str, Any], str, list[str], list[dict[str, Any]]]:
     messages = list(body.get("messages") or [])
     stream = bool(body.get("stream", False))
-
+    top_k = max(1, min(int(body.get("top_k") or 4), 12))
     context_blocks: list[str] = []
+    citations: list[dict[str, Any]] = []
+
     if auth["rag_enabled"] and messages:
-        last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-        if isinstance(last_user, str) and last_user.strip():
-            query_vec = embed_texts(TEI_EMBED_URL, [last_user], model=EMBED_MODEL_ID)[0]
+        retrieval_query = _build_retrieval_query(messages)
+        if retrieval_query:
+            query_vec = embed_texts(TEI_EMBED_URL, [retrieval_query], model=EMBED_MODEL_ID)[0]
             qdrant = get_qdrant()
-            candidates: list[dict[str, str]] = []
+            candidates: list[dict[str, Any]] = []
             for col in ("Company_Common", auth["collection_name"]):
                 if not col:
                     continue
@@ -2442,25 +2889,44 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
                         text = payload.get("text", "")
                         src = payload.get("filename", col)
                         if text:
-                            candidates.append({"col": col, "src": src, "text": text})
+                            candidates.append({"col": col, "src": src, "text": text, "score": getattr(hit, "score", None)})
                 except Exception as exc:
                     logger.warning("Qdrant search failed on '%s': %s", col, exc)
-            context_blocks = rerank_contexts(last_user, candidates, top_n=4)
+            context_blocks = rerank_contexts(retrieval_query, candidates, top_n=top_k)
+            for blk in context_blocks:
+                header_line = blk.splitlines()[0].strip("[]")
+                citations.append({"source": header_line})
 
-    sys_content = auth["system_prompt"]
-    if context_blocks:
-        sys_content += "\n\nRetrieved Context:\n" + "\n---\n".join(context_blocks)
-
+    forwarded_messages = merge_system_and_context_messages(messages, auth["system_prompt"], context_blocks)
     llm_cfg = get_llm_backend_settings()
     target_model = get_effective_llm_model(auth.get("llm_model", ""))
-    forwarded_messages = [{"role": "system", "content": sys_content}] + [m for m in messages if m.get("role") != "system"]
-    llm_payload = {**body, "model": target_model, "messages": forwarded_messages, "stream": stream}
+    cleaned_body = {k: v for k, v in body.items() if k not in {"top_k", "include_citations"}}
+    llm_payload = {**cleaned_body, "model": target_model, "messages": forwarded_messages, "stream": stream}
     llm_headers = build_llm_headers(llm_cfg["api_key"], json_content=True)
     chat_url = f"{llm_cfg['api_base_url']}/chat/completions"
+    return chat_url, llm_headers, llm_payload, target_model, context_blocks, citations
+
+
+@app.post("/projects/{slug}/v1/chat/completions")
+async def project_chat_completions(slug: str, request: Request, auth: dict[str, Any] = Depends(authenticate_project_key)) -> Any:
+    _require_key_scope(auth, "chat", slug)
+    body = await request.json()
+    stream = bool(body.get("stream", False))
+    include_citations = bool(body.get("include_citations", False))
+
+    chat_url, llm_headers, llm_payload, target_model, context_blocks, citations = await run_in_threadpool(
+        _prepare_rag_and_llm_request,
+        slug,
+        body,
+        auth,
+    )
+    rag_headers = {"X-Ark-Rag-Chunks": str(len(context_blocks))}
 
     if stream:
         try:
-            resp = requests.post(chat_url, headers=llm_headers, json=llm_payload, stream=True, timeout=180)
+            resp = await run_in_threadpool(
+                lambda: requests.post(chat_url, headers=llm_headers, json=llm_payload, stream=True, timeout=180)
+            )
         except requests.RequestException as exc:
             audit.record(
                 "api.chat_completion",
@@ -2469,7 +2935,7 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
                 status="upstream_unreachable",
                 details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": True, "llm_model": target_model, "error": str(exc)},
             )
-            return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"})
+            return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"}, headers=rag_headers)
 
         audit.record(
             "api.chat_completion",
@@ -2483,7 +2949,7 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
                 err_body = resp.json()
             except ValueError:
                 err_body = {"error": resp.text}
-            return JSONResponse(status_code=resp.status_code, content=err_body)
+            return JSONResponse(status_code=resp.status_code, content=err_body, headers=rag_headers)
 
         def event_stream():
             try:
@@ -2493,10 +2959,12 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
             finally:
                 resp.close()
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(event_stream(), media_type="text/event-stream", headers=rag_headers)
 
     try:
-        resp = requests.post(chat_url, headers=llm_headers, json=llm_payload, timeout=180)
+        resp = await run_in_threadpool(
+            lambda: requests.post(chat_url, headers=llm_headers, json=llm_payload, timeout=180)
+        )
     except requests.RequestException as exc:
         audit.record(
             "api.chat_completion",
@@ -2505,20 +2973,31 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
             status="upstream_unreachable",
             details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": False, "llm_model": target_model, "error": str(exc)},
         )
-        return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"})
+        return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"}, headers=rag_headers)
+
+    try:
+        content = resp.json()
+    except ValueError:
+        content = {"error": resp.text}
+
+    usage = content.get("usage") if isinstance(content, dict) else None
+    if include_citations and isinstance(content, dict) and citations:
+        content["ark_citations"] = citations
 
     audit.record(
         "api.chat_completion",
         actor=f"key:{auth['key_label']}",
         project_slug=slug,
         status="success" if resp.ok else f"http_{resp.status_code}",
-        details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": False, "llm_model": target_model},
+        details={
+            "rag_enabled": auth["rag_enabled"],
+            "context_chunks": len(context_blocks),
+            "stream": False,
+            "llm_model": target_model,
+            **({"usage": usage} if isinstance(usage, dict) else {}),
+        },
     )
-    try:
-        content = resp.json()
-    except ValueError:
-        content = {"error": resp.text}
-    return JSONResponse(status_code=resp.status_code, content=content)
+    return JSONResponse(status_code=resp.status_code, content=content, headers=rag_headers)
 
 
 # ==============================================================================
@@ -2557,6 +3036,8 @@ def _run_push_ingest_job(
             sync_mode=sync_mode,
         )
         stats_dict = stats.to_dict()
+        if stats.docs_upserted > 0:
+            _record_indexed_embed_model()
         job_status = "succeeded" if stats.errors == 0 else "succeeded_with_errors"
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -2641,7 +3122,8 @@ async def project_push_documents(
         )
         return {"status": "queued", "job_id": job_id, "project_slug": slug, "documents_queued": len(docs)}
 
-    stats_dict = _run_push_ingest_job(
+    stats_dict = await run_in_threadpool(
+        _run_push_ingest_job,
         job_id=job_id,
         slug=slug,
         collection_name=auth["collection_name"],
@@ -2691,7 +3173,8 @@ async def project_push_file(
         ),
     )
     actor = f"key:{auth['key_label']}"
-    stats = process_ingest_documents(
+    stats = await run_in_threadpool(
+        process_ingest_documents,
         documents=[doc],
         qdrant=get_qdrant(),
         db_dsn=DB_DSN,
@@ -2707,6 +3190,8 @@ async def project_push_file(
     if stats.errors:
         audit.record("ingest.push", actor=actor, project_slug=slug, status="error", details={"doc_id": target_doc_id, "errors": stats.error_messages})
         raise HTTPException(status_code=500, detail="; ".join(stats.error_messages))
+    if stats.docs_upserted > 0:
+        _record_indexed_embed_model()
     audit.record("ingest.push", actor=actor, project_slug=slug, details={"doc_id": target_doc_id, "filename": filename, **stats.to_dict()})
     return {"status": "ok", "doc_id": target_doc_id, **stats.to_dict()}
 

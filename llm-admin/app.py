@@ -121,11 +121,12 @@ def index() -> HTMLResponse:
 
 
 @app.get("/health")
+@app.get("/healthz")
 def health() -> dict[str, Any]:
     return {"status": "ok", "version": ARK_VERSION}
 
 
-@app.get("/api/status")
+@app.get("/api/status", dependencies=[Depends(require_admin_token)])
 def get_status() -> dict[str, Any]:
     vllm_health = "unreachable"
     try:

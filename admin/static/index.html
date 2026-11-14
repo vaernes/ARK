@@ -18,6 +18,7 @@
       --cyan-soft: rgba(0, 229, 255, 0.14);
       --text: #E2E8F0;
       --gray: #64748B;
+      --muted: #94A3B8;
       --ok: #22C55E;
       --err: #EF4444;
     }
@@ -301,9 +302,13 @@
       <div class="projects-pill">ARK <strong id="ark-version">...</strong></div>
       <div class="projects-pill">PROJECTS DEPLOYED <strong id="proj-count">0</strong></div>
       <div class="offline-banner">&#9888; Strict Air-Gap &bull; Offline Mode</div>
+      <a href="/"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Open WebUI</a>
       <a href="/portal/"
         style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">User
         Portal</a>
+      <a href="/oauth2/sign_out"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--gray);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Sign Out</a>
       <button style="margin-top:0" onclick="refreshAll()">Refresh</button>
     </div>
   </header>
@@ -429,6 +434,13 @@
       <button class="danger" style="margin-top:10px;padding:8px 14px;font-size:0.84rem;"
         onclick="restoreSelectedBackup()">Verify &amp; Restore Backup</button>
       <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Company_Common Knowledge Base Snapshot</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+        <button onclick="exportCommonSnapshot()" style="margin-top:0;">Export Company_Common Snapshot</button>
+        <a id="download-common-snap" href="/admin-console/api/snapshots/company-common/download"
+          download="Company_Common.snapshot"
+          style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--cyan);padding:8px 12px;border-radius:6px;font-size:0.84rem;font-weight:600;">Download .snapshot</a>
+      </div>
       <label>Upload Company_Common.snapshot</label>
       <input id="snap-file" type="file" accept=".snapshot" />
       <button onclick="uploadSnapshot()">Upload &amp; Recover Snapshot</button>
@@ -513,6 +525,40 @@
         <tbody></tbody>
       </table>
 
+      <div id="edit-source-box"
+        style="display:none;margin:10px 0;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--void);">
+        <strong style="font-size:0.86rem;color:var(--cyan);">Edit Ingest Source <span id="edit-source-title"></span></strong>
+        <input id="edit-source-id" type="hidden" />
+        <label>Source Name</label>
+        <input id="edit-source-name" />
+        <div class="row">
+          <div>
+            <label>Sync Mode</label>
+            <select id="edit-source-sync-mode">
+              <option value="incremental">incremental (hash-dedup)</option>
+              <option value="full">full (re-index)</option>
+            </select>
+          </div>
+          <div>
+            <label>Schedule (Cron / 15m / 1h)</label>
+            <input id="edit-source-schedule" placeholder="*/30 * * * * or blank" />
+          </div>
+        </div>
+        <label>Enabled</label>
+        <select id="edit-source-enabled">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+        <div id="edit-source-pipeline-wrap" style="display:none;">
+          <label>Pipeline YAML</label>
+          <textarea id="edit-source-pipeline" rows="6" style="font-family:monospace;font-size:0.78rem;"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button class="amber" style="margin-top:0;" onclick="saveSourceEdit()">Save Source</button>
+          <button style="margin-top:0;" onclick="cancelSourceEdit()">Cancel</button>
+        </div>
+      </div>
+
       <hr style="border-color: var(--border); margin: 16px 0;" />
       <label>Direct File Upload to Project</label>
       <div style="display:flex;gap:8px;align-items:center;">
@@ -529,6 +575,27 @@
             <th>Trigger</th>
             <th>Status</th>
             <th>Summary</th>
+            <th>Logs</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Indexed Documents Inspector (Selected Target Project)</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;">
+        <button style="margin-top:0;" onclick="loadProjectIndexedDocs()">View Indexed Docs</button>
+        <button style="margin-top:0;" onclick="resetProjectIndex(false)">Reset Cache</button>
+        <button class="danger" style="padding:7px 11px;font-size:0.8rem;" onclick="resetProjectIndex(true)">Reset Cache + Vectors</button>
+      </div>
+      <div id="indexed-docs-status" style="font-size:0.8rem;color:var(--muted);margin-top:6px;"></div>
+      <table id="indexed-docs-table" style="display:none;margin-top:8px;">
+        <thead>
+          <tr>
+            <th>Doc ID</th>
+            <th>Filename</th>
+            <th>Chunks</th>
+            <th>Action</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -540,6 +607,8 @@
       <h2>LLM Backend Connection &amp; Gateway</h2>
       <div id="vllm-live-info" style="font-size:0.82rem;color:var(--gray);margin-bottom:8px;">Loading LLM backend
         status...</div>
+      <div id="embed-model-warning"
+        style="display:none;margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(245,90,0,0.14);border:1px solid var(--amber);color:#FCD34D;font-size:0.83rem;"></div>
       <div id="llm-backend-console-ref"
         style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:rgba(0,229,255,0.08);border:1px solid var(--cyan);font-size:0.84rem;">
         ARK LLM Backend Console:
@@ -568,12 +637,52 @@
         <input id="llm-backend-admin-url" placeholder="http://localhost:8095" />
       </div>
       <button class="amber" onclick="saveLlmBackend()">Save LLM Backend Settings</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label>Local Air-Gapped Models (<code>/models</code>)</label>
+      <table id="local-models-table">
+        <thead>
+          <tr>
+            <th>Directory</th>
+            <th>Type</th>
+            <th>Weights / Size</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <label style="margin-top:12px;">Upload Offline Model Archive (<code>.tar.gz</code> / <code>.tar</code> / <code>.zip</code>)</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="model-archive-file" type="file" accept=".tar,.tar.gz,.tgz,.zip" style="flex:1;" />
+        <button style="margin-top:0;white-space:nowrap;" onclick="uploadModelArchive()">Upload Model</button>
+      </div>
       <pre id="model-ops-output" style="display:none"></pre>
     </div>
 
     <!-- Audit Logs -->
     <div class="card admin-accent">
       <h2>Security &amp; Audit Events (Local + SIEM)</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <div>
+          <label>Project Filter</label>
+          <select id="audit-project-filter" onchange="refreshAll()">
+            <option value="">All Projects</option>
+          </select>
+        </div>
+        <div>
+          <label>Event Filter</label>
+          <input id="audit-event-filter" placeholder="e.g. api.chat_completion" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+        <select id="audit-limit" onchange="refreshAll()" style="width:auto;min-width:90px;">
+          <option value="15" selected>15 rows</option>
+          <option value="50">50 rows</option>
+          <option value="200">200 rows</option>
+        </select>
+        <button style="margin-top:0;" onclick="refreshAll()">Apply</button>
+        <button class="amber" style="margin-top:0;" onclick="exportAuditJson()">Export JSON</button>
+      </div>
       <table id="audit-table">
         <thead>
           <tr>
@@ -628,6 +737,8 @@
     }
 
     let loadedPlugins = [];
+    let loadedSources = [];
+    let loadedAudits = [];
     const DEFAULT_PIPELINE_YAML = [
       'apiVersion: ark-ingest/v1',
       'name: sample-http-sync',
@@ -648,11 +759,22 @@
     ].join('\n');
 
     async function refreshAll() {
+      const auditParams = new URLSearchParams();
+      const auditLimitEl = document.getElementById('audit-limit');
+      auditParams.set('limit', (auditLimitEl && auditLimitEl.value) || '15');
+      const auditProjEl = document.getElementById('audit-project-filter');
+      if (auditProjEl && auditProjEl.value) auditParams.set('project_slug', auditProjEl.value);
+      const auditEvtEl = document.getElementById('audit-event-filter');
+      if (auditEvtEl && auditEvtEl.value.trim()) auditParams.set('event_type', auditEvtEl.value.trim());
+
       const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, knownUsers] = await Promise.all([
           api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
-          api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?limit=15'), api('/models'), api('/llm-backend'),
+          api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?' + auditParams.toString()), api('/models'), api('/llm-backend'),
           api('/users')
         ]);
+
+      loadedSources = sources || [];
+      loadedAudits = audits || [];
 
       const verLabel = `v${ver.version}`;
       document.getElementById('ark-version').textContent = verLabel;
@@ -700,7 +822,24 @@
 
       const makeProjOpts = () => projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }));
       document.getElementById('key-proj').replaceChildren(...makeProjOpts());
-      document.getElementById('conn-proj').replaceChildren(...makeProjOpts());
+      const connProjSel = document.getElementById('conn-proj');
+      const prevConnProj = connProjSel.value;
+      connProjSel.replaceChildren(...makeProjOpts());
+      if (prevConnProj && projects.some(p => p.slug === prevConnProj)) {
+        connProjSel.value = prevConnProj;
+      }
+
+      if (auditProjEl) {
+        const prevAuditProj = auditProjEl.value;
+        auditProjEl.replaceChildren(
+          el('option', { value: '', text: 'All Projects' }),
+          ...makeProjOpts()
+        );
+        if (prevAuditProj && projects.some(p => p.slug === prevAuditProj)) {
+          auditProjEl.value = prevAuditProj;
+        }
+      }
+
       const accessProjSel = document.getElementById('access-proj');
       const prevAccessProj = accessProjSel.value;
       accessProjSel.replaceChildren(...makeProjOpts());
@@ -750,12 +889,13 @@
       if (!pipeEl.value.trim()) pipeEl.value = DEFAULT_PIPELINE_YAML;
 
       document.querySelector('#conn-table tbody').replaceChildren(
-        ...sources.map(s =>
+        ...loadedSources.map(s =>
           el('tr', {}, [
             el('td', { text: s.project_slug }),
             el('td', { text: `${s.name} (${s.plugin_id || s.source_kind})` }),
-            el('td', { text: s.last_status || 'pending' }),
+            el('td', { text: (s.enabled === false ? 'disabled / ' : '') + (s.last_status || 'pending') }),
             el('td', { style: 'white-space:nowrap;' }, [
+              el('button', { style: 'margin:0 4px 0 0;padding:4px 9px;font-size:0.75rem;', text: 'Edit', onClick: () => editSource(s.id) }),
               el('button', { style: 'margin:0 4px 0 0;padding:4px 9px;font-size:0.75rem;', text: 'Sync', onClick: () => syncSource(s.id) }),
               el('button', { className: 'danger', text: 'Del', onClick: () => deleteSource(s.id) })
             ])
@@ -774,13 +914,14 @@
             el('td', { text: j.project_slug }),
             el('td', { text: j.trigger_type }),
             el('td', {}, el('span', { className: `badge ${j.status === 'succeeded' ? 'ok' : (j.status === 'failed' ? 'err' : 'rag')}`, text: j.status })),
-            el('td', { text: summary })
+            el('td', { text: summary }),
+            el('td', {}, el('button', { style: 'margin:0;padding:4px 8px;font-size:0.74rem;', text: 'Logs', onClick: () => showJobLog(j) }))
           ]);
         })
       );
 
       document.querySelector('#audit-table tbody').replaceChildren(
-        ...audits.map(a =>
+        ...loadedAudits.map(a =>
           el('tr', {}, [
             el('td', { text: (a.created_at || '').slice(11, 19) }),
             el('td', { text: a.event_type }),
@@ -802,7 +943,43 @@
         document.createTextNode(' \u2022 Served: '),
         el('code', { text: liveModels })
       );
+
+      const warnEl = document.getElementById('embed-model-warning');
+      if (modelsInfo.embed_model_warning) {
+        warnEl.textContent = modelsInfo.embed_model_warning;
+        warnEl.style.display = 'block';
+      } else {
+        warnEl.style.display = 'none';
+        warnEl.textContent = '';
+      }
+
       document.getElementById('default-llm-model').value = modelsInfo.default_llm_model || '';
+
+      const localModels = modelsInfo.local_models || [];
+      const localBody = document.querySelector('#local-models-table tbody');
+      if (localModels.length) {
+        localBody.replaceChildren(
+          ...localModels.map(m =>
+            el('tr', {}, [
+              el('td', {}, el('code', { text: m.dir })),
+              el('td', { text: m.model_type || '-' }),
+              el('td', { text: `${m.weight_files ?? 0} files (${m.size_gib ?? 0} GiB)` }),
+              el('td', {}, el('span', {
+                className: `badge ${m.active ? 'ok' : (m.has_config ? 'rag' : 'err')}`,
+                text: m.active ? 'active' : (m.has_config ? 'ready' : 'incomplete')
+              })),
+              el('td', { style: 'white-space:nowrap;' }, [
+                el('button', { style: 'margin:0 4px 0 0;padding:4px 8px;font-size:0.74rem;', text: 'Plan', onClick: () => switchPlanModel(m.dir, m.model_type) }),
+                el('button', { className: 'danger', text: 'Del', onClick: () => deleteLocalModel(m.dir) })
+              ])
+            ])
+          )
+        );
+      } else {
+        localBody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 5, style: 'color:var(--muted)', text: 'No local model directories found under /models.' }))
+        );
+      }
 
       const refBox = document.getElementById('llm-backend-console-ref');
       const refLink = document.getElementById('llm-backend-console-link');
@@ -898,7 +1075,7 @@
       const res = await api(`/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(userIdentifier)}`, {
         method: 'DELETE'
       });
-      document.getElementById('access-status').textContent = `Revoked ${userIdentifier} from ${slug} (WebUI sync: ${res.webui_sync}).`;
+      document.getElementById('access-status').textContent = `Revoked ${userIdentifier} from ${slug} (WebUI sync: ${res.webui_sync}, revoked keys: ${res.revoked_keys ?? 0}).`;
       refreshAll();
     }
 
@@ -957,6 +1134,11 @@
       });
       showOps(res);
       refreshAll();
+    }
+
+    async function exportCommonSnapshot() {
+      const res = await api('/snapshots/company-common/export', { method: 'POST' });
+      showOps(res);
     }
 
     async function uploadSnapshot() {
@@ -1065,6 +1247,54 @@
       out.textContent = JSON.stringify(res, null, 2);
     }
 
+    function editSource(id) {
+      const s = loadedSources.find(x => x.id === id);
+      if (!s) return;
+      document.getElementById('edit-source-id').value = String(s.id);
+      document.getElementById('edit-source-title').textContent = `#${s.id} (${s.project_slug})`;
+      document.getElementById('edit-source-name').value = s.name || '';
+      document.getElementById('edit-source-sync-mode').value = s.sync_mode || 'incremental';
+      document.getElementById('edit-source-schedule').value = s.schedule_cron || '';
+      document.getElementById('edit-source-enabled').value = s.enabled === false ? 'false' : 'true';
+      const pipeWrap = document.getElementById('edit-source-pipeline-wrap');
+      if (s.source_kind === 'pipeline_yaml') {
+        pipeWrap.style.display = 'block';
+        document.getElementById('edit-source-pipeline').value = s.pipeline_spec || '';
+      } else {
+        pipeWrap.style.display = 'none';
+        document.getElementById('edit-source-pipeline').value = '';
+      }
+      const box = document.getElementById('edit-source-box');
+      box.style.display = 'block';
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function cancelSourceEdit() {
+      document.getElementById('edit-source-box').style.display = 'none';
+    }
+
+    async function saveSourceEdit() {
+      const id = parseInt(document.getElementById('edit-source-id').value, 10);
+      if (!id) return;
+      const s = loadedSources.find(x => x.id === id);
+      const payload = {
+        name: document.getElementById('edit-source-name').value,
+        sync_mode: document.getElementById('edit-source-sync-mode').value,
+        schedule_cron: document.getElementById('edit-source-schedule').value,
+        enabled: document.getElementById('edit-source-enabled').value === 'true'
+      };
+      if (s && s.source_kind === 'pipeline_yaml') {
+        payload.pipeline_spec = document.getElementById('edit-source-pipeline').value;
+      }
+      await api(`/ingest-sources/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      cancelSourceEdit();
+      refreshAll();
+    }
+
     async function syncSource(id) {
       const res = await api(`/ingest-sources/${id}/sync?async_mode=true`, { method: 'POST' });
       const out = document.getElementById('ingest-preview-output');
@@ -1075,7 +1305,79 @@
 
     async function deleteSource(id) {
       if (!confirm(`Delete ingest source #${id}?`)) return;
-      await api(`/ingest-sources/${id}`, { method: 'DELETE' });
+      const deleteVectors = confirm('Also delete Qdrant vectors indexed by this source?\nOK = Delete vectors too, Cancel = Keep existing vectors');
+      await api(`/ingest-sources/${id}?delete_vectors=${deleteVectors}`, { method: 'DELETE' });
+      refreshAll();
+    }
+
+    function showJobLog(j) {
+      const out = document.getElementById('ingest-preview-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify({
+        id: j.id,
+        project_slug: j.project_slug,
+        trigger_type: j.trigger_type,
+        status: j.status,
+        stats: j.stats,
+        log_excerpt: j.log_excerpt
+      }, null, 2);
+    }
+
+    async function loadProjectIndexedDocs() {
+      const slug = document.getElementById('conn-proj').value;
+      if (!slug) return alert('Select a project first.');
+      const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/documents?limit=200`);
+      const docs = res.documents || [];
+      document.getElementById('indexed-docs-status').textContent = `Showing ${docs.length} indexed document(s) in '${slug}'.`;
+      const tbl = document.getElementById('indexed-docs-table');
+      tbl.style.display = 'table';
+      const tbody = tbl.querySelector('tbody');
+      if (!docs.length) {
+        tbody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 4, style: 'color:var(--muted)', text: 'No indexed documents tracked for this project.' }))
+        );
+        return;
+      }
+      tbody.replaceChildren(
+        ...docs.map(d =>
+          el('tr', {}, [
+            el('td', {}, el('code', { text: d.doc_id })),
+            el('td', { text: d.filename || '-' }),
+            el('td', { text: String(d.chunk_count ?? 0) }),
+            el('td', {}, el('button', {
+              className: 'danger',
+              text: 'Delete',
+              onClick: () => deleteIndexedDoc(slug, d.doc_id, d.source_key)
+            }))
+          ])
+        )
+      );
+    }
+
+    async function deleteIndexedDoc(slug, docId, sourceKey) {
+      if (!confirm(`Delete indexed document '${docId}' from '${slug}'?`)) return;
+      const qs = sourceKey ? `?source_key=${encodeURIComponent(sourceKey)}` : '';
+      await api(`/projects/${encodeURIComponent(slug)}/ingest/documents/${encodeURIComponent(docId)}${qs}`, {
+        method: 'DELETE'
+      });
+      await loadProjectIndexedDocs();
+      refreshAll();
+    }
+
+    async function resetProjectIndex(clearVectors) {
+      const slug = document.getElementById('conn-proj').value;
+      if (!slug) return alert('Select a project first.');
+      const actionMsg = clearVectors
+        ? `Clear deduplication cache AND delete all Qdrant vectors for '${slug}'?`
+        : `Reset content-hash cache (keeping vectors until next re-sync) for '${slug}'?`;
+      if (!confirm(actionMsg)) return;
+      const res = await api(`/projects/${encodeURIComponent(slug)}/ingest/reset?clear_vectors=${Boolean(clearVectors)}`, {
+        method: 'POST'
+      });
+      const out = document.getElementById('ingest-preview-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(res, null, 2);
+      await loadProjectIndexedDocs();
       refreshAll();
     }
 
@@ -1094,46 +1396,84 @@
     }
 
     function toggleBackendAdminField() {
-        const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
-        document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
-      }
+      const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
+      document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
+    }
 
     async function saveLlmBackend() {
-          const res = await api('/llm-backend', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              backend_type: document.getElementById('llm-backend-type').value,
-              api_base_url: document.getElementById('llm-api-base-url').value,
-              api_key: document.getElementById('llm-api-key').value || null,
-              health_url: document.getElementById('llm-health-url').value,
-              backend_admin_url: document.getElementById('llm-backend-admin-url').value,
-            })
-          });
-          showModelOps(res);
-          refreshAll();
-        }
+      const res = await api('/llm-backend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          backend_type: document.getElementById('llm-backend-type').value,
+          api_base_url: document.getElementById('llm-api-base-url').value,
+          api_key: document.getElementById('llm-api-key').value || null,
+          health_url: document.getElementById('llm-health-url').value,
+          backend_admin_url: document.getElementById('llm-backend-admin-url').value,
+        })
+      });
+      showModelOps(res);
+      refreshAll();
+    }
 
-            async function saveDefaultLlm() {
-            const res = await api('/models/default', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
+    async function saveDefaultLlm() {
+      const res = await api('/models/default', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model_name: document.getElementById('default-llm-model').value })
-            });
-          showModelOps(res);
-          refreshAll();
-        }
+      });
+      showModelOps(res);
+      refreshAll();
+    }
+
+    async function uploadModelArchive() {
+      const f = document.getElementById('model-archive-file').files[0];
+      if (!f) return alert('Select a model archive (.tar.gz / .tar / .zip) first.');
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await api('/models/upload', { method: 'POST', body: fd });
+      showModelOps(res);
+      refreshAll();
+    }
+
+    async function switchPlanModel(modelDir, modelType) {
+      const res = await api('/models/switch-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_dir: modelDir, model_type: modelType || 'llm' })
+      });
+      showModelOps(res);
+    }
+
+    async function deleteLocalModel(modelDir) {
+      if (!confirm(`Delete local model directory '${modelDir}' from /models?`)) return;
+      const res = await api(`/models/${encodeURIComponent(modelDir)}`, { method: 'DELETE' });
+      showModelOps(res);
+      refreshAll();
+    }
+
+    function exportAuditJson() {
+      const blob = new Blob([JSON.stringify(loadedAudits || [], null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ark-audit-export.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
 
     function showModelOps(obj) {
-          const out = document.getElementById('model-ops-output');
-          out.style.display = 'block';
-          out.textContent = JSON.stringify(obj, null, 2);
-        }
+      const out = document.getElementById('model-ops-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(obj, null, 2);
+    }
 
     function showOps(obj) {
-          const out = document.getElementById('ops-output');
-          out.style.display = 'block';
-          out.textContent = JSON.stringify(obj, null, 2);
-        }
+      const out = document.getElementById('ops-output');
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(obj, null, 2);
+    }
 
     refreshAll();
   </script>

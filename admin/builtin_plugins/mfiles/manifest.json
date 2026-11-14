@@ -18,6 +18,7 @@
       "username": { "type": "string", "title": "Username" },
       "password": { "type": "string", "title": "Password", "format": "password" },
       "object_type": { "type": "integer", "title": "Object Type ID", "default": 0 },
+      "max_items": { "type": "integer", "title": "Max Items Per Sync", "default": 1000 },
       "verify_tls": { "type": "boolean", "title": "Verify TLS Certificate", "default": true }
     }
   }

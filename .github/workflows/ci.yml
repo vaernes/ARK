@@ -16,18 +16,29 @@ jobs:
         run: bash -n scripts/*.sh
 
       - name: Python unit tests
-        run: python3 -m unittest discover -s tests -v
+        run: |
+          python3 -m pip install --no-cache-dir -r admin/requirements.txt
+          python3 -m unittest discover -s tests -v
 
       - name: Air-gap & offline-flag invariants check
         run: |
           python3 - <<'EOF'
           import pathlib, re, sys
 
-          for html_path in ("admin/static/index.html", "admin/static/portal.html"):
-              html = pathlib.Path(html_path).read_text()
-              external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', html, re.I)
+          for asset_path in (
+              "admin/static/index.html",
+              "admin/static/portal.html",
+              "llm-admin/static/index.html",
+              "config/open-webui/custom.css",
+          ):
+              content = pathlib.Path(asset_path).read_text(encoding="utf-8")
+              external_urls = re.findall(
+                  r'(?:src|href)=["\']https?://[^"\']+|url\(\s*["\']?https?://[^)]+',
+                  content,
+                  re.I,
+              )
               if external_urls:
-                  print(f"ERROR: External URLs found in {html_path}:", external_urls)
+                  print(f"ERROR: External URLs found in {asset_path}:", external_urls)
                   sys.exit(1)
 
           compose = pathlib.Path("docker-compose.yml").read_text()

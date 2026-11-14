@@ -98,6 +98,7 @@ load_env() {
   KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}"
   OAUTH2_PROXY_IMAGE="${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.7.1}"
   ARK_ADMIN_IMAGE="${ARK_ADMIN_IMAGE:-ark-admin:latest}"
+  ARK_LLM_ADMIN_IMAGE="${ARK_LLM_ADMIN_IMAGE:-ark-llm-admin:latest}"
 
   LLM_MODEL_ID="${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
   LLM_MODEL_DIR="${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
@@ -176,7 +177,14 @@ main() {
       --build-arg "ARK_BUILD_DATE=${build_date}" \
       -t "${ARK_ADMIN_IMAGE}" "${REPO_ROOT}/admin"
 
-    local images=("${pull_images[@]}" "${ARK_ADMIN_IMAGE}")
+    log "Building local ark-llm-admin image: ${ARK_LLM_ADMIN_IMAGE} (ARK v${ARK_VERSION})"
+    docker build \
+      --build-arg "ARK_VERSION=${ARK_VERSION}" \
+      --build-arg "ARK_GIT_COMMIT=${git_commit}" \
+      --build-arg "ARK_BUILD_DATE=${build_date}" \
+      -t "${ARK_LLM_ADMIN_IMAGE}" "${REPO_ROOT}/llm-admin"
+
+    local images=("${pull_images[@]}" "${ARK_ADMIN_IMAGE}" "${ARK_LLM_ADMIN_IMAGE}")
 
     log "Recording image provenance digests -> ${ARTIFACTS_DIR}/ark-images.digests.txt"
     : > "${ARTIFACTS_DIR}/ark-images.digests.txt"

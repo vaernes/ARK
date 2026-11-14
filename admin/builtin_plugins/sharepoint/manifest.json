@@ -17,6 +17,8 @@
       "folder_server_relative_url": { "type": "string", "title": "Folder Server-Relative URL", "default": "/sites/engineering/Shared Documents" },
       "username": { "type": "string", "title": "Username (DOMAIN\\user)" },
       "password": { "type": "string", "title": "Password", "format": "password" },
+      "recursive": { "type": "boolean", "title": "Traverse Subfolders Recursively", "default": false },
+      "max_items": { "type": "integer", "title": "Max Items Per Sync", "default": 1000 },
       "verify_tls": { "type": "boolean", "title": "Verify TLS Certificate", "default": true }
     }
   }

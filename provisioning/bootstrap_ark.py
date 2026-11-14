@@ -262,7 +262,7 @@ class OpenWebUIClient:
             "base_model_id": base_model_id,
             "name": f"{display_name} Assistant",
             "meta": {
-                "profile_image_url": "/static/favicon.png",
+                "profile_image_url": "/static/favicon.svg",
                 "description": (
                     f"Isolated RAG Assistant for {display_name} "
                     f"(Knowledge: {COMPANY_COMMON_COLLECTION} + {project_collection})."

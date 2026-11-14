@@ -302,12 +302,15 @@ services:
       RAG_EMBEDDING_OPENAI_API_KEY: "local-tei"
       RAG_EMBEDDING_MODEL: "${EMBED_MODEL_ID:-BAAI/bge-m3}"
       ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_RERANKING_ENGINE: "${RAG_RERANKING_ENGINE:-external}"
+      RAG_EXTERNAL_RERANKER_URL: "${RAG_EXTERNAL_RERANKER_URL:-http://tei-rerank:80/rerank}"
       RAG_RERANKING_MODEL: "${RERANK_MODEL_ID:-BAAI/bge-reranker-v2-m3}"
       # Document Extraction (Apache Tika)
       CONTENT_EXTRACTION_ENGINE: "tika"
       TIKA_SERVER_URL: "http://tika:9998"
     volumes:
       - ./data/open-webui:/app/backend/data
+      - ./artifacts/models:/models:ro
       - ./certs:/certs:ro
       - ./admin/static/ark-logo.svg:/app/backend/open_webui/static/favicon.svg:ro
       - ./config/open-webui/custom.css:/app/backend/open_webui/static/custom.css:ro
@@ -422,6 +425,8 @@ services:
         condition: service_healthy
       tei-embed:
         condition: service_healthy
+      tei-rerank:
+        condition: service_healthy
       tika:
         condition: service_healthy
     environment:
@@ -450,6 +455,9 @@ services:
       ARK_INGEST_JOB_TIMEOUT_SEC: "${ARK_INGEST_JOB_TIMEOUT_SEC:-1800}"
       ARK_SECRETS_KEY: "${ARK_SECRETS_KEY:-}"
       TEI_EMBED_URL: "http://tei-embed:80"
+      TEI_RERANK_URL: "http://tei-rerank:80"
+      ARK_SHARES_DIR: "/shares"
+      ARK_ALLOWED_INGEST_PATHS: "/shares"
       TIKA_URL: "http://tika:9998"
       OPENWEBUI_INTERNAL_URL: "http://open-webui:8080"
       OPENWEBUI_API_KEY: "${OPENWEBUI_API_KEY:-}"
@@ -470,6 +478,12 @@ services:
       - ./plugins:/plugins:ro
       - ./data/ingest-scripts:/ingest-scripts:ro
       - ${ARK_SHARES_DIR:-./data/shares}:/shares:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       ark-net:
       ark-control:
@@ -491,7 +505,7 @@ services:
       oauth2-proxy:
         condition: service_started
       ark-admin:
-        condition: service_started
+        condition: service_healthy
       tei-embed:
         condition: service_healthy
     environment:
@@ -506,6 +520,11 @@ services:
       - ./data/caddy/data:/data
       - ./data/caddy/config:/config
       - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 80 && nc -z 127.0.0.1 443"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     networks:
       - ark-net
       - ark-control

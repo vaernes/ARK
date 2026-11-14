@@ -338,17 +338,27 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   alpha_key=$(echo "${keys_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['alpha_key'])")
   clean_key=$(echo "${keys_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['clean_key'])")
 
-  local alpha_resp clean_resp cross_code
-  alpha_resp=$(curl -ks -w "\nHTTP_CODE:%{http_code}" -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
+  local alpha_resp alpha_headers_body clean_resp cross_code healthz_code v1_root_ct
+  healthz_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:8443/healthz")
+  [[ "${healthz_code}" == "200" ]] || fail "Expected 200 on https://localhost:8443/healthz, got ${healthz_code}"
+
+  v1_root_ct=$(curl -ks -o /dev/null -w "%{content_type}" -H "Authorization: Bearer ${alpha_key}" "https://localhost:8443/projects/project-alpha/v1")
+  echo "${v1_root_ct}" | grep -qi "application/json" || fail "Expected Caddy to route /projects/project-alpha/v1 (no trailing slash) to ark-admin JSON API, got content-type: ${v1_root_ct}"
+
+  alpha_headers_body=$(curl -ksi -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
     -H "Authorization: Bearer ${alpha_key}" \
     -H "Content-Type: application/json" \
-    -d '{"messages":[{"role":"user","content":"Summarize spec"}]}')
+    -d '{"messages":[{"role":"system","content":"Always respond concisely."},{"role":"user","content":[{"type":"text","text":"Summarize spec"}]}]}')
+  alpha_resp="${alpha_headers_body}"
   if ! echo "${alpha_resp}" | grep -q "RAG_CONTEXT_INJECTED=True"; then
     docker logs --tail 30 ark-test-caddy >&2 || true
     docker logs --tail 30 ark-test-ark-admin >&2 || true
     fail "Expected RAG_CONTEXT_INJECTED=True, got: ${alpha_resp}"
   fi
-  pass "Project_Alpha API Gateway retrieved Qdrant context and returned mock LLM response."
+  echo "${alpha_resp}" | grep -q "HAS_CLIENT_INSTRUCTIONS=True" || fail "Expected client system prompt to be preserved (HAS_CLIENT_INSTRUCTIONS=True), got: ${alpha_resp}"
+  echo "${alpha_resp}" | grep -qiE "^x-ark-rag-chunks:\s*[1-9]" || fail "Expected X-Ark-Rag-Chunks >= 1 response header, got headers+body: ${alpha_resp}"
+  echo "${alpha_resp}" | grep -q '"total_tokens":20' || fail "Expected token usage in chat completion response, got: ${alpha_resp}"
+  pass "Project_Alpha API Gateway retrieved Qdrant context, preserved client system prompt, handled multimodal content, and returned X-Ark-Rag-Chunks."
 
   clean_resp=$(curl -ks -w "\nHTTP_CODE:%{http_code}" -X POST "https://localhost:8443/projects/clean-sandbox/v1/chat/completions" \
     -H "Authorization: Bearer ${clean_key}" \
@@ -388,7 +398,20 @@ assert all(p['slug'] != 'project-alpha' for p in projs.json()), projs.json()
 denied = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key'}, timeout=5)
 assert denied.status_code == 403, denied.status_code
 
-# Admin grants bob access
+# Grant viewer role: bob sees user_role='viewer', cannot issue ingest key (403), can issue chat key (200)
+grant_v = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, json={'user_identifier': 'bob@ark.local', 'role': 'viewer'}, timeout=5)
+grant_v.raise_for_status()
+projs_v = requests.get('http://localhost:8090/portal/api/projects', headers=H_BOB, timeout=5)
+projs_v.raise_for_status()
+alpha_entry = [p for p in projs_v.json() if p['slug'] == 'project-alpha'][0]
+assert alpha_entry.get('user_role') == 'viewer', alpha_entry
+denied_ingest = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-ingest', 'scopes': ['ingest']}, timeout=5)
+assert denied_ingest.status_code == 403, denied_ingest.status_code
+chat_ok = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-viewer-chat', 'scopes': ['chat']}, timeout=5)
+chat_ok.raise_for_status()
+bob_viewer_api_key = chat_ok.json()['api_key']
+
+# Upgrade bob to member role
 grant = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, json={'user_identifier': 'bob@ark.local', 'role': 'member'}, timeout=5)
 grant.raise_for_status()
 assert grant.json()['user_identifier'] == 'bob@ark.local', grant.json()
@@ -408,9 +431,18 @@ assert any(p['slug'] == 'project-alpha' for p in projs2.json()), projs2.json()
 created = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key'}, timeout=5)
 created.raise_for_status()
 
-# Admin revokes bob access
+# Admin revokes bob access -> active portal keys are automatically revoked
 rev = requests.delete('http://localhost:8090/admin-console/api/projects/project-alpha/members/bob@ark.local', headers=H_ADMIN, timeout=5)
 rev.raise_for_status()
+assert rev.json().get('revoked_keys', 0) >= 2, rev.json()
+
+revoked_gw = requests.post(
+    'http://localhost:8090/projects/project-alpha/v1/chat/completions',
+    headers={'Authorization': f'Bearer {bob_viewer_api_key}'},
+    json={'messages': [{'role': 'user', 'content': 'Should fail after revoke'}]},
+    timeout=5,
+)
+assert revoked_gw.status_code in (401, 403), revoked_gw.status_code
 
 projs3 = requests.get('http://localhost:8090/portal/api/projects', headers=H_BOB, timeout=5)
 projs3.raise_for_status()
@@ -418,7 +450,7 @@ assert all(p['slug'] != 'project-alpha' for p in projs3.json()), projs3.json()
 denied2 = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key-2'}, timeout=5)
 assert denied2.status_code == 403, denied2.status_code
 " || fail "Per-user project access control verification failed"
-  pass "Admin per-user project access grant/revoke and Portal enforcement verified."
+  pass "Admin per-user project access grant/revoke, viewer key scope RBAC, and auto-key revocation verified."
 
   # 5b. Test SSE streaming on Project_Alpha
   local stream_resp
@@ -569,6 +601,37 @@ dr = requests.post('http://localhost:8090/admin-console/api/ingest-sources/dry-r
 dr.raise_for_status()
 assert dr.json()['preview_count'] == 2, dr.json()
 
+# Pipeline path confinement & read-only SQL confinement must reject traversal/mutation (400)
+bad_fs_yaml = '''apiVersion: ark-ingest/v1
+name: bad-fs
+source:
+  type: filesystem_glob
+  path: /etc
+  pattern: passwd
+transform:
+  doc_id: x
+  template: y
+'''
+dr_bad_fs = requests.post('http://localhost:8090/admin-console/api/ingest-sources/dry-run', headers=H, json={
+    'source_kind': 'pipeline_yaml', 'pipeline_spec': bad_fs_yaml, 'limit': 5
+}, timeout=10)
+assert dr_bad_fs.status_code == 400, f'Expected 400 for /etc filesystem_glob, got {dr_bad_fs.status_code}: {dr_bad_fs.text}'
+
+bad_sql_yaml = '''apiVersion: ark-ingest/v1
+name: bad-sql
+source:
+  type: sql_query
+  dsn: sqlite:///shares/test.db
+  query: DELETE FROM docs
+transform:
+  doc_id: x
+  template: y
+'''
+dr_bad_sql = requests.post('http://localhost:8090/admin-console/api/ingest-sources/dry-run', headers=H, json={
+    'source_kind': 'pipeline_yaml', 'pipeline_spec': bad_sql_yaml, 'limit': 5
+}, timeout=10)
+assert dr_bad_sql.status_code == 400, f'Expected 400 for DELETE sql_query, got {dr_bad_sql.status_code}: {dr_bad_sql.text}'
+
 src_pipe = requests.post('http://localhost:8090/admin-console/api/ingest-sources', headers=H, json={
     'project_slug': 'project-alpha', 'name': 'CSV Pipeline', 'source_kind': 'pipeline_yaml',
     'pipeline_spec': pipe_yaml, 'sync_mode': 'full_mirror'
@@ -579,6 +642,11 @@ sid_pipe = src_pipe.json()['id']
 sync_pipe = requests.post(f'http://localhost:8090/admin-console/api/ingest-sources/{sid_pipe}/sync?async_mode=false', headers=H, timeout=30)
 sync_pipe.raise_for_status()
 assert sync_pipe.json()['docs_upserted'] == 2, sync_pipe.json()
+
+docs_list = requests.get('http://localhost:8090/admin-console/api/projects/project-alpha/ingest/documents', headers=H, timeout=10)
+docs_list.raise_for_status()
+doc_ids = {d['doc_id'] for d in docs_list.json()['documents']}
+assert {'csv/r1', 'csv/r2'}.issubset(doc_ids), doc_ids
 
 src_script = requests.post('http://localhost:8090/admin-console/api/ingest-sources', headers=H, json={
     'project_slug': 'project-alpha', 'name': 'Custom Script', 'source_kind': 'script',
@@ -597,7 +665,7 @@ requests.delete(f'http://localhost:8090/admin-console/api/ingest-sources/{sid_sc
 qc = QdrantClient(url='http://qdrant:6333', api_key='${QDRANT_KEY}')
 assert qc.count(collection_name='Project_Alpha').count == 1, 'Expected only original spec point remaining'
 "
-  pass "Push Ingest API, key scopes, plugins, YAML pipelines, and sandboxed custom scripts verified."
+  pass "Push Ingest API, key scopes, plugins, YAML pipelines, security confinement, and sandboxed custom scripts verified."
 
   # 6. Test LLM & Model Management APIs
   log "6/8 Testing LLM & Model Management APIs..."
@@ -686,6 +754,7 @@ assert len(manifest['qdrant_snapshots']) >= 2, manifest
 for s in manifest['qdrant_snapshots']:
     snap_path = dest / s['path']
     assert snap_path.is_file() and snap_path.stat().st_size > 0, f'Missing snapshot file: {snap_path}'
+assert 'ingest_scripts' in (manifest.get('extra_archives') or {}), manifest
 
 # Mutate Qdrant + DB state, then verify restore recovers both
 qc = QdrantClient(url='http://qdrant:6333', api_key='${QDRANT_KEY}')
@@ -702,11 +771,19 @@ assert 'Project_Alpha' in rdata['restored_collections'], rdata
 assert qc.count(collection_name='Project_Alpha').count == 1, 'Qdrant point was not restored!'
 proj_info = [p for p in requests.get('http://localhost:8090/admin-console/api/projects', headers=H).json() if p['slug'] == 'project-alpha'][0]
 assert proj_info['llm_model'] == '', proj_info
-"
-  pass "Backup files, Qdrant snapshot download, manifest verification, and full restore verified."
 
-  # 8. Test Audit Logs (PostgreSQL + append-only audit.jsonl)
-  log "8/8 Verifying audit logs..."
+# Test Company_Common snapshot export & download endpoints on restored stack
+exp = requests.post('http://localhost:8090/admin-console/api/snapshots/company-common/export', headers=H, timeout=60)
+exp.raise_for_status()
+assert exp.json().get('file') == 'Company_Common.snapshot', exp.json()
+dl = requests.get('http://localhost:8090/admin-console/api/snapshots/company-common/download', headers=H, timeout=60)
+dl.raise_for_status()
+assert len(dl.content) > 0, 'Downloaded Company_Common.snapshot is empty'
+"
+  pass "Backup files, extra_archives, Company_Common snapshot export/download, manifest verification, and full restore verified."
+
+  # 8. Test Audit Logs (PostgreSQL + append-only audit.jsonl) & In-Container Unit Tests
+  log "8/8 Verifying audit logs and running full unit tests inside container..."
   docker exec ark-test-ark-admin python3 -c "
 import json, requests
 from pathlib import Path
@@ -715,7 +792,7 @@ H = {
     'X-Forwarded-User': 'ci-admin@ark.local',
     'X-Forwarded-Groups': 'ark-admins',
 }
-logs = requests.get('http://localhost:8090/admin-console/api/audit?limit=40', headers=H).json()
+logs = requests.get('http://localhost:8090/admin-console/api/audit?limit=100', headers=H).json()
 events = {l['event_type'] for l in logs}
 for expected in (
     'auth.denied',
@@ -734,6 +811,7 @@ for expected in (
     'ingest.dry_run',
     'ingest.job_start',
     'ingest.job_finish',
+    'snapshot.export',
     'backup.restore',
 ):
     assert expected in events, f'{expected} missing from DB audit_logs: {events}'
@@ -745,9 +823,20 @@ jsonl_events = {
 }
 assert 'backup.run' in jsonl_events, jsonl_events
 assert 'backup.restore' in jsonl_events, jsonl_events
+assert 'snapshot.export' in jsonl_events, jsonl_events
 assert 'auth.denied' in jsonl_events, jsonl_events
 "
   pass "All expected events recorded in PostgreSQL audit_logs and audit.jsonl."
+
+  docker cp "${REPO_ROOT}/tests/test_admin_extensions.py" ark-test-ark-admin:/app/test_admin_extensions.py
+  docker exec -w /app ark-test-ark-admin python3 -m unittest \
+    test_admin_extensions.TestSecurityCronAndMessages \
+    test_admin_extensions.TestBackupManifestExtraArchives \
+    test_admin_extensions.TestIngestSecretsAndChunking \
+    test_admin_extensions.TestPipelineConfinementAndReadOnlySql \
+    test_admin_extensions.TestPluginDiscoveryAndEnvScrubbing -v \
+    || fail "In-container unit tests failed"
+  pass "In-container unit tests for ingest, pipelines, and plugins passed with zero skips."
 
   log "ALL INTEGRATION TESTS PASSED!"
 }

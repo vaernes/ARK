@@ -166,6 +166,9 @@
       if (tok) headers.set('Authorization', `Bearer ${tok}`);
       const res = await fetch(path, { ...opts, headers });
       if (!res.ok) {
+        if (res.status === 401) {
+          document.getElementById('auth-box').style.display = 'block';
+        }
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || err.error || res.statusText);
       }
