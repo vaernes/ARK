@@ -106,13 +106,15 @@ ark-stack/
 │   ├── bump-version.sh              # CalVer release bump helper
 │   ├── bundle-offline.sh            # HQ: pulls/builds images & downloads HF models
 │   ├── dev-up.sh                    # Local GPU-less interactive dev stack
+│   ├── export-project-kb.sh         # Exports project Qdrant collection snapshots
 │   ├── install-offline.sh           # Office: verifies checksums, loads & starts ARK
 │   ├── restore-backup.sh            # Disaster-recovery verify & restore CLI
-│   ├── sync-company-kb.sh           # Imports project Qdrant collection snapshots
+│   ├── sync-project-kb.sh           # Imports project Qdrant collection snapshots
 │   ├── test-integration.sh          # Automated GPU-less integration test suite
 │   └── update-llm.sh                # Atomic offline LLM/embed/rerank updater
 └── tests/
     ├── mock_inference.py            # Stdlib mock vLLM & TEI server for testing
+    ├── test_admin_extensions.py     # Unit tests (Fernet secrets, pipelines, plugins, cron)
     └── test_admin_unit.py           # Unit tests (security, backups, version, UI XSS)
 ```
 
@@ -134,7 +136,7 @@ This spins up an isolated `ark-test-net` environment using [`tests/mock_inferenc
 1. Keycloak OIDC discovery through Caddy (`/auth/realms/ark/.well-known/openid-configuration`).
 2. `oauth2-proxy` SSO redirect on `/admin-console/` (`HTTP 302`).
 3. Raw `/v1/*` bypass block (`HTTP 403`).
-4. Creation of both a RAG project (`Project_Alpha`) and a clean non-RAG project (`Clean_Sandbox`).
+4. Creation of RAG projects (`Project_Alpha`, `Shared_KB`) with project-to-project RAG linking and a clean non-RAG project (`Clean_Sandbox`).
 5. Per-project `/projects/<slug>/v1/chat/completions` routing, Qdrant RAG context injection, and cross-project API key rejection (`HTTP 403`).
 6. Full `pg_dump` + Qdrant snapshot backup execution.
 7. PostgreSQL audit log recording.

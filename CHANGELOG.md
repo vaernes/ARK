@@ -8,6 +8,23 @@ using `YYYY.MM.PATCH` (for example, `2026.11.0`).
 
 ## [Unreleased]
 
+### Added
+- **Project-to-Project RAG Linking & Per-Project Snapshots:**
+  - Added explicit read-only RAG linking across projects via `extra_rag_projects`, `PATCH /admin-console/api/projects/{slug}/rag-projects`, Admin Console controls, User Portal indicators, and `--extra-rag-project` in `provisioning/bootstrap_ark.py`.
+  - Added per-project Qdrant snapshot export, download, and upload routes (`/admin-console/api/projects/{slug}/snapshot/*`) and CLI helpers (`scripts/export-project-kb.sh`, `scripts/sync-project-kb.sh`, with `--out` support and wrapper aliases on the legacy `*-company-kb.sh` scripts).
+- **Security, RBAC & Ingestion Platform:**
+  - Added Fernet encryption at rest for connector/LLM backend secrets (`ARK_SECRETS_KEY`), fail-closed `X-Ark-Proxy-Secret` header validation, per-user project RBAC (`/portal/`, `/admin-console/api/projects/{slug}/members`), and scoped project API keys (`chat` / `ingest`).
+  - Added declarative `ark-ingest/v1` pipelines, env-scrubbed plugin and custom Python ingest execution with path/SQL confinement, 5-field cron scheduling, and `audit_logs.tar.gz` checksum verification (`extra_archives`) in backups.
+  - Added integration assertions in `scripts/test-integration.sh` and unit coverage in `tests/test_admin_extensions.py`.
+
+### Changed
+- Auto-generated project RAG system prompts synchronize automatically when linked RAG projects are updated or removed.
+- Data Ingestion target project selector (`#conn-proj`) filters to RAG-enabled projects only, and Clean projects disable linked RAG inputs in the Admin Console.
+- CI and release workflows install `admin/requirements.txt` before running unit tests so ingest, pipeline, and plugin tests execute with zero skips.
+
+### Removed
+- Removed the hardcoded global `Company_Common` collection and automatic cross-project provisioning/querying in favor of explicit project-to-project RAG linking.
+
 ## [2026.11.0] - 2026-11-13
 
 ### Added

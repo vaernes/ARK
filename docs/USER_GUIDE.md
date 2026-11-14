@@ -85,10 +85,10 @@ All modes support **Incremental** (content-hash deduplication + stale chunk clea
 ### 5. Exporting & Importing Project KB Snapshots
 1. To export a project's Qdrant snapshot for transfer (e.g., HQ to an office deployment):
    - **Admin UI:** In **Backup & Project KB Snapshot Sync**, select the RAG project, click **Export Project Snapshot**, then click **Download .snapshot**.
-   - **CLI:** Run `./scripts/export-company-kb.sh --collection Shared_KB --out ./Shared_KB.snapshot`.
+   - **CLI:** Run `./scripts/export-project-kb.sh --collection Shared_KB --out ./Shared_KB.snapshot`.
 2. To import a `.snapshot` (and optional `.sha256`) into a RAG project's collection:
    - **Admin UI:** Select the target RAG project in **Backup & Project KB Snapshot Sync**, choose the `.snapshot` file, and click **Upload & Recover Snapshot**.
-   - **CLI:** Run `./scripts/sync-company-kb.sh --collection Shared_KB --snapshot /path/to/Shared_KB.snapshot`.
+   - **CLI:** Run `./scripts/sync-project-kb.sh --collection Shared_KB --snapshot /path/to/Shared_KB.snapshot`.
 
 ### 6. Backups, Restore & Changing the Backup Directory
 In the **Backup & Project KB Snapshot Sync** panel:

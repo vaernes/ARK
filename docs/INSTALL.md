@@ -126,7 +126,7 @@ Keycloak boots with the `ark` realm pre-imported from [config/keycloak/ark-realm
 2. **Create your projects** via the Admin UI (`https://<your-ark-domain>/admin-console/`) or via CLI (`python3 provisioning/bootstrap_ark.py --create-project "Shared_KB"` and `--create-project "Project_Alpha" --extra-rag-project shared-kb` if you want `Project_Alpha` to search `Shared_KB` read-only).
 3. **Optionally sync a prebuilt project Qdrant snapshot** (e.g., exported from HQ):
    ```bash
-   ./scripts/sync-company-kb.sh --collection Shared_KB --snapshot /path/to/Shared_KB.snapshot
+   ./scripts/sync-project-kb.sh --collection Shared_KB --snapshot /path/to/Shared_KB.snapshot
    ```
 
 ---

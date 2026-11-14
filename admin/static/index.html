@@ -332,7 +332,7 @@
       <label>Project Name</label>
       <input id="proj-name" placeholder="Project_Alpha" />
       <label>Isolation Mode</label>
-      <select id="proj-rag">
+      <select id="proj-rag" onchange="toggleCreateProjectRagFields()">
         <option value="true">RAG-Enabled (Isolated Qdrant Project KB)</option>
         <option value="false">Clean Project (Isolated LLM / No RAG)</option>
       </select>
@@ -844,19 +844,20 @@
       const makeProjOpts = () => projects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }));
       document.getElementById('key-proj').replaceChildren(...makeProjOpts());
       const ragProjs = projects.filter(p => p.rag_enabled);
+      const makeRagProjOpts = () => (
+        ragProjs.length
+          ? ragProjs.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
+          : [el('option', { value: '', text: '(No RAG projects)' })]
+      );
       const snapSelect = document.getElementById('snap-proj');
       const prevSnap = snapSelect.value;
-      snapSelect.replaceChildren(
-        ...(ragProjs.length
-          ? ragProjs.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
-          : [el('option', { value: '', text: '(No RAG projects)' })])
-      );
+      snapSelect.replaceChildren(...makeRagProjOpts());
       if (prevSnap && ragProjs.some(p => p.slug === prevSnap)) snapSelect.value = prevSnap;
       updateSnapshotDownloadLink();
       const connProjSel = document.getElementById('conn-proj');
       const prevConnProj = connProjSel.value;
-      connProjSel.replaceChildren(...makeProjOpts());
-      if (prevConnProj && projects.some(p => p.slug === prevConnProj)) {
+      connProjSel.replaceChildren(...makeRagProjOpts());
+      if (prevConnProj && ragProjs.some(p => p.slug === prevConnProj)) {
         connProjSel.value = prevConnProj;
       }
 
@@ -1029,6 +1030,13 @@
       toggleBackendAdminField();
     }
 
+    function toggleCreateProjectRagFields() {
+      const isRag = document.getElementById('proj-rag').value === 'true';
+      const extraInput = document.getElementById('proj-extra-rag');
+      extraInput.disabled = !isRag;
+      if (!isRag) extraInput.value = '';
+    }
+
     async function createProject() {
       const rawExtra = document.getElementById('proj-extra-rag').value || '';
       const extraRagProjects = rawExtra
@@ -1046,6 +1054,7 @@
         })
       });
       document.getElementById('proj-extra-rag').value = '';
+      toggleCreateProjectRagFields();
       refreshAll();
     }
 

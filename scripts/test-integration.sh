@@ -343,6 +343,7 @@ assert bad_link.status_code == 400, f'Expected 400 linking clean project, got {b
 ok_link = requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/rag-projects', headers=H, json={'extra_rag_projects': ['shared-kb']})
 ok_link.raise_for_status()
 assert ok_link.json().get('extra_rag_projects') == ['shared-kb'], ok_link.json()
+assert 'Shared_KB' in ok_link.json().get('system_prompt', ''), ok_link.json()
 
 print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
 ")

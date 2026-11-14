@@ -921,6 +921,24 @@ def admin_version() -> dict[str, Any]:
     return get_version_info()
 
 
+def _build_default_rag_prompt(display: str, collection: str, extra_cols: list[str]) -> str:
+    if extra_cols:
+        return (
+            f"You are the dedicated AI Assistant for {display}. "
+            f"Answer strictly from the '{collection}' and linked ({', '.join(extra_cols)}) knowledge bases and cite sources."
+        )
+    return (
+        f"You are the dedicated AI Assistant for {display}. "
+        f"Answer strictly from the '{collection}' knowledge base and cite sources."
+    )
+
+
+def _is_auto_rag_prompt(prompt: str, display: str) -> bool:
+    stripped = (prompt or "").strip()
+    prefix = f"You are the dedicated AI Assistant for {display}. Answer strictly from the '"
+    return stripped.startswith(prefix) and stripped.endswith("and cite sources.")
+
+
 def _resolve_extra_rag_projects(
     cur: psycopg.Cursor[Any],
     owner_slug: str,
@@ -1066,16 +1084,9 @@ def create_project(req: CreateProjectRequest, request: Request) -> dict[str, Any
         )
 
     default_prompt = req.system_prompt.strip() or (
-        f"You are the dedicated AI Assistant for {display}. "
-        + (
-            (
-                f"Answer strictly from the '{collection}' and linked ({', '.join(extra_cols)}) knowledge bases and cite sources."
-                if extra_cols
-                else f"Answer strictly from the '{collection}' knowledge base and cite sources."
-            )
-            if req.rag_enabled
-            else "Operate as a clean, isolated assistant without external document retrieval."
-        )
+        _build_default_rag_prompt(display, collection, extra_cols)
+        if req.rag_enabled
+        else f"You are the dedicated AI Assistant for {display}. Operate as a clean, isolated assistant without external document retrieval."
     )
 
     if req.rag_enabled:
@@ -1262,22 +1273,27 @@ def update_project_rag_projects(slug: str, req: ProjectRagLinksRequest, request:
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, collection_name, rag_enabled, model_id FROM projects WHERE slug = %s",
+                "SELECT name, collection_name, rag_enabled, model_id, system_prompt FROM projects WHERE slug = %s",
                 (slug,),
             )
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Project not found.")
-            display, collection_name, rag_enabled, model_id = row
+            display, collection_name, rag_enabled, model_id, current_prompt = row
             if not rag_enabled or not collection_name:
                 raise HTTPException(
                     status_code=400,
                     detail="Only RAG-enabled projects can link external project knowledge bases.",
                 )
             linked_slugs, linked_cols = _resolve_extra_rag_projects(cur, slug, req.extra_rag_projects)
+            new_prompt = (
+                _build_default_rag_prompt(display, collection_name, linked_cols)
+                if _is_auto_rag_prompt(current_prompt, display)
+                else current_prompt
+            )
             cur.execute(
-                "UPDATE projects SET extra_rag_projects = %s WHERE slug = %s",
-                (linked_slugs, slug),
+                "UPDATE projects SET extra_rag_projects = %s, system_prompt = %s WHERE slug = %s",
+                (linked_slugs, new_prompt, slug),
             )
         conn.commit()
 
@@ -1296,6 +1312,7 @@ def update_project_rag_projects(slug: str, req: ProjectRagLinksRequest, request:
                     **existing,
                     "name": existing.get("name") or f"{display} Assistant",
                     "meta": {**(existing.get("meta") or {}), "knowledge": kb_items},
+                    "params": {**(existing.get("params") or {}), "system": new_prompt},
                 }
                 requests.post(
                     f"{OPENWEBUI_URL}/api/v1/models/model/update?id={quote(model_id, safe='')}",
@@ -1320,6 +1337,7 @@ def update_project_rag_projects(slug: str, req: ProjectRagLinksRequest, request:
         "slug": slug,
         "extra_rag_projects": linked_slugs,
         "extra_collections": linked_cols,
+        "system_prompt": new_prompt,
         "webui_sync": webui_sync,
     }
 
@@ -1337,9 +1355,25 @@ def delete_project(slug: str, request: Request) -> dict[str, Any]:
             if row:
                 cur.execute(
                     "UPDATE projects SET extra_rag_projects = array_remove(extra_rag_projects, %s) "
-                    "WHERE %s = ANY(extra_rag_projects)",
+                    "WHERE %s = ANY(extra_rag_projects) "
+                    "RETURNING slug, name, collection_name, rag_enabled, extra_rag_projects, system_prompt",
                     (slug, slug),
                 )
+                for p_slug, p_name, p_col, p_rag, p_extra, p_prompt in cur.fetchall():
+                    if p_rag and p_col and _is_auto_rag_prompt(p_prompt, p_name):
+                        rem_slugs = [str(s) for s in (p_extra or []) if s]
+                        rem_cols: list[str] = []
+                        if rem_slugs:
+                            cur.execute(
+                                "SELECT slug, collection_name FROM projects WHERE slug = ANY(%s) AND rag_enabled = TRUE AND collection_name IS NOT NULL",
+                                (rem_slugs,),
+                            )
+                            col_map = {r[0]: r[1] for r in cur.fetchall()}
+                            rem_cols = [col_map[s] for s in rem_slugs if s in col_map]
+                        cur.execute(
+                            "UPDATE projects SET system_prompt = %s WHERE slug = %s",
+                            (_build_default_rag_prompt(p_name, p_col, rem_cols), p_slug),
+                        )
         conn.commit()
     if not row:
         raise HTTPException(status_code=404, detail="Project not found.")
