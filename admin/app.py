@@ -48,9 +48,11 @@ from audit import AuditLogger
 from llm_backend import (
     CREATE_STYLE_PRESETS,
     CREATE_SUPPORTED_SIZES,
+    THIRD_PARTY_LLM_PRESETS,
     apply_create_style_preset,
     build_llm_headers,
     normalize_backend_type,
+    normalize_third_party_provider,
     resolve_image_backend_config,
     resolve_llm_backend_config,
 )
@@ -505,6 +507,7 @@ def get_llm_backend_settings() -> dict[str, str]:
     raw_health_override = (os.environ.get("LLM_HEALTH_URL") or "").strip()
     keys = (
         "llm_backend_type",
+        "llm_provider",
         "llm_api_base_url",
         "llm_api_key",
         "llm_health_url",
@@ -534,6 +537,9 @@ def get_llm_backend_settings() -> dict[str, str]:
 
     if cfg["backend_type"] != "ark_llm":
         cfg["backend_admin_url"] = ""
+        cfg["provider"] = normalize_third_party_provider(rows.get("llm_provider"), cfg["api_base_url"])
+    else:
+        cfg["provider"] = "ark_llm"
     return cfg
 
 
@@ -738,7 +744,8 @@ class BackupSettingRequest(BaseModel):
 
 class LlmBackendConfigRequest(BaseModel):
     backend_type: str = "ark_llm"
-    api_base_url: str = Field(min_length=1)
+    provider: str = ""
+    api_base_url: str = ""
     api_key: str | None = None
     clear_api_key: bool = False
     health_url: str = ""
@@ -3245,10 +3252,12 @@ def get_llm_backend() -> dict[str, Any]:
     cfg = get_llm_backend_settings()
     return {
         "backend_type": cfg["backend_type"],
+        "provider": cfg.get("provider", "ark_llm"),
         "api_base_url": cfg["api_base_url"],
         "api_key_set": bool(cfg["api_key"]),
         "health_url": cfg["health_url"],
         "backend_admin_url": cfg["backend_admin_url"],
+        "presets": list(THIRD_PARTY_LLM_PRESETS.values()),
     }
 
 
@@ -3260,8 +3269,13 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
         raise HTTPException(status_code=400, detail="backend_type must be 'ark_llm' or 'third_party'.")
 
     api_base_url = req.api_base_url.strip().rstrip("/")
+    if not api_base_url and backend_type == "third_party" and req.provider.strip():
+        preset_id = normalize_third_party_provider(req.provider)
+        api_base_url = THIRD_PARTY_LLM_PRESETS.get(preset_id, {}).get("api_base_url", "")
     if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
         raise HTTPException(status_code=400, detail="api_base_url must start with http:// or https://.")
+
+    provider = normalize_third_party_provider(req.provider, api_base_url) if backend_type == "third_party" else "ark_llm"
 
     health_url = req.health_url.strip()
     if health_url and not (health_url.startswith("http://") or health_url.startswith("https://")):
@@ -3281,6 +3295,7 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
 
     updates = {
         "llm_backend_type": backend_type,
+        "llm_provider": provider,
         "llm_api_base_url": api_base_url,
         "llm_api_key": encrypt_secret_value(new_api_key) if new_api_key else "",
         "llm_health_url": health_url,
@@ -3299,7 +3314,12 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
     audit.record(
         "llm_backend.update",
         actor=actor,
-        details={"backend_type": backend_type, "api_base_url": api_base_url, "backend_admin_url": backend_admin_url},
+        details={
+            "backend_type": backend_type,
+            "provider": provider,
+            "api_base_url": api_base_url,
+            "backend_admin_url": backend_admin_url,
+        },
     )
     return get_llm_backend()
 

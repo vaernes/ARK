@@ -27,8 +27,10 @@ from backup_utils import (  # noqa: E402
 )
 from ark_ingest import Checkpoint, Document, Log, run as ark_ingest_run  # noqa: E402
 from llm_backend import (  # noqa: E402
+    THIRD_PARTY_LLM_PRESETS,
     apply_create_style_preset,
     build_llm_headers,
+    normalize_third_party_provider,
     resolve_image_backend_config,
     resolve_llm_backend_config,
 )
@@ -451,6 +453,24 @@ class TestLlmBackendConfig(unittest.TestCase):
     def test_no_api_key_omits_authorization_header(self) -> None:
         self.assertEqual(build_llm_headers("", json_content=True), {"Content-Type": "application/json"})
         self.assertEqual(build_llm_headers(""), {})
+
+    def test_third_party_provider_presets(self) -> None:
+        for provider_id in ("huggingface", "anthropic", "openai", "google"):
+            self.assertIn(provider_id, THIRD_PARTY_LLM_PRESETS)
+            cfg = resolve_llm_backend_config(
+                {
+                    "LLM_BACKEND_TYPE": "third_party",
+                    "LLM_PROVIDER": provider_id,
+                    "LLM_API_KEY": f"key-{provider_id}",
+                }
+            )
+            self.assertEqual(cfg["backend_type"], "third_party")
+            self.assertEqual(cfg["provider"], provider_id)
+            self.assertEqual(cfg["api_base_url"], THIRD_PARTY_LLM_PRESETS[provider_id]["api_base_url"])
+            self.assertEqual(
+                normalize_third_party_provider("", THIRD_PARTY_LLM_PRESETS[provider_id]["api_base_url"]),
+                provider_id,
+            )
 
     def test_image_backend_config_and_style_presets(self) -> None:
         img_cfg = resolve_image_backend_config(

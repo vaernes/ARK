@@ -640,6 +640,23 @@
         <option value="ark_llm">ARK LLM Backend (vLLM Server)</option>
         <option value="third_party">3rd-Party OpenAI-Compatible API</option>
       </select>
+      <div id="llm-third-party-wrap" style="display:none;margin-top:8px;">
+        <label>3rd-Party Provider Preset</label>
+        <select id="llm-third-party-provider" onchange="applyThirdPartyPreset(this.value)">
+          <option value="huggingface">Hugging Face</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI</option>
+          <option value="google">Google (Gemini)</option>
+          <option value="custom">Custom OpenAI-Compatible</option>
+        </select>
+        <div id="llm-provider-quick-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+          <button type="button" style="margin:0;padding:4px 9px;font-size:0.74rem;" onclick="applyThirdPartyPreset('huggingface')">Hugging Face</button>
+          <button type="button" style="margin:0;padding:4px 9px;font-size:0.74rem;" onclick="applyThirdPartyPreset('anthropic')">Anthropic</button>
+          <button type="button" style="margin:0;padding:4px 9px;font-size:0.74rem;" onclick="applyThirdPartyPreset('openai')">OpenAI</button>
+          <button type="button" style="margin:0;padding:4px 9px;font-size:0.74rem;" onclick="applyThirdPartyPreset('google')">Google</button>
+          <button type="button" style="margin:0;padding:4px 9px;font-size:0.74rem;background:var(--void);color:var(--text);border:1px solid var(--border);" onclick="applyThirdPartyPreset('custom')">Custom</button>
+        </div>
+      </div>
       <label>OpenAI API Base URL (including <code>/v1</code>)</label>
       <input id="llm-api-base-url" placeholder="http://vllm:8000/v1" />
       <label>API Key (leave blank to keep existing)</label>
@@ -1036,7 +1053,11 @@
       } else {
         refBox.style.display = 'none';
       }
+      window.loadedLlmPresets = llmBackend.presets || [];
       document.getElementById('llm-backend-type').value = llmBackend.backend_type || 'ark_llm';
+      if (llmBackend.provider && llmBackend.provider !== 'ark_llm') {
+        document.getElementById('llm-third-party-provider').value = llmBackend.provider;
+      }
       document.getElementById('llm-api-base-url').value = llmBackend.api_base_url || '';
       document.getElementById('llm-api-key').value = '';
       document.getElementById('llm-api-key').placeholder = llmBackend.api_key_set ? 'Configured (leave blank to keep)' : 'Optional (no API key set)';
@@ -1502,14 +1523,45 @@
       function toggleBackendAdminField() {
         const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
         document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
+        document.getElementById('llm-third-party-wrap').style.display = isArk ? 'none' : 'block';
+        if (!isArk) {
+          const curUrl = (document.getElementById('llm-api-base-url').value || '').trim();
+          if (!curUrl || curUrl === 'http://vllm:8000/v1') {
+            applyThirdPartyPreset(document.getElementById('llm-third-party-provider').value || 'openai');
+          }
+        }
+      }
+
+      function applyThirdPartyPreset(presetId) {
+        const sel = document.getElementById('llm-third-party-provider');
+        sel.value = presetId;
+        const presets = window.loadedLlmPresets || [];
+        const match = presets.find(p => p.id === presetId);
+        if (!match) return;
+        if (match.api_base_url) {
+          document.getElementById('llm-api-base-url').value = match.api_base_url;
+        }
+        if (match.key_placeholder) {
+          document.getElementById('llm-api-key').placeholder = match.key_placeholder;
+        }
+        if (match.default_model) {
+          const defEl = document.getElementById('default-llm-model');
+          const curModel = (defEl.value || '').trim();
+          const knownDefaults = new Set(['', 'ark-llm', ...presets.map(p => p.default_model).filter(Boolean)]);
+          if (knownDefaults.has(curModel)) {
+            defEl.value = match.default_model;
+          }
+        }
       }
 
       async function saveLlmBackend() {
+        const backendType = document.getElementById('llm-backend-type').value;
         const res = await api('/llm-backend', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            backend_type: document.getElementById('llm-backend-type').value,
+            backend_type: backendType,
+            provider: backendType === 'third_party' ? document.getElementById('llm-third-party-provider').value : 'ark_llm',
             api_base_url: document.getElementById('llm-api-base-url').value,
             api_key: document.getElementById('llm-api-key').value || null,
             health_url: document.getElementById('llm-health-url').value,

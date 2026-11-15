@@ -7,6 +7,44 @@ from typing import Mapping
 
 VALID_BACKEND_TYPES = {"ark_llm", "third_party"}
 
+THIRD_PARTY_LLM_PRESETS: dict[str, dict[str, str]] = {
+    "huggingface": {
+        "id": "huggingface",
+        "label": "Hugging Face",
+        "api_base_url": "https://router.huggingface.co/v1",
+        "default_model": "Qwen/Qwen2.5-72B-Instruct",
+        "key_placeholder": "hf_...",
+    },
+    "anthropic": {
+        "id": "anthropic",
+        "label": "Anthropic (Claude)",
+        "api_base_url": "https://api.anthropic.com/v1",
+        "default_model": "claude-sonnet-4-20250514",
+        "key_placeholder": "sk-ant-...",
+    },
+    "openai": {
+        "id": "openai",
+        "label": "OpenAI",
+        "api_base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o",
+        "key_placeholder": "sk-...",
+    },
+    "google": {
+        "id": "google",
+        "label": "Google (Gemini)",
+        "api_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "default_model": "gemini-2.5-flash",
+        "key_placeholder": "AIza...",
+    },
+    "custom": {
+        "id": "custom",
+        "label": "Custom OpenAI-Compatible",
+        "api_base_url": "",
+        "default_model": "",
+        "key_placeholder": "Bearer API key (optional)",
+    },
+}
+
 
 def normalize_backend_type(value: str | None, *, default: str = "ark_llm") -> str:
     """Normalize LLM backend type to 'ark_llm' or 'third_party'."""
@@ -14,22 +52,53 @@ def normalize_backend_type(value: str | None, *, default: str = "ark_llm") -> st
     return cleaned if cleaned in VALID_BACKEND_TYPES else default
 
 
+def normalize_third_party_provider(provider: str | None, api_base_url: str | None = None) -> str:
+    """Resolve a 3rd-party LLM provider identifier from explicit value or URL."""
+    cleaned = (provider or "").strip().lower()
+    alias_map = {
+        "hf": "huggingface",
+        "hugging_face": "huggingface",
+        "claude": "anthropic",
+        "gemini": "google",
+    }
+    cleaned = alias_map.get(cleaned, cleaned)
+    if cleaned in THIRD_PARTY_LLM_PRESETS and cleaned != "custom":
+        return cleaned
+
+    url = (api_base_url or "").strip().lower()
+    if "huggingface.co" in url:
+        return "huggingface"
+    if "anthropic.com" in url:
+        return "anthropic"
+    if "api.openai.com" in url:
+        return "openai"
+    if "generativelanguage.googleapis.com" in url:
+        return "google"
+    return "custom"
+
+
 def resolve_llm_backend_config(env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Resolve OpenAI-compatible LLM backend settings with legacy VLLM_* fallback."""
     source = os.environ if env is None else env
 
+    backend_type = normalize_backend_type(source.get("LLM_BACKEND_TYPE"))
+    raw_provider = (source.get("LLM_PROVIDER") or "").strip()
     raw_base = (source.get("LLM_API_BASE_URL") or "").strip().rstrip("/")
+    if not raw_base and backend_type == "third_party" and raw_provider:
+        preset_key = normalize_third_party_provider(raw_provider)
+        raw_base = THIRD_PARTY_LLM_PRESETS.get(preset_key, {}).get("api_base_url", "")
     if not raw_base:
         vllm_url = (source.get("VLLM_URL") or "http://vllm:8000").strip().rstrip("/")
         raw_base = vllm_url if vllm_url.endswith("/v1") else f"{vllm_url}/v1"
 
     api_key = (source.get("LLM_API_KEY") or source.get("VLLM_API_KEY") or "").strip()
     health_url = (source.get("LLM_HEALTH_URL") or "").strip() or f"{raw_base}/models"
-    backend_type = normalize_backend_type(source.get("LLM_BACKEND_TYPE"))
     backend_admin_url = (source.get("LLM_BACKEND_ADMIN_URL") or "").strip().rstrip("/")
+    provider = normalize_third_party_provider(raw_provider, raw_base) if backend_type == "third_party" else "ark_llm"
 
     return {
         "backend_type": backend_type,
+        "provider": provider,
         "api_base_url": raw_base,
         "api_key": api_key,
         "health_url": health_url,
