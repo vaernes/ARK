@@ -48,7 +48,9 @@ from audit import AuditLogger
 from llm_backend import (
     CREATE_STYLE_PRESETS,
     CREATE_SUPPORTED_SIZES,
+    MODEL_CONTEXT_LABELS,
     THIRD_PARTY_LLM_PRESETS,
+    VALID_MODEL_CONTEXTS,
     apply_create_style_preset,
     build_llm_headers,
     normalize_backend_type,
@@ -305,6 +307,22 @@ def init_db() -> None:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 CREATE INDEX IF NOT EXISTS idx_image_creations_owner ON image_creations(owner, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS model_profiles (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    context TEXT NOT NULL DEFAULT 'text',
+                    backend_type TEXT NOT NULL DEFAULT 'ark_llm',
+                    provider TEXT NOT NULL DEFAULT 'ark_llm',
+                    api_base_url TEXT NOT NULL,
+                    api_key_enc TEXT NOT NULL DEFAULT '',
+                    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_model_profiles_context ON model_profiles(context, is_default);
                 """
             )
             cur.execute(
@@ -547,12 +565,17 @@ def get_image_backend_settings() -> dict[str, str]:
     """Return active Image Generation backend settings from system_settings, falling back to env/LLM defaults."""
     llm_cfg = get_llm_backend_settings()
     cfg = dict(_image_cfg)
-    if not (os.environ.get("IMAGE_API_BASE_URL") or "").strip():
-        cfg["api_base_url"] = llm_cfg["api_base_url"]
-    if not (os.environ.get("IMAGE_API_KEY") or "").strip():
-        cfg["api_key"] = llm_cfg["api_key"]
-    if not (os.environ.get("IMAGE_HEALTH_URL") or "").strip():
-        cfg["health_url"] = f"{cfg['api_base_url']}/models"
+    can_inherit_llm = not (
+        llm_cfg["backend_type"] == "third_party"
+        and llm_cfg.get("provider") in {"anthropic", "google", "huggingface"}
+    )
+    if can_inherit_llm:
+        if not (os.environ.get("IMAGE_API_BASE_URL") or "").strip():
+            cfg["api_base_url"] = llm_cfg["api_base_url"]
+        if not (os.environ.get("IMAGE_API_KEY") or "").strip():
+            cfg["api_key"] = llm_cfg["api_key"]
+        if not (os.environ.get("IMAGE_HEALTH_URL") or "").strip():
+            cfg["health_url"] = f"{cfg['api_base_url']}/models"
 
     keys = (
         "image_api_base_url",
@@ -580,6 +603,83 @@ def get_image_backend_settings() -> dict[str, str]:
     elif "image_api_base_url" in rows:
         cfg["health_url"] = f"{cfg['api_base_url']}/models"
     return cfg
+
+
+def resolve_model_for_context(context: str = "text", *, model_override: str = "") -> dict[str, str]:
+    """Resolve upstream endpoint, key, provider, and model_id for a context ('text', 'image', 'code', 'other')."""
+    ctx = (context or "text").strip().lower()
+    if ctx not in VALID_MODEL_CONTEXTS:
+        ctx = "text"
+    override = (model_override or "").strip()
+
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                if override:
+                    cur.execute(
+                        """
+                        SELECT model_id, backend_type, provider, api_base_url, api_key_enc, context
+                        FROM model_profiles
+                        WHERE enabled = TRUE AND (model_id = %s OR name = %s)
+                        ORDER BY (context = %s) DESC, is_default DESC, id ASC
+                        LIMIT 1
+                        """,
+                        (override, override, ctx),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return {
+                            "model_id": row[0],
+                            "backend_type": row[1],
+                            "provider": row[2],
+                            "api_base_url": row[3].rstrip("/"),
+                            "api_key": decrypt_secret_value(row[4]),
+                            "context": row[5],
+                        }
+                else:
+                    cur.execute(
+                        """
+                        SELECT model_id, backend_type, provider, api_base_url, api_key_enc, context
+                        FROM model_profiles
+                        WHERE enabled = TRUE AND context = %s AND is_default = TRUE
+                        ORDER BY id ASC
+                        LIMIT 1
+                        """,
+                        (ctx,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return {
+                            "model_id": row[0],
+                            "backend_type": row[1],
+                            "provider": row[2],
+                            "api_base_url": row[3].rstrip("/"),
+                            "api_key": decrypt_secret_value(row[4]),
+                            "context": row[5],
+                        }
+    except Exception as exc:
+        logger.warning("Failed to resolve model profile for context '%s', falling back to legacy settings: %s", ctx, exc)
+
+    if ctx == "image":
+        img_cfg = get_image_backend_settings()
+        return {
+            "model_id": override or img_cfg["default_model"],
+            "backend_type": "custom",
+            "provider": normalize_third_party_provider("", img_cfg["api_base_url"]),
+            "api_base_url": img_cfg["api_base_url"],
+            "api_key": img_cfg["api_key"],
+            "context": "image",
+        }
+
+    llm_cfg = get_llm_backend_settings()
+    return {
+        "model_id": override or get_default_llm_model(),
+        "backend_type": llm_cfg["backend_type"],
+        "provider": llm_cfg.get("provider", "ark_llm"),
+        "api_base_url": llm_cfg["api_base_url"],
+        "api_key": llm_cfg["api_key"],
+        "context": ctx,
+    }
 
 
 def _validate_model_dir_name(name: str) -> str:
@@ -755,6 +855,21 @@ class LlmBackendConfigRequest(BaseModel):
     clear_api_key: bool = False
     health_url: str = ""
     backend_admin_url: str = ""
+    default_model: str | None = None
+
+
+class ModelProfileRequest(BaseModel):
+    id: int | None = None
+    name: str = Field(min_length=1, max_length=120)
+    model_id: str = Field(min_length=1, max_length=200)
+    context: str = Field(default="text", max_length=32)
+    backend_type: str = "ark_llm"
+    provider: str = ""
+    api_base_url: str = ""
+    api_key: str | None = None
+    clear_api_key: bool = False
+    is_default: bool = False
+    enabled: bool = True
 
 
 class ImageBackendConfigRequest(BaseModel):
@@ -1066,8 +1181,8 @@ async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> 
     preset_id, _ = apply_create_style_preset(req.prompt, req.style_preset)
     preset_meta = CREATE_STYLE_PRESETS[preset_id]
     size = _validate_image_size(req.size)
-    llm_cfg = get_llm_backend_settings()
-    target_model = get_default_llm_model()
+    resolved = resolve_model_for_context("text")
+    target_model = resolved["model_id"]
 
     system_msg = (
         "You are the ARK Create Studio Visual Prompt Architect. "
@@ -1085,8 +1200,13 @@ async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> 
         "max_tokens": 300,
         "stream": False,
     }
-    llm_headers = build_llm_headers(llm_cfg["api_key"], json_content=True)
-    chat_url = f"{llm_cfg['api_base_url']}/chat/completions"
+    llm_headers = build_llm_headers(
+        resolved["api_key"],
+        json_content=True,
+        provider=resolved.get("provider", ""),
+        api_base_url=resolved["api_base_url"],
+    )
+    chat_url = f"{resolved['api_base_url']}/chat/completions"
 
     try:
         resp = await run_in_threadpool(
@@ -1134,6 +1254,50 @@ async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> 
     }
 
 
+def _invoke_google_gemini_image_generation(
+    *,
+    api_base_url: str,
+    api_key: str,
+    target_model: str,
+    prompt: str,
+) -> dict[str, Any]:
+    """Call Google Gemini native generateContent for gemini-* image models and normalize to OpenAI image format."""
+    base = api_base_url.rstrip("/")
+    if base.endswith("/openai"):
+        base = base[: -len("/openai")]
+    model_path = target_model if target_model.startswith("models/") else f"models/{target_model}"
+    url = f"{base}/{model_path}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["x-goog-api-key"] = api_key
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=180)
+    if not resp.ok:
+        try:
+            err_detail = resp.json()
+        except ValueError:
+            err_detail = resp.text
+        raise HTTPException(status_code=resp.status_code, detail=f"Image generation failed: {err_detail}")
+
+    body = resp.json()
+    images: list[dict[str, str]] = []
+    for cand in body.get("candidates") or []:
+        parts = ((cand.get("content") or {}).get("parts")) or []
+        for part in parts:
+            inline = part.get("inlineData") or part.get("inline_data")
+            if isinstance(inline, dict) and inline.get("data"):
+                images.append({"b64_json": inline["data"]})
+    if not images:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Image generation failed: model '{target_model}' returned no image data.",
+        )
+    return {"created": int(time.time()), "data": images}
+
+
 def _invoke_upstream_image_generation(
     *,
     prompt: str,
@@ -1142,10 +1306,24 @@ def _invoke_upstream_image_generation(
     model_override: str = "",
     response_format: str = "b64_json",
 ) -> tuple[str, dict[str, Any]]:
-    img_cfg = get_image_backend_settings()
-    target_model = (model_override or "").strip() or img_cfg["default_model"]
-    headers = build_llm_headers(img_cfg["api_key"], json_content=True)
-    url = f"{img_cfg['api_base_url']}/images/generations"
+    resolved = resolve_model_for_context("image", model_override=model_override)
+    target_model = resolved["model_id"]
+    is_google = resolved.get("provider") == "google" or "generativelanguage.googleapis.com" in resolved["api_base_url"]
+    if is_google and target_model.lower().startswith("gemini-"):
+        return target_model, _invoke_google_gemini_image_generation(
+            api_base_url=resolved["api_base_url"],
+            api_key=resolved["api_key"],
+            target_model=target_model,
+            prompt=prompt,
+        )
+
+    headers = build_llm_headers(
+        resolved["api_key"],
+        json_content=True,
+        provider=resolved.get("provider", ""),
+        api_base_url=resolved["api_base_url"],
+    )
+    url = f"{resolved['api_base_url']}/images/generations"
     payload = {
         "model": target_model,
         "prompt": prompt,
@@ -1372,7 +1550,15 @@ def health_dashboard() -> dict[str, Any]:
     results: dict[str, str] = {}
     for name, url in checks.items():
         try:
-            headers = build_llm_headers(llm_cfg["api_key"]) if name == "llm_backend" else {}
+            headers = (
+                build_llm_headers(
+                    llm_cfg["api_key"],
+                    provider=llm_cfg.get("provider", ""),
+                    api_base_url=llm_cfg["api_base_url"],
+                )
+                if name == "llm_backend"
+                else {}
+            )
             r = requests.get(url, headers=headers, timeout=3)
             results[name] = "healthy" if r.ok else f"http_{r.status_code}"
         except Exception:
@@ -3298,9 +3484,8 @@ def get_llm_backend() -> dict[str, Any]:
     }
 
 
-@app.post("/admin-console/api/llm-backend")
-def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[str, Any]:
-    actor = get_actor(request)
+def _resolve_llm_backend_update(req: LlmBackendConfigRequest, current: dict[str, str]) -> dict[str, str]:
+    """Validate and normalize an LLM backend configuration payload without leaking keys across providers."""
     backend_type = req.backend_type.strip().lower()
     if backend_type not in {"ark_llm", "third_party"}:
         raise HTTPException(status_code=400, detail="backend_type must be 'ark_llm' or 'third_party'.")
@@ -3322,13 +3507,159 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
     if backend_admin_url and not (backend_admin_url.startswith("http://") or backend_admin_url.startswith("https://")):
         raise HTTPException(status_code=400, detail="backend_admin_url must start with http:// or https://.")
 
-    current = get_llm_backend_settings()
+    same_target = (
+        backend_type == current.get("backend_type")
+        and provider == current.get("provider")
+        and api_base_url == current.get("api_base_url")
+    )
     if req.clear_api_key:
         new_api_key = ""
     elif req.api_key is not None and req.api_key.strip():
         new_api_key = req.api_key.strip()
+    elif same_target:
+        new_api_key = current.get("api_key", "")
     else:
-        new_api_key = current["api_key"]
+        new_api_key = ""
+
+    return {
+        "backend_type": backend_type,
+        "provider": provider,
+        "api_base_url": api_base_url,
+        "api_key": new_api_key,
+        "health_url": health_url,
+        "backend_admin_url": backend_admin_url,
+    }
+
+
+def _apply_default_llm_model(model_name: str) -> str:
+    """Persist default_llm_model and sync inherited Open WebUI project models."""
+    cleaned = model_name.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Model name cannot be empty.")
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO system_settings (key, value, updated_at) VALUES ('default_llm_model', %s, NOW()) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                (cleaned,),
+            )
+            cur.execute(
+                "SELECT model_id, name, system_prompt FROM projects WHERE COALESCE(TRIM(llm_model), '') = ''"
+            )
+            inherited_projects = cur.fetchall()
+        conn.commit()
+
+    webui_sync = "skipped_no_api_key"
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+            requests.post(
+                f"{OPENWEBUI_URL}/api/v1/configs/models",
+                headers=headers,
+                json={"DEFAULT_MODELS": cleaned, "MODEL_ORDER_LIST": []},
+                timeout=10,
+            ).raise_for_status()
+            models_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/models/", headers=headers, timeout=15)
+            if models_resp.ok:
+                existing_by_id = {m.get("id"): m for m in models_resp.json() if isinstance(m, dict) and m.get("id")}
+                for model_id, display, sys_prompt in inherited_projects:
+                    existing = existing_by_id.get(model_id)
+                    if existing:
+                        payload = {
+                            **existing,
+                            "base_model_id": cleaned,
+                            "name": existing.get("name") or f"{display} Assistant",
+                            "params": {**(existing.get("params") or {}), "system": sys_prompt},
+                        }
+                        requests.post(
+                            f"{OPENWEBUI_URL}/api/v1/models/model/update?id={quote(model_id, safe='')}",
+                            headers=headers,
+                            json=payload,
+                            timeout=15,
+                        )
+            webui_sync = "synced"
+        except Exception as exc:
+            logger.warning("Open WebUI default model sync warning: %s", exc)
+            webui_sync = f"warning: {exc}"
+    return webui_sync
+
+
+@app.post("/admin-console/api/llm-backend/test")
+def test_llm_backend(req: LlmBackendConfigRequest) -> dict[str, Any]:
+    """Probe an LLM backend candidate (URL + API key + provider headers) without persisting it."""
+    current = get_llm_backend_settings()
+    resolved = _resolve_llm_backend_update(req, current)
+    headers = build_llm_headers(
+        resolved["api_key"],
+        provider=resolved["provider"],
+        api_base_url=resolved["api_base_url"],
+    )
+    models_url = f"{resolved['api_base_url']}/models"
+    probe_url = resolved["health_url"] or models_url
+
+    reachable = False
+    status_code: int | None = None
+    models: list[str] = []
+    error = ""
+
+    try:
+        resp = requests.get(models_url, headers=headers, timeout=8)
+        status_code = resp.status_code
+        if resp.ok:
+            reachable = True
+            payload = resp.json()
+            data = payload.get("data", []) if isinstance(payload, dict) else []
+            models = [m.get("id") for m in data if isinstance(m, dict) and m.get("id")]
+        else:
+            error = f"HTTP {resp.status_code}"
+            try:
+                err_json = resp.json()
+                msg = (
+                    (err_json.get("error") or {}).get("message")
+                    if isinstance(err_json.get("error"), dict)
+                    else err_json.get("error") or err_json.get("message")
+                )
+                if msg:
+                    error = f"{error}: {msg}"
+            except ValueError:
+                if resp.text.strip():
+                    error = f"{error}: {resp.text.strip()[:200]}"
+    except Exception as exc:
+        error = str(exc)
+
+    if not reachable and probe_url != models_url:
+        try:
+            health_resp = requests.get(probe_url, headers=headers, timeout=6)
+            status_code = health_resp.status_code
+            if health_resp.ok:
+                reachable = True
+                error = ""
+        except Exception as exc:
+            if not error:
+                error = str(exc)
+
+    return {
+        "reachable": reachable,
+        "status_code": status_code,
+        "provider": resolved["provider"],
+        "api_base_url": resolved["api_base_url"],
+        "models": models,
+        "error": error,
+    }
+
+
+@app.post("/admin-console/api/llm-backend")
+def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    current = get_llm_backend_settings()
+    resolved = _resolve_llm_backend_update(req, current)
+    backend_type = resolved["backend_type"]
+    provider = resolved["provider"]
+    api_base_url = resolved["api_base_url"]
+    new_api_key = resolved["api_key"]
+    health_url = resolved["health_url"]
+    backend_admin_url = resolved["backend_admin_url"]
 
     updates = {
         "llm_backend_type": backend_type,
@@ -3348,6 +3679,7 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
                 )
         conn.commit()
 
+    webui_sync = "skipped_no_api_key"
     if OPENWEBUI_API_KEY:
         try:
             headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
@@ -3360,9 +3692,18 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
                     "OPENAI_API_KEYS": [new_api_key],
                 },
                 timeout=10,
-            )
+            ).raise_for_status()
+            webui_sync = "synced"
         except Exception as exc:
             logger.warning("Open WebUI OpenAI config sync warning: %s", exc)
+            webui_sync = f"warning: {exc}"
+
+    default_model_saved = ""
+    if req.default_model is not None and req.default_model.strip():
+        default_model_saved = req.default_model.strip()
+        model_sync = _apply_default_llm_model(default_model_saved)
+        if webui_sync == "synced" and model_sync != "synced":
+            webui_sync = model_sync
 
     audit.record(
         "llm_backend.update",
@@ -3372,9 +3713,14 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
             "provider": provider,
             "api_base_url": api_base_url,
             "backend_admin_url": backend_admin_url,
+            "default_llm_model": default_model_saved or get_default_llm_model(),
+            "webui_sync": webui_sync,
         },
     )
-    return get_llm_backend()
+    out = get_llm_backend()
+    out["default_llm_model"] = get_default_llm_model()
+    out["webui_sync"] = webui_sync
+    return out
 
 
 @app.get("/admin-console/api/image-backend")
@@ -3432,12 +3778,327 @@ def update_image_backend(req: ImageBackendConfigRequest, request: Request) -> di
     return get_image_backend()
 
 
+def _serialize_model_profile(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "name": row[1],
+        "model_id": row[2],
+        "context": row[3],
+        "context_label": MODEL_CONTEXT_LABELS.get(row[3], row[3]),
+        "backend_type": row[4],
+        "provider": row[5],
+        "api_base_url": row[6],
+        "api_key_set": bool(row[7]),
+        "is_default": bool(row[8]),
+        "enabled": bool(row[9]),
+        "updated_at": row[10].isoformat() if row[10] else None,
+    }
+
+
+def _sync_default_profile_to_settings(
+    *,
+    context: str,
+    backend_type: str,
+    provider: str,
+    api_base_url: str,
+    api_key: str,
+    model_id: str,
+) -> str:
+    """Keep legacy system_settings and Open WebUI synced with the active default profile for text/image."""
+    enc_key = encrypt_secret_value(api_key) if api_key else ""
+    if context == "text":
+        updates = {
+            "llm_backend_type": backend_type,
+            "llm_provider": provider,
+            "llm_api_base_url": api_base_url,
+            "llm_api_key": enc_key,
+            "llm_health_url": "",
+        }
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                for k, v in updates.items():
+                    cur.execute(
+                        "INSERT INTO system_settings (key, value, updated_at) VALUES (%s, %s, NOW()) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                        (k, v),
+                    )
+            conn.commit()
+        if OPENWEBUI_API_KEY:
+            try:
+                headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+                requests.post(
+                    f"{OPENWEBUI_URL}/openai/config/update",
+                    headers=headers,
+                    json={
+                        "ENABLE_OPENAI_API": True,
+                        "OPENAI_API_BASE_URLS": [api_base_url],
+                        "OPENAI_API_KEYS": [api_key],
+                    },
+                    timeout=10,
+                ).raise_for_status()
+            except Exception as exc:
+                logger.warning("Open WebUI OpenAI config sync warning: %s", exc)
+        return _apply_default_llm_model(model_id)
+
+    if context == "image":
+        updates = {
+            "image_api_base_url": api_base_url,
+            "image_api_key": enc_key,
+            "image_default_model": model_id,
+            "image_health_url": "",
+        }
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                for k, v in updates.items():
+                    cur.execute(
+                        "INSERT INTO system_settings (key, value, updated_at) VALUES (%s, %s, NOW()) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                        (k, v),
+                    )
+            conn.commit()
+    return "n/a"
+
+
+def _list_model_profiles_rows() -> list[dict[str, Any]]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, model_id, context, backend_type, provider, api_base_url,
+                       api_key_enc, is_default, enabled, updated_at
+                FROM model_profiles
+                ORDER BY context ASC, is_default DESC, id ASC
+                """
+            )
+            rows = cur.fetchall()
+    return [_serialize_model_profile(r) for r in rows]
+
+
+@app.get("/admin-console/api/model-profiles")
+def get_model_profiles() -> dict[str, Any]:
+    profiles = _list_model_profiles_rows()
+    defaults = {ctx: resolve_model_for_context(ctx) for ctx in VALID_MODEL_CONTEXTS}
+    return {
+        "profiles": profiles,
+        "contexts": [{"id": ctx, "label": MODEL_CONTEXT_LABELS[ctx]} for ctx in VALID_MODEL_CONTEXTS],
+        "defaults": {
+            ctx: {
+                "model_id": d["model_id"],
+                "provider": d["provider"],
+                "api_base_url": d["api_base_url"],
+            }
+            for ctx, d in defaults.items()
+        },
+        "presets": list(THIRD_PARTY_LLM_PRESETS.values()),
+    }
+
+
+@app.get("/portal/api/model-profiles")
+def get_portal_model_profiles() -> dict[str, Any]:
+    profiles = [p for p in _list_model_profiles_rows() if p["enabled"]]
+    return {
+        "profiles": [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "model_id": p["model_id"],
+                "context": p["context"],
+                "context_label": p["context_label"],
+                "provider": p["provider"],
+                "is_default": p["is_default"],
+            }
+            for p in profiles
+        ],
+        "contexts": [{"id": ctx, "label": MODEL_CONTEXT_LABELS[ctx]} for ctx in VALID_MODEL_CONTEXTS],
+    }
+
+
+@app.post("/admin-console/api/model-profiles")
+def upsert_model_profile(req: ModelProfileRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    context = req.context.strip().lower()
+    if context not in VALID_MODEL_CONTEXTS:
+        raise HTTPException(status_code=400, detail=f"context must be one of: {', '.join(VALID_MODEL_CONTEXTS)}.")
+
+    backend_type = req.backend_type.strip().lower()
+    if backend_type not in {"ark_llm", "third_party"}:
+        raise HTTPException(status_code=400, detail="backend_type must be 'ark_llm' or 'third_party'.")
+
+    api_base_url = req.api_base_url.strip().rstrip("/")
+    if not api_base_url and backend_type == "third_party" and req.provider.strip():
+        preset_id = normalize_third_party_provider(req.provider)
+        api_base_url = THIRD_PARTY_LLM_PRESETS.get(preset_id, {}).get("api_base_url", "")
+    if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="api_base_url must start with http:// or https://.")
+
+    provider = normalize_third_party_provider(req.provider, api_base_url) if backend_type == "third_party" else "ark_llm"
+    name = req.name.strip()
+    model_id = req.model_id.strip()
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            existing_key = ""
+            same_target = False
+            if req.id is not None:
+                cur.execute(
+                    "SELECT backend_type, provider, api_base_url, api_key_enc FROM model_profiles WHERE id = %s",
+                    (req.id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Model profile not found.")
+                same_target = row[0] == backend_type and row[1] == provider and row[2].rstrip("/") == api_base_url
+                existing_key = decrypt_secret_value(row[3])
+
+            if req.clear_api_key:
+                final_key = ""
+            elif req.api_key is not None and req.api_key.strip():
+                final_key = req.api_key.strip()
+            elif same_target:
+                final_key = existing_key
+            else:
+                final_key = ""
+
+            enc_key = encrypt_secret_value(final_key) if final_key else ""
+
+            if req.is_default:
+                cur.execute("UPDATE model_profiles SET is_default = FALSE WHERE context = %s", (context,))
+
+            if req.id is not None:
+                cur.execute(
+                    """
+                    UPDATE model_profiles
+                    SET name = %s, model_id = %s, context = %s, backend_type = %s, provider = %s,
+                        api_base_url = %s, api_key_enc = %s, is_default = %s, enabled = %s, updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id
+                    """,
+                    (name, model_id, context, backend_type, provider, api_base_url, enc_key, req.is_default, req.enabled, req.id),
+                )
+                profile_id = cur.fetchone()[0]
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO model_profiles
+                        (name, model_id, context, backend_type, provider, api_base_url, api_key_enc, is_default, enabled)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (name, model_id, context, backend_type, provider, api_base_url, enc_key, req.is_default, req.enabled),
+                )
+                profile_id = cur.fetchone()[0]
+        conn.commit()
+
+    if req.is_default and req.enabled:
+        _sync_default_profile_to_settings(
+            context=context,
+            backend_type=backend_type,
+            provider=provider,
+            api_base_url=api_base_url,
+            api_key=final_key,
+            model_id=model_id,
+        )
+
+    audit.record(
+        "model_profile.upsert",
+        actor=actor,
+        details={
+            "id": profile_id,
+            "name": name,
+            "model_id": model_id,
+            "context": context,
+            "provider": provider,
+            "is_default": req.is_default,
+        },
+    )
+    return get_model_profiles()
+
+
+@app.post("/admin-console/api/model-profiles/{profile_id}/set-default")
+def set_default_model_profile(profile_id: int, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT model_id, context, backend_type, provider, api_base_url, api_key_enc, name "
+                "FROM model_profiles WHERE id = %s",
+                (profile_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Model profile not found.")
+            model_id, context, backend_type, provider, api_base_url, api_key_enc, name = row
+            cur.execute("UPDATE model_profiles SET is_default = FALSE WHERE context = %s", (context,))
+            cur.execute(
+                "UPDATE model_profiles SET is_default = TRUE, enabled = TRUE, updated_at = NOW() WHERE id = %s",
+                (profile_id,),
+            )
+        conn.commit()
+
+    _sync_default_profile_to_settings(
+        context=context,
+        backend_type=backend_type,
+        provider=provider,
+        api_base_url=api_base_url.rstrip("/"),
+        api_key=decrypt_secret_value(api_key_enc),
+        model_id=model_id,
+    )
+    audit.record(
+        "model_profile.set_default",
+        actor=actor,
+        details={"id": profile_id, "name": name, "model_id": model_id, "context": context},
+    )
+    return get_model_profiles()
+
+
+@app.post("/admin-console/api/model-profiles/{profile_id}/test")
+def test_saved_model_profile(profile_id: int) -> dict[str, Any]:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT backend_type, provider, api_base_url, api_key_enc FROM model_profiles WHERE id = %s",
+                (profile_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Model profile not found.")
+    req = LlmBackendConfigRequest(
+        backend_type=row[0],
+        provider=row[1],
+        api_base_url=row[2],
+        api_key=decrypt_secret_value(row[3]) or None,
+    )
+    return test_llm_backend(req)
+
+
+@app.delete("/admin-console/api/model-profiles/{profile_id}")
+def delete_model_profile(profile_id: int, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM model_profiles WHERE id = %s RETURNING name, context, model_id", (profile_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Model profile not found.")
+        conn.commit()
+    audit.record(
+        "model_profile.delete",
+        actor=actor,
+        details={"id": profile_id, "name": row[0], "context": row[1], "model_id": row[2]},
+    )
+    return get_model_profiles()
+
+
 @app.get("/admin-console/api/models")
 def list_models() -> dict[str, Any]:
     llm_cfg = get_llm_backend_settings()
     llm_live: dict[str, Any] = {"reachable": False, "models": [], "error": ""}
     try:
-        headers = build_llm_headers(llm_cfg["api_key"])
+        headers = build_llm_headers(
+            llm_cfg["api_key"],
+            provider=llm_cfg.get("provider", ""),
+            api_base_url=llm_cfg["api_base_url"],
+        )
         resp = requests.get(f"{llm_cfg['api_base_url']}/models", headers=headers, timeout=5)
         if resp.ok:
             data = resp.json().get("data", [])
@@ -3475,54 +4136,7 @@ def list_models() -> dict[str, Any]:
 def update_default_model(req: DefaultModelRequest, request: Request) -> dict[str, str]:
     actor = get_actor(request)
     model_name = req.model_name.strip()
-    if not model_name:
-        raise HTTPException(status_code=400, detail="Model name cannot be empty.")
-
-    with psycopg.connect(DB_DSN) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO system_settings (key, value, updated_at) VALUES ('default_llm_model', %s, NOW()) "
-                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
-                (model_name,),
-            )
-            cur.execute(
-                "SELECT model_id, name, system_prompt FROM projects WHERE COALESCE(TRIM(llm_model), '') = ''"
-            )
-            inherited_projects = cur.fetchall()
-        conn.commit()
-
-    webui_sync = "skipped_no_api_key"
-    if OPENWEBUI_API_KEY:
-        try:
-            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
-            requests.post(
-                f"{OPENWEBUI_URL}/api/v1/configs/models",
-                headers=headers,
-                json={"DEFAULT_MODELS": model_name, "MODEL_ORDER_LIST": []},
-                timeout=10,
-            )
-            models_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/models/", headers=headers, timeout=15)
-            if models_resp.ok:
-                existing_by_id = {m.get("id"): m for m in models_resp.json() if isinstance(m, dict) and m.get("id")}
-                for model_id, display, sys_prompt in inherited_projects:
-                    existing = existing_by_id.get(model_id)
-                    if existing:
-                        payload = {
-                            **existing,
-                            "base_model_id": model_name,
-                            "name": existing.get("name") or f"{display} Assistant",
-                            "params": {**(existing.get("params") or {}), "system": sys_prompt},
-                        }
-                        requests.post(
-                            f"{OPENWEBUI_URL}/api/v1/models/model/update?id={quote(model_id, safe='')}",
-                            headers=headers,
-                            json=payload,
-                            timeout=15,
-                        )
-            webui_sync = "synced"
-        except Exception as exc:
-            logger.warning("Open WebUI default model sync warning: %s", exc)
-            webui_sync = f"warning: {exc}"
+    webui_sync = _apply_default_llm_model(model_name)
 
     audit.record(
         "model.default_update",
@@ -4247,12 +4861,20 @@ def _prepare_rag_and_llm_request(
                 citations.append({"source": header_line})
 
     forwarded_messages = merge_system_and_context_messages(messages, auth["system_prompt"], context_blocks)
-    llm_cfg = get_llm_backend_settings()
-    target_model = get_effective_llm_model(auth.get("llm_model", ""))
-    cleaned_body = {k: v for k, v in body.items() if k not in {"top_k", "include_citations"}}
+    req_context = str(body.get("context") or "text").strip().lower()
+    if req_context not in VALID_MODEL_CONTEXTS:
+        req_context = "text"
+    resolved = resolve_model_for_context(req_context, model_override=auth.get("llm_model", ""))
+    target_model = resolved["model_id"]
+    cleaned_body = {k: v for k, v in body.items() if k not in {"top_k", "include_citations", "context"}}
     llm_payload = {**cleaned_body, "model": target_model, "messages": forwarded_messages, "stream": stream}
-    llm_headers = build_llm_headers(llm_cfg["api_key"], json_content=True)
-    chat_url = f"{llm_cfg['api_base_url']}/chat/completions"
+    llm_headers = build_llm_headers(
+        resolved["api_key"],
+        json_content=True,
+        provider=resolved.get("provider", ""),
+        api_base_url=resolved["api_base_url"],
+    )
+    chat_url = f"{resolved['api_base_url']}/chat/completions"
     return chat_url, llm_headers, llm_payload, target_model, context_blocks, citations
 
 

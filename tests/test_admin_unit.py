@@ -492,6 +492,18 @@ class TestLlmBackendConfig(unittest.TestCase):
                 provider_id,
             )
 
+    def test_build_llm_headers_provider_quirks(self) -> None:
+        openai_hdrs = build_llm_headers("sk-test", json_content=True, provider="openai")
+        self.assertEqual(openai_hdrs, {"Content-Type": "application/json", "Authorization": "Bearer sk-test"})
+
+        ant_hdrs = build_llm_headers("sk-ant-123", provider="anthropic")
+        self.assertEqual(ant_hdrs["Authorization"], "Bearer sk-ant-123")
+        self.assertEqual(ant_hdrs["x-api-key"], "sk-ant-123")
+        self.assertEqual(ant_hdrs["anthropic-version"], "2023-06-01")
+
+        ant_url_hdrs = build_llm_headers("sk-ant-456", api_base_url="https://api.anthropic.com/v1")
+        self.assertEqual(ant_url_hdrs["x-api-key"], "sk-ant-456")
+
     def test_image_backend_config_and_style_presets(self) -> None:
         img_cfg = resolve_image_backend_config(
             {

@@ -446,6 +446,7 @@ services:
       QDRANT_URL: "http://qdrant:6333"
       QDRANT_API_KEY: "${QDRANT_API_KEY}"
       LLM_BACKEND_TYPE: "${LLM_BACKEND_TYPE:-ark_llm}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
       LLM_BACKEND_ADMIN_URL: "${LLM_BACKEND_ADMIN_URL:-http://localhost:8095}"
       LLM_API_BASE_URL: "${LLM_API_BASE_URL:-http://vllm:8000/v1}"
       LLM_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"

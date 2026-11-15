@@ -6,6 +6,13 @@ import os
 from typing import Mapping
 
 VALID_BACKEND_TYPES = {"ark_llm", "third_party"}
+VALID_MODEL_CONTEXTS = ("text", "image", "code", "other")
+MODEL_CONTEXT_LABELS: dict[str, str] = {
+    "text": "Text / Chat",
+    "image": "Image Generation",
+    "code": "Code",
+    "other": "Other",
+}
 
 THIRD_PARTY_LLM_PRESETS: dict[str, dict[str, str]] = {
     "huggingface": {
@@ -27,6 +34,7 @@ THIRD_PARTY_LLM_PRESETS: dict[str, dict[str, str]] = {
         "label": "OpenAI",
         "api_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o",
+        "default_image_model": "dall-e-3",
         "key_placeholder": "sk-...",
     },
     "google": {
@@ -34,6 +42,7 @@ THIRD_PARTY_LLM_PRESETS: dict[str, dict[str, str]] = {
         "label": "Google (Gemini)",
         "api_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "default_model": "gemini-2.5-flash",
+        "default_image_model": "imagen-3.0-generate-002",
         "key_placeholder": "AIza...",
     },
     "custom": {
@@ -199,11 +208,25 @@ def apply_create_style_preset(prompt: str, style_preset: str | None) -> tuple[st
     return preset_key, f"{cleaned_prompt}\n\n{suffix}"
 
 
-def build_llm_headers(api_key: str, *, json_content: bool = False) -> dict[str, str]:
+def build_llm_headers(
+    api_key: str,
+    *,
+    json_content: bool = False,
+    provider: str = "",
+    api_base_url: str = "",
+) -> dict[str, str]:
     """Build upstream HTTP headers for OpenAI-compatible LLM requests."""
     headers: dict[str, str] = {}
     if json_content:
         headers["Content-Type"] = "application/json"
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+        effective_provider = (
+            normalize_third_party_provider(provider, api_base_url)
+            if (provider and provider != "ark_llm") or "anthropic.com" in (api_base_url or "").lower()
+            else ""
+        )
+        if effective_provider == "anthropic":
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = "2023-06-01"
     return headers

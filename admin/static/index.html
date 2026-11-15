@@ -1075,10 +1075,10 @@
   <!-- ==================== TAB 4: MODELS & BACKENDS ==================== -->
   <section id="panel-models" class="tab-panel" role="tabpanel">
     <div class="grid">
-      <!-- Left: LLM & Image Backends -->
+      <!-- Left: Unified Models & Context Routing -->
       <div class="card admin-accent">
         <h2>
-          <span>LLM &amp; Image Generation Backends</span>
+          <span>Models &amp; Context Routing</span>
           <button type="button" class="secondary sm" onclick="refreshModelsOnly()">Probe Status</button>
         </h2>
         <div id="vllm-live-info" style="font-size:0.82rem;color:var(--gray);margin-bottom:8px;">Loading LLM backend status...</div>
@@ -1091,68 +1091,176 @@
           <a id="llm-backend-console-link" href="#" target="_blank" rel="noopener noreferrer"
             style="color:var(--cyan);font-weight:700;margin-left:6px;">Open LLM Backend Config Page &rarr;</a>
         </div>
-        <label for="default-llm-model">Default Gateway LLM (<code>/projects/&lt;slug&gt;/v1</code>)</label>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <input id="default-llm-model" placeholder="ark-llm" style="flex:1;" />
-          <button class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveDefaultLlm()">Save Default</button>
+
+        <!-- Active Context Defaults Summary -->
+        <div id="context-defaults-bar" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px;"></div>
+
+        <!-- Registered Models Table -->
+        <table id="model-profiles-table" style="margin-bottom:14px;">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Model ID</th>
+              <th>Context</th>
+              <th>Provider</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" style="color:var(--muted);">No model profiles registered yet.</td></tr>
+          </tbody>
+        </table>
+
+        <!-- Add / Edit Model Profile Form -->
+        <div style="padding:12px;border-radius:8px;border:1px solid var(--border);background:rgba(15,23,42,0.55);margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <strong id="mp-form-title" style="color:var(--cyan);font-size:0.88rem;">Add / Edit Model Profile</strong>
+            <button type="button" class="secondary sm" onclick="resetModelProfileForm()">New</button>
+          </div>
+          <input id="mp-id" type="hidden" />
+          <div class="row">
+            <div>
+              <label for="mp-name">Display Name</label>
+              <input id="mp-name" placeholder="e.g. Claude Sonnet (Code)" />
+            </div>
+            <div>
+              <label for="mp-context">Context</label>
+              <select id="mp-context">
+                <option value="text">Text / Chat</option>
+                <option value="image">Image Generation</option>
+                <option value="code">Code</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="mp-backend-type">Backend Type</label>
+              <select id="mp-backend-type" onchange="onMpBackendTypeChange()">
+                <option value="ark_llm">ARK Local (vLLM / Diffusion)</option>
+                <option value="third_party">3rd-Party OpenAI-Compatible API</option>
+              </select>
+            </div>
+            <div id="mp-provider-wrap" style="display:none;">
+              <label for="mp-provider">3rd-Party Provider</label>
+              <select id="mp-provider" onchange="applyMpProviderPreset(this.value)">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="google">Google (Gemini)</option>
+                <option value="huggingface">Hugging Face</option>
+                <option value="custom">Custom OpenAI-Compatible</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="mp-model-id">Model ID</label>
+              <input id="mp-model-id" list="llm-live-models-list" placeholder="e.g. gpt-4o or ark-llm" />
+            </div>
+            <div>
+              <label for="mp-api-base-url">API Base URL (including <code>/v1</code>)</label>
+              <input id="mp-api-base-url" placeholder="http://vllm:8000/v1" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="mp-api-key">API Key (blank = keep existing on edit)</label>
+              <input id="mp-api-key" type="password" placeholder="Optional / unchanged" />
+            </div>
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;gap:6px;padding-bottom:4px;">
+              <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--glint);cursor:pointer;margin:0;">
+                <input id="mp-is-default" type="checkbox" checked style="width:auto;margin:0;" />
+                Set as default for this context
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:0.78rem;color:var(--gray);cursor:pointer;margin:0;">
+                <input id="mp-clear-key" type="checkbox" style="width:auto;margin:0;" />
+                Clear stored API key
+              </label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+            <button type="button" class="secondary" style="margin-top:0;" onclick="testModelProfileForm()">Test Connection</button>
+            <button type="button" class="amber" style="margin-top:0;" onclick="saveModelProfileForm()">Save Model Profile</button>
+          </div>
+          <div id="mp-test-result" style="display:none;margin-top:8px;padding:8px 10px;border-radius:6px;font-size:0.82rem;"></div>
         </div>
 
-        <hr style="border-color: var(--border); margin: 16px 0;" />
-        <label for="llm-backend-type">LLM Backend Provider</label>
-        <select id="llm-backend-type" onchange="toggleBackendAdminField()">
-          <option value="ark_llm">ARK LLM Backend (vLLM Server)</option>
-          <option value="third_party">3rd-Party OpenAI-Compatible API</option>
-        </select>
-        <div id="llm-third-party-wrap" style="display:none;margin-top:8px;">
-          <label for="llm-third-party-provider">3rd-Party Provider Preset</label>
-          <select id="llm-third-party-provider" onchange="applyThirdPartyPreset(this.value)">
-            <option value="huggingface">Hugging Face</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="openai">OpenAI</option>
-            <option value="google">Google (Gemini)</option>
-            <option value="custom">Custom OpenAI-Compatible</option>
-          </select>
-          <div id="llm-provider-quick-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
-            <button type="button" class="sm" onclick="applyThirdPartyPreset('huggingface')">Hugging Face</button>
-            <button type="button" class="sm" onclick="applyThirdPartyPreset('anthropic')">Anthropic</button>
-            <button type="button" class="sm" onclick="applyThirdPartyPreset('openai')">OpenAI</button>
-            <button type="button" class="sm" onclick="applyThirdPartyPreset('google')">Google</button>
-            <button type="button" class="secondary sm" onclick="applyThirdPartyPreset('custom')">Custom</button>
-          </div>
-        </div>
-        <label for="llm-api-base-url">OpenAI API Base URL (including <code>/v1</code>)</label>
-        <input id="llm-api-base-url" placeholder="http://vllm:8000/v1" />
-        <div class="row">
-          <div>
-            <label for="llm-api-key">API Key (blank = keep existing)</label>
-            <input id="llm-api-key" type="password" placeholder="Optional / unchanged" />
-          </div>
-          <div>
-            <label for="llm-health-url">Custom Health URL (optional)</label>
-            <input id="llm-health-url" placeholder="Blank = /models check" />
-          </div>
-        </div>
-        <div id="llm-backend-admin-wrap">
-          <label for="llm-backend-admin-url">ARK LLM Backend Config Page URL</label>
-          <input id="llm-backend-admin-url" placeholder="http://localhost:8095" />
-        </div>
-        <button class="amber" onclick="saveLlmBackend()">Save LLM Backend Settings</button>
+        <details style="margin-top:8px;">
+          <summary style="cursor:pointer;color:var(--gray);font-size:0.84rem;font-weight:600;">Direct Backend &amp; Legacy Endpoint Overrides</summary>
+          <div style="padding-top:10px;">
+            <label for="default-llm-model">Default Gateway LLM (<code>/projects/&lt;slug&gt;/v1</code>)</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input id="default-llm-model" list="llm-live-models-list" placeholder="ark-llm" style="flex:1;" />
+              <datalist id="llm-live-models-list"></datalist>
+              <button class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveDefaultLlm()">Save Default</button>
+            </div>
 
-        <hr style="border-color: var(--border); margin: 16px 0;" />
-        <label style="color:var(--cyan);">Image Generation Backend (<code>/create</code> &amp; <code>/v1/images/generations</code>)</label>
-        <div class="row">
-          <div>
-            <label for="image-api-base-url">Image OpenAI API Base URL</label>
-            <input id="image-api-base-url" placeholder="http://vllm:8000/v1" />
+            <hr style="border-color: var(--border); margin: 14px 0;" />
+            <label for="llm-backend-type">LLM Backend Provider</label>
+            <select id="llm-backend-type" onchange="toggleBackendAdminField()">
+              <option value="ark_llm">ARK LLM Backend (vLLM Server)</option>
+              <option value="third_party">3rd-Party OpenAI-Compatible API</option>
+            </select>
+            <div id="llm-third-party-wrap" style="display:none;margin-top:8px;">
+              <label for="llm-third-party-provider">3rd-Party Provider Preset</label>
+              <select id="llm-third-party-provider" onchange="applyThirdPartyPreset(this.value)">
+                <option value="huggingface">Hugging Face</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI</option>
+                <option value="google">Google (Gemini)</option>
+                <option value="custom">Custom OpenAI-Compatible</option>
+              </select>
+              <div id="llm-provider-quick-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                <button type="button" class="sm" onclick="applyThirdPartyPreset('huggingface')">Hugging Face</button>
+                <button type="button" class="sm" onclick="applyThirdPartyPreset('anthropic')">Anthropic</button>
+                <button type="button" class="sm" onclick="applyThirdPartyPreset('openai')">OpenAI</button>
+                <button type="button" class="sm" onclick="applyThirdPartyPreset('google')">Google</button>
+                <button type="button" class="secondary sm" onclick="applyThirdPartyPreset('custom')">Custom</button>
+              </div>
+            </div>
+            <label for="llm-api-base-url">OpenAI API Base URL (including <code>/v1</code>)</label>
+            <input id="llm-api-base-url" placeholder="http://vllm:8000/v1" />
+            <div class="row">
+              <div>
+                <label for="llm-api-key">API Key (blank = keep existing on same provider)</label>
+                <input id="llm-api-key" type="password" placeholder="Optional / unchanged" />
+                <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:0.78rem;color:var(--gray);cursor:pointer;">
+                  <input id="llm-clear-api-key" type="checkbox" style="width:auto;margin:0;" />
+                  Clear stored API key
+                </label>
+              </div>
+              <div>
+                <label for="llm-health-url">Custom Health URL (optional)</label>
+                <input id="llm-health-url" placeholder="Blank = /models check" />
+              </div>
+            </div>
+            <div id="llm-backend-admin-wrap">
+              <label for="llm-backend-admin-url">ARK LLM Backend Config Page URL</label>
+              <input id="llm-backend-admin-url" placeholder="http://localhost:8095" />
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+              <button type="button" class="secondary" style="margin-top:0;" onclick="testLlmBackend()">Test Connection</button>
+              <button class="amber" style="margin-top:0;" onclick="saveLlmBackend()">Save LLM Backend Settings</button>
+            </div>
+            <div id="llm-test-result" style="display:none;margin-top:8px;padding:8px 10px;border-radius:6px;font-size:0.82rem;"></div>
+
+            <hr style="border-color: var(--border); margin: 14px 0;" />
+            <label style="color:var(--cyan);">Image Generation Backend (<code>/create</code> &amp; <code>/v1/images/generations</code>)</label>
+            <div class="row">
+              <div>
+                <label for="image-api-base-url">Image OpenAI API Base URL</label>
+                <input id="image-api-base-url" placeholder="http://vllm:8000/v1" />
+              </div>
+              <div>
+                <label for="image-default-model">Default Image Model ID</label>
+                <input id="image-default-model" placeholder="ark-image" />
+              </div>
+            </div>
+            <label for="image-api-key">Image API Key (leave blank to keep existing)</label>
+            <input id="image-api-key" type="password" placeholder="Optional / unchanged" />
+            <button class="amber" onclick="saveImageBackend()">Save Image Backend Settings</button>
           </div>
-          <div>
-            <label for="image-default-model">Default Image Model ID</label>
-            <input id="image-default-model" placeholder="ark-image" />
-          </div>
-        </div>
-        <label for="image-api-key">Image API Key (leave blank to keep existing)</label>
-        <input id="image-api-key" type="password" placeholder="Optional / unchanged" />
-        <button class="amber" onclick="saveImageBackend()">Save Image Backend Settings</button>
+        </details>
       </div>
 
       <!-- Right: Local Air-Gapped Models -->
@@ -1820,7 +1928,7 @@
       document.querySelector('#audit-table tbody').replaceChildren(...rows);
     }
 
-    function renderModelsSection(modelsInfo, llmBackend, imageBackend) {
+    function renderModelsSection(modelsInfo, llmBackend, imageBackend, modelProfiles) {
       const live = (modelsInfo && (modelsInfo.llm_live || modelsInfo.vllm_live)) || {};
       const liveModels = (live.models || []).join(', ') || 'none';
       const endpoint = (modelsInfo && modelsInfo.configured && modelsInfo.configured.llm_api_base_url) || '-';
@@ -1835,8 +1943,81 @@
         document.createTextNode(' Endpoint: '),
         el('code', { text: endpoint }),
         document.createTextNode(' \u2022 Served: '),
-        el('code', { text: liveModels })
+        el('code', { text: liveModels }),
+        ...(live.error ? [document.createTextNode(' \u2022 '), el('span', { style: 'color:#FCA5A5;', text: live.error })] : [])
       );
+
+      const dl = document.getElementById('llm-live-models-list');
+      if (dl) {
+        const regModels = ((modelProfiles && modelProfiles.profiles) || []).map(p => p.model_id).filter(Boolean);
+        const modelChoices = Array.from(new Set([
+          ...(live.models || []),
+          ...regModels,
+          ...((window.loadedLlmPresets || []).map(p => p.default_model).filter(Boolean)),
+        ]));
+        dl.replaceChildren(...modelChoices.map(m => el('option', { value: m })));
+      }
+
+      if (modelProfiles) {
+        window.loadedModelProfiles = modelProfiles.profiles || [];
+        const ctxBar = document.getElementById('context-defaults-bar');
+        const defs = modelProfiles.defaults || {};
+        const ctxMeta = modelProfiles.contexts || [
+          { id: 'text', label: 'Text / Chat' },
+          { id: 'image', label: 'Image Generation' },
+          { id: 'code', label: 'Code' },
+          { id: 'other', label: 'Other' },
+        ];
+        if (ctxBar) {
+          ctxBar.replaceChildren(
+            ...ctxMeta.map(c => {
+              const d = defs[c.id] || {};
+              return el('div', {
+                style: 'padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:rgba(15,23,42,0.45);font-size:0.79rem;'
+              }, [
+                el('div', { style: 'color:var(--gray);font-weight:600;', text: c.label }),
+                el('div', { style: 'color:var(--glint);margin-top:2px;' }, [
+                  el('code', { text: d.model_id || '-' }),
+                  document.createTextNode(` (${d.provider || 'ark_llm'})`)
+                ])
+              ]);
+            })
+          );
+        }
+
+        const mpBody = document.querySelector('#model-profiles-table tbody');
+        const profiles = modelProfiles.profiles || [];
+        if (mpBody) {
+          if (profiles.length) {
+            mpBody.replaceChildren(
+              ...profiles.map(p =>
+                el('tr', {}, [
+                  el('td', {}, [
+                    document.createTextNode(p.name + ' '),
+                    ...(p.is_default ? [el('span', { className: 'badge ok', text: 'default' })] : [])
+                  ]),
+                  el('td', {}, el('code', { text: p.model_id })),
+                  el('td', {}, el('span', { className: 'badge rag', text: p.context_label || p.context })),
+                  el('td', {}, [
+                    el('span', { text: p.provider || 'ark_llm' }),
+                    ...(p.api_key_set ? [document.createTextNode(' '), el('span', { className: 'badge ok', text: 'key' })] : [])
+                  ]),
+                  el('td', { style: 'white-space:nowrap;' }, [
+                    ...(!p.is_default ? [el('button', { className: 'sm', style: 'margin-right:4px;', text: 'Default', onClick: () => setDefaultModelProfile(p.id) })] : []),
+                    el('button', { className: 'secondary sm', style: 'margin-right:4px;', text: 'Test', onClick: () => testSavedModelProfile(p.id) }),
+                    el('button', { className: 'secondary sm', style: 'margin-right:4px;', text: 'Edit', onClick: () => editModelProfile(p) }),
+                    el('button', { className: 'danger', text: 'Del', onClick: () => deleteModelProfile(p.id, p.name) })
+                  ])
+                ])
+              )
+            );
+          } else {
+            mpBody.replaceChildren(
+              el('tr', {}, el('td', { colSpan: 5, style: 'color:var(--muted);', text: 'No model profiles registered yet. Add one below to route text, image, code, or other contexts.' }))
+            );
+          }
+        }
+      }
 
       const warnEl = document.getElementById('embed-model-warning');
       if (modelsInfo && modelsInfo.embed_model_warning) {
@@ -1887,12 +2068,15 @@
           refBox.style.display = 'none';
         }
         window.loadedLlmPresets = llmBackend.presets || [];
+        window.savedLlmBackend = llmBackend;
         setInputIfIdle('llm-backend-type', llmBackend.backend_type || 'ark_llm');
         if (llmBackend.provider && llmBackend.provider !== 'ark_llm') {
           setInputIfIdle('llm-third-party-provider', llmBackend.provider);
         }
         setInputIfIdle('llm-api-base-url', llmBackend.api_base_url || '');
         setInputIfIdle('llm-api-key', '');
+        const clearEl = document.getElementById('llm-clear-api-key');
+        if (clearEl) clearEl.checked = false;
         document.getElementById('llm-api-key').placeholder = llmBackend.api_key_set ? 'Configured (leave blank to keep)' : 'Optional (no API key set)';
         setInputIfIdle('llm-health-url', llmBackend.health_url === `${llmBackend.api_base_url}/models` ? '' : (llmBackend.health_url || ''));
         setInputIfIdle('llm-backend-admin-url', llmBackend.backend_admin_url || '');
@@ -1946,10 +2130,10 @@
     }
 
     async function refreshModelsOnly() {
-      const [modelsInfo, llmBackend, imageBackend] = await Promise.all([
-        api('/models'), api('/llm-backend'), api('/image-backend')
+      const [modelsInfo, llmBackend, imageBackend, modelProfiles] = await Promise.all([
+        api('/models'), api('/llm-backend'), api('/image-backend'), api('/model-profiles')
       ]);
-      renderModelsSection(modelsInfo, llmBackend, imageBackend);
+      renderModelsSection(modelsInfo, llmBackend, imageBackend, modelProfiles);
     }
 
     async function refreshBackupsOnly() {
@@ -1973,10 +2157,10 @@
 
     async function refreshAll(notify = false) {
       const auditParams = buildAuditQueryParams();
-      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, imageBackend, knownUsers] = await Promise.all([
+      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, imageBackend, modelProfiles, knownUsers] = await Promise.all([
         api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
         api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?' + auditParams.toString()), api('/models'), api('/llm-backend'),
-        api('/image-backend'), api('/users')
+        api('/image-backend'), api('/model-profiles'), api('/users')
       ]);
 
       const verLabel = `v${ver.version}`;
@@ -1995,7 +2179,7 @@
       renderBackupsSection(backupCfg, backups);
       renderIngestSection(pluginMeta, sources, jobs);
       renderAuditSection(audits);
-      renderModelsSection(modelsInfo, llmBackend, imageBackend);
+      renderModelsSection(modelsInfo, llmBackend, imageBackend, modelProfiles);
       if (notify) showToast('Control plane state refreshed.', 'ok');
     }
 
@@ -2626,6 +2810,14 @@
         if (!curUrl || curUrl === 'http://vllm:8000/v1') {
           applyThirdPartyPreset(document.getElementById('llm-third-party-provider').value || 'openai');
         }
+      } else {
+        const saved = window.savedLlmBackend;
+        if (saved && saved.backend_type !== 'ark_llm') {
+          document.getElementById('llm-api-base-url').value = 'http://vllm:8000/v1';
+          document.getElementById('llm-api-key').value = '';
+          document.getElementById('llm-api-key').placeholder = 'Local vLLM key (optional)';
+          document.getElementById('default-llm-model').value = 'ark-llm';
+        }
       }
     }
 
@@ -2638,7 +2830,16 @@
       if (match.api_base_url) {
         document.getElementById('llm-api-base-url').value = match.api_base_url;
       }
-      if (match.key_placeholder) {
+      const saved = window.savedLlmBackend;
+      const sameSavedProvider = saved && saved.backend_type === 'third_party' && saved.provider === presetId;
+      if (!sameSavedProvider) {
+        document.getElementById('llm-api-key').value = '';
+        const clearEl = document.getElementById('llm-clear-api-key');
+        if (clearEl) clearEl.checked = false;
+      }
+      if (sameSavedProvider && saved.api_key_set) {
+        document.getElementById('llm-api-key').placeholder = 'Configured (leave blank to keep)';
+      } else if (match.key_placeholder) {
         document.getElementById('llm-api-key').placeholder = match.key_placeholder;
       }
       if (match.default_model) {
@@ -2651,23 +2852,222 @@
       }
     }
 
-    async function saveLlmBackend() {
+    function _collectLlmBackendPayload() {
       const backendType = document.getElementById('llm-backend-type').value;
-      const res = await api('/llm-backend', {
+      const clearEl = document.getElementById('llm-clear-api-key');
+      return {
+        backend_type: backendType,
+        provider: backendType === 'third_party' ? document.getElementById('llm-third-party-provider').value : 'ark_llm',
+        api_base_url: document.getElementById('llm-api-base-url').value,
+        api_key: document.getElementById('llm-api-key').value || null,
+        clear_api_key: !!(clearEl && clearEl.checked),
+        health_url: document.getElementById('llm-health-url').value,
+        backend_admin_url: document.getElementById('llm-backend-admin-url').value,
+        default_model: (document.getElementById('default-llm-model').value || '').trim() || null,
+      };
+    }
+
+    async function testLlmBackend() {
+      const box = document.getElementById('llm-test-result');
+      box.style.display = 'block';
+      box.style.background = 'rgba(100,116,139,0.15)';
+      box.style.border = '1px solid var(--border)';
+      box.style.color = 'var(--glint)';
+      box.textContent = 'Probing LLM endpoint...';
+      try {
+        const res = await api('/llm-backend/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(_collectLlmBackendPayload())
+        });
+        if (res.reachable) {
+          box.style.background = 'rgba(16,185,129,0.12)';
+          box.style.border = '1px solid #10B981';
+          box.style.color = '#A7F3D0';
+          const count = (res.models || []).length;
+          box.textContent = `Connected (${res.api_base_url}) — ${count} model(s) discovered${count ? ': ' + res.models.slice(0, 6).join(', ') + (count > 6 ? '...' : '') : ''}.`;
+          const dl = document.getElementById('llm-live-models-list');
+          if (dl && count) {
+            dl.replaceChildren(...res.models.map(m => el('option', { value: m })));
+          }
+        } else {
+          box.style.background = 'rgba(239,68,68,0.12)';
+          box.style.border = '1px solid #EF4444';
+          box.style.color = '#FCA5A5';
+          box.textContent = `Probe failed (${res.api_base_url}): ${res.error || 'Unreachable'}`;
+        }
+      } catch (err) {
+        box.style.background = 'rgba(239,68,68,0.12)';
+        box.style.border = '1px solid #EF4444';
+        box.style.color = '#FCA5A5';
+        box.textContent = `Probe error: ${err.message || err}`;
+      }
+    }
+
+    function resetModelProfileForm() {
+      document.getElementById('mp-id').value = '';
+      document.getElementById('mp-form-title').textContent = 'Add / Edit Model Profile';
+      document.getElementById('mp-name').value = '';
+      document.getElementById('mp-context').value = 'text';
+      document.getElementById('mp-backend-type').value = 'ark_llm';
+      document.getElementById('mp-provider').value = 'openai';
+      document.getElementById('mp-model-id').value = '';
+      document.getElementById('mp-api-base-url').value = 'http://vllm:8000/v1';
+      document.getElementById('mp-api-key').value = '';
+      document.getElementById('mp-api-key').placeholder = 'Optional / unchanged';
+      document.getElementById('mp-is-default').checked = true;
+      document.getElementById('mp-clear-key').checked = false;
+      onMpBackendTypeChange();
+    }
+
+    function editModelProfile(p) {
+      document.getElementById('mp-id').value = String(p.id || '');
+      document.getElementById('mp-form-title').textContent = `Editing: ${p.name}`;
+      document.getElementById('mp-name').value = p.name || '';
+      document.getElementById('mp-context').value = p.context || 'text';
+      document.getElementById('mp-backend-type').value = p.backend_type || 'ark_llm';
+      document.getElementById('mp-provider').value = (p.provider && p.provider !== 'ark_llm') ? p.provider : 'openai';
+      document.getElementById('mp-model-id').value = p.model_id || '';
+      document.getElementById('mp-api-base-url').value = p.api_base_url || '';
+      document.getElementById('mp-api-key').value = '';
+      document.getElementById('mp-api-key').placeholder = p.api_key_set ? 'Configured (leave blank to keep)' : 'Optional (no key set)';
+      document.getElementById('mp-is-default').checked = !!p.is_default;
+      document.getElementById('mp-clear-key').checked = false;
+      onMpBackendTypeChange();
+    }
+
+    function onMpBackendTypeChange() {
+      const isThird = document.getElementById('mp-backend-type').value === 'third_party';
+      document.getElementById('mp-provider-wrap').style.display = isThird ? 'block' : 'none';
+      const urlEl = document.getElementById('mp-api-base-url');
+      if (isThird && (!urlEl.value.trim() || urlEl.value.trim() === 'http://vllm:8000/v1')) {
+        applyMpProviderPreset(document.getElementById('mp-provider').value || 'openai');
+      } else if (!isThird && !document.getElementById('mp-id').value) {
+        urlEl.value = 'http://vllm:8000/v1';
+      }
+    }
+
+    function applyMpProviderPreset(presetId) {
+      const presets = window.loadedLlmPresets || [];
+      const match = presets.find(p => p.id === presetId);
+      if (!match) return;
+      if (match.api_base_url) document.getElementById('mp-api-base-url').value = match.api_base_url;
+      if (match.key_placeholder) document.getElementById('mp-api-key').placeholder = match.key_placeholder;
+      const ctx = document.getElementById('mp-context').value || 'text';
+      const suggestedModel = (ctx === 'image' && match.default_image_model) ? match.default_image_model : match.default_model;
+      if (suggestedModel && !document.getElementById('mp-model-id').value.trim()) {
+        document.getElementById('mp-model-id').value = suggestedModel;
+      }
+      if (!document.getElementById('mp-name').value.trim()) {
+        document.getElementById('mp-name').value = `${match.label} (${ctx})`;
+      }
+    }
+
+    async function testModelProfileForm() {
+      const box = document.getElementById('mp-test-result');
+      box.style.display = 'block';
+      box.style.background = 'rgba(100,116,139,0.15)';
+      box.style.border = '1px solid var(--border)';
+      box.style.color = 'var(--glint)';
+      box.textContent = 'Probing endpoint...';
+      try {
+        const backendType = document.getElementById('mp-backend-type').value;
+        const res = await api('/llm-backend/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            backend_type: backendType,
+            provider: backendType === 'third_party' ? document.getElementById('mp-provider').value : 'ark_llm',
+            api_base_url: document.getElementById('mp-api-base-url').value,
+            api_key: document.getElementById('mp-api-key').value || null,
+            clear_api_key: document.getElementById('mp-clear-key').checked,
+          })
+        });
+        if (res.reachable) {
+          box.style.background = 'rgba(16,185,129,0.12)';
+          box.style.border = '1px solid #10B981';
+          box.style.color = '#A7F3D0';
+          const count = (res.models || []).length;
+          box.textContent = `Connected (${res.api_base_url}) — ${count} model(s) discovered${count ? ': ' + res.models.slice(0, 6).join(', ') + (count > 6 ? '...' : '') : ''}.`;
+          const dl = document.getElementById('llm-live-models-list');
+          if (dl && count) dl.replaceChildren(...res.models.map(m => el('option', { value: m })));
+        } else {
+          box.style.background = 'rgba(239,68,68,0.12)';
+          box.style.border = '1px solid #EF4444';
+          box.style.color = '#FCA5A5';
+          box.textContent = `Probe failed (${res.api_base_url}): ${res.error || 'Unreachable'}`;
+        }
+      } catch (err) {
+        box.style.background = 'rgba(239,68,68,0.12)';
+        box.style.border = '1px solid #EF4444';
+        box.style.color = '#FCA5A5';
+        box.textContent = `Probe error: ${err.message || err}`;
+      }
+    }
+
+    async function saveModelProfileForm() {
+      const idVal = document.getElementById('mp-id').value.trim();
+      const backendType = document.getElementById('mp-backend-type').value;
+      const name = document.getElementById('mp-name').value.trim();
+      const modelId = document.getElementById('mp-model-id').value.trim();
+      if (!name || !modelId) return showError('Display Name and Model ID are required.');
+      const res = await api('/model-profiles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: idVal ? Number(idVal) : null,
+          name,
+          model_id: modelId,
+          context: document.getElementById('mp-context').value,
           backend_type: backendType,
-          provider: backendType === 'third_party' ? document.getElementById('llm-third-party-provider').value : 'ark_llm',
-          api_base_url: document.getElementById('llm-api-base-url').value,
-          api_key: document.getElementById('llm-api-key').value || null,
-          health_url: document.getElementById('llm-health-url').value,
-          backend_admin_url: document.getElementById('llm-backend-admin-url').value,
+          provider: backendType === 'third_party' ? document.getElementById('mp-provider').value : 'ark_llm',
+          api_base_url: document.getElementById('mp-api-base-url').value,
+          api_key: document.getElementById('mp-api-key').value || null,
+          clear_api_key: document.getElementById('mp-clear-key').checked,
+          is_default: document.getElementById('mp-is-default').checked,
+          enabled: true,
         })
       });
       showModelOps(res);
-      showToast('Saved LLM backend settings.', 'ok');
-      await Promise.all([refreshModelsOnly(), refreshHealthOnly(), refreshAuditOnly()]);
+      showToast(`Saved model profile '${name}'.`, 'ok');
+      resetModelProfileForm();
+      await Promise.all([refreshModelsOnly(), refreshHealthOnly(), refreshProjectsAndAccess(), refreshAuditOnly()]);
+    }
+
+    async function setDefaultModelProfile(id) {
+      const res = await api(`/model-profiles/${id}/set-default`, { method: 'POST' });
+      showModelOps(res);
+      showToast('Updated context default model.', 'ok');
+      await Promise.all([refreshModelsOnly(), refreshHealthOnly(), refreshProjectsAndAccess(), refreshAuditOnly()]);
+    }
+
+    async function testSavedModelProfile(id) {
+      const res = await api(`/model-profiles/${id}/test`, { method: 'POST' });
+      showModelOps(res);
+      if (res.reachable) {
+        showToast(`Connected: ${(res.models || []).length} model(s) reachable.`, 'ok');
+      } else {
+        showError(`Probe failed: ${res.error || 'Unreachable'}`);
+      }
+    }
+
+    async function deleteModelProfile(id, name) {
+      if (!confirm(`Delete model profile '${name}'?`)) return;
+      const res = await api(`/model-profiles/${id}`, { method: 'DELETE' });
+      showModelOps(res);
+      showToast(`Deleted model profile '${name}'.`, 'ok');
+      await Promise.all([refreshModelsOnly(), refreshAuditOnly()]);
+    }
+
+    async function saveLlmBackend() {
+      const res = await api('/llm-backend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_collectLlmBackendPayload())
+      });
+      showModelOps(res);
+      showToast('Saved LLM backend and default model settings.', 'ok');
+      await Promise.all([refreshModelsOnly(), refreshHealthOnly(), refreshProjectsAndAccess(), refreshAuditOnly()]);
     }
 
     async function saveImageBackend() {
