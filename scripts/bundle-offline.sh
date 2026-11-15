@@ -10,6 +10,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo '0.0.0-dev')"
+# shellcheck source=load-env.sh
+source "${SCRIPT_DIR}/load-env.sh"
 
 ENV_FILE="${REPO_ROOT}/.env"
 ARTIFACTS_DIR="${REPO_ROOT}/artifacts"
@@ -83,16 +85,10 @@ load_env() {
   fi
 
   if [[ -f "${REPO_ROOT}/versions.env" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "${REPO_ROOT}/versions.env"
-    set +a
+    load_ark_env "${REPO_ROOT}/versions.env" || err "Could not load versions.env."
   fi
 
-  set -a
-  # shellcheck disable=SC1090
-  source "${source_env}"
-  set +a
+  load_ark_env "${source_env}" || err "Could not load environment configuration."
 
   VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}"
   TEI_IMAGE="${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.9.4}"

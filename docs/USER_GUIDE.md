@@ -19,6 +19,8 @@ This guide covers day-to-day usage of **ARK (Air-gapped Retrieval & Knowledge)**
 3. **Uploading project files:** In your project's Workspace/Knowledge tab (if granted write access), upload PDFs, Word, Excel, PowerPoint, or text files. ARK extracts text offline via Apache Tika and indexes it into that project's isolated Qdrant collection only.
 
 ### 2b. Generating Images & Diagrams in ARK Create Studio (`/create/`)
+An administrator must configure an image-capable backend and set
+`ENABLE_IMAGE_GENERATION=true`; image generation is disabled by default.
 1. Open `https://<your-ark-domain>/create/` (or click **Create Studio** from the User Portal or Admin Console).
 2. Enter a description of the image, diagram, icon, or slide graphic you want to create, or click **Enhance Prompt (ARK LLM)** to expand a short idea into a rich visual prompt.
 3. Choose a **Visual Style Preset** (`Photorealistic`, `Digital Illustration`, `Isometric Diagram`, `App / UI Icon`, `Slide Graphic`, `Technical Blueprint`, or `Raw Prompt`), select a **Canvas Size / Ratio** (`1024x1024`, `1344x768`, or `768x1344`), and click **Generate Visual Asset**.
@@ -88,6 +90,8 @@ In the **Data Ingestion (Plugins, Pipelines & Scripts)** panel, select a **RAG-e
    - Place `.py` scripts using `from ark_ingest import Document, Checkpoint, run` in `./data/ingest-scripts/` (mounted read-only at `/ingest-scripts`). Scripts execute in an env-scrubbed subprocess without access to `ARK_ADMIN_DB_URL` or `QDRANT_API_KEY`.
 
 All modes support **Incremental** (content-hash deduplication + stale chunk cleanup) or **Full Mirror** (prunes deleted documents) sync modes, configurable chunking (`chars`, `markdown`, `lines`, `none`), and schedules (`@15m`, `@hourly`, `@daily`).
+Only one sync per source can be queued or running at a time; a manual sync
+returns a conflict while an earlier job is active.
 
 ### 5. Exporting & Importing Project KB Snapshots
 1. To export a project's Qdrant snapshot for transfer (e.g., HQ to an office deployment):
@@ -100,8 +104,8 @@ All modes support **Incremental** (content-hash deduplication + stale chunk clea
 ### 6. Backups, Restore & Changing the Backup Directory
 In the **Backup & Project KB Snapshot Sync** panel:
 - **Change Backup Location:** Update **Backup Destination Directory** (e.g., `/backups/nas`) and click **Save Backup Path**.
-- **Run Backup:** Click **Run Full Backup Now** to create a timestamped bundle (`ark-backup-<UTC>/`) containing compressed `pg_dump` archives (`openwebui.sql.gz`, `keycloak.sql.gz`, `ark_admin.sql.gz`), downloaded Qdrant snapshot files (`qdrant/<collection>/<snapshot>.snapshot`), and a SHA-256 `manifest.json`.
-- **Verify & Restore:** Select a backup bundle under **Restore Full Backup Bundle** and click **Verify & Restore Backup** (or use `./scripts/restore-backup.sh` on the host; see [docs/INSTALL.md](INSTALL.md#8-phase-7--backup-verification--full-stack-restore-disaster-recovery)).
+- **Run Backup:** Click **Back Up Databases & Vectors** to create a timestamped bundle containing PostgreSQL dumps, Qdrant snapshots, and a SHA-256 `manifest.json`.
+- **Verify & Restore:** Select a bundle under **Restore Databases & Vectors** and click **Verify & Restore Backup** (or use `./scripts/restore-backup.sh` on the host). Application files and separately escrowed secrets require independent recovery; see [docs/INSTALL.md](INSTALL.md#8-phase-7--backup-verification--disaster-recovery).
 
 ### 7. Monitoring Health & Audit Logs
 - **Service Health:** Displays live status for `vllm`, `tei_embed`, `tei_rerank`, `qdrant`, `postgres`, `tika`, `open_webui`, and `keycloak`.

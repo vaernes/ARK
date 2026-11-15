@@ -6,6 +6,12 @@ import os
 from typing import Mapping
 
 VALID_BACKEND_TYPES = {"ark_llm", "third_party"}
+PUBLIC_PROVIDER_HOSTS = {
+    "router.huggingface.co",
+    "api.anthropic.com",
+    "api.openai.com",
+    "generativelanguage.googleapis.com",
+}
 VALID_MODEL_CONTEXTS = ("text", "image", "code", "other")
 MODEL_CONTEXT_LABELS: dict[str, str] = {
     "text": "Text / Chat",
@@ -13,6 +19,24 @@ MODEL_CONTEXT_LABELS: dict[str, str] = {
     "code": "Code",
     "other": "Other",
 }
+
+
+def connected_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
+    return (source.get("ARK_CONNECTED_MODE") or "").strip().lower() in {"1", "true"}
+
+
+def validate_provider_destination(api_base_url: str, env: Mapping[str, str] | None = None) -> None:
+    """Block known public provider presets unless connected mode is explicitly enabled."""
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(api_base_url).hostname or "").lower().rstrip(".")
+    except ValueError as exc:
+        raise ValueError("Invalid backend URL.") from exc
+    if host in PUBLIC_PROVIDER_HOSTS and not connected_mode_enabled(env):
+        raise ValueError("Public cloud providers require ARK_CONNECTED_MODE=true.")
+
 
 THIRD_PARTY_LLM_PRESETS: dict[str, dict[str, str]] = {
     "huggingface": {

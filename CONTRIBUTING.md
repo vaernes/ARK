@@ -25,8 +25,8 @@ You can develop and test ARK on any Linux workstation with Docker installed:
 
 ```bash
 # 1. Run shell syntax & Python unit tests
-bash -n scripts/*.sh
-python3 -m unittest discover -s tests -v
+for script in scripts/*.sh; do bash -n "$script"; done
+python3 scripts/run_unit_tests.py
 
 # 2. Run the full GPU-less Docker integration suite
 ./scripts/test-integration.sh
@@ -52,7 +52,7 @@ ARK uses **CalVer (`YYYY.MM.PATCH`)** stored in [`VERSION`](VERSION).
 ## Pull Request Checklist
 
 - [ ] Changes comply with all air-gap and zero-telemetry invariants.
-- [ ] `bash -n scripts/*.sh` and `python3 -m unittest discover -s tests -v` pass.
+- [ ] Every `scripts/*.sh` file passes `bash -n`, and `python3 scripts/run_unit_tests.py` passes without skips.
 - [ ] `./scripts/test-integration.sh` passes after final edits.
 - [ ] `CHANGELOG.md` and docs (`README.md`, `docs/`) are updated if user-facing behavior changed.
 

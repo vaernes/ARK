@@ -55,6 +55,7 @@ from llm_backend import (
     build_llm_headers,
     normalize_backend_type,
     normalize_third_party_provider,
+    validate_provider_destination,
     resolve_image_backend_config,
     resolve_llm_backend_config,
 )
@@ -113,6 +114,7 @@ LLM_API_KEY = _llm_cfg["api_key"]
 LLM_HEALTH_URL = _llm_cfg["health_url"]
 LLM_SERVED_NAME = os.environ.get("LLM_SERVED_NAME", "ark-llm")
 IMAGE_SERVED_NAME = _image_cfg["default_model"]
+IMAGE_GENERATION_ENABLED = os.environ.get("ENABLE_IMAGE_GENERATION", "false").strip().lower() in {"1", "true"}
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "Qwen/Qwen2.5-14B-Instruct")
 LLM_MODEL_DIR = os.environ.get("LLM_MODEL_DIR", "Qwen--Qwen2.5-14B-Instruct")
 EMBED_MODEL_DIR = os.environ.get("EMBED_MODEL_DIR", "BAAI--bge-m3")
@@ -424,6 +426,8 @@ def _scheduler_loop() -> None:
 def on_startup() -> None:
     global _scheduler_started
     init_db()
+    if not get_version_info()["air_gap_mode"]:
+        audit.record("network.connected_mode", actor="system", details={"enabled": True})
     if not _scheduler_started:
         _scheduler_started = True
         t = threading.Thread(target=_scheduler_loop, daemon=True, name="ark-ingest-scheduler")
@@ -519,6 +523,15 @@ def get_effective_llm_model(project_llm_model: str = "") -> str:
     return override if override else get_default_llm_model()
 
 
+def _validate_backend_destinations(cfg: dict[str, str]) -> dict[str, str]:
+    try:
+        validate_provider_destination(cfg["api_base_url"])
+        validate_provider_destination(cfg["health_url"])
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return cfg
+
+
 def get_llm_backend_settings() -> dict[str, str]:
     """Return active LLM backend settings from system_settings, falling back to env defaults."""
     cfg = dict(_llm_cfg)
@@ -538,7 +551,7 @@ def get_llm_backend_settings() -> dict[str, str]:
                 rows = dict(cur.fetchall())
     except Exception as exc:
         logger.warning("Failed to read LLM backend settings from DB, falling back to env: %s", exc)
-        return cfg
+        return _validate_backend_destinations(cfg)
 
     if "llm_backend_type" in rows:
         cfg["backend_type"] = normalize_backend_type(rows["llm_backend_type"], default=cfg["backend_type"])
@@ -558,7 +571,7 @@ def get_llm_backend_settings() -> dict[str, str]:
         cfg["provider"] = normalize_third_party_provider(rows.get("llm_provider"), cfg["api_base_url"])
     else:
         cfg["provider"] = "ark_llm"
-    return cfg
+    return _validate_backend_destinations(cfg)
 
 
 def get_image_backend_settings() -> dict[str, str]:
@@ -590,7 +603,7 @@ def get_image_backend_settings() -> dict[str, str]:
                 rows = dict(cur.fetchall())
     except Exception as exc:
         logger.warning("Failed to read Image backend settings from DB, falling back to env: %s", exc)
-        return cfg
+        return _validate_backend_destinations(cfg)
 
     if rows.get("image_api_base_url", "").strip():
         cfg["api_base_url"] = rows["image_api_base_url"].strip().rstrip("/")
@@ -602,7 +615,7 @@ def get_image_backend_settings() -> dict[str, str]:
         cfg["health_url"] = rows["image_health_url"].strip() or f"{cfg['api_base_url']}/models"
     elif "image_api_base_url" in rows:
         cfg["health_url"] = f"{cfg['api_base_url']}/models"
-    return cfg
+    return _validate_backend_destinations(cfg)
 
 
 def resolve_model_for_context(context: str = "text", *, model_override: str = "") -> dict[str, str]:
@@ -628,6 +641,10 @@ def resolve_model_for_context(context: str = "text", *, model_override: str = ""
                     )
                     row = cur.fetchone()
                     if row:
+                        try:
+                            validate_provider_destination(row[3])
+                        except ValueError as exc:
+                            raise HTTPException(status_code=403, detail=str(exc)) from exc
                         return {
                             "model_id": row[0],
                             "backend_type": row[1],
@@ -649,6 +666,10 @@ def resolve_model_for_context(context: str = "text", *, model_override: str = ""
                     )
                     row = cur.fetchone()
                     if row:
+                        try:
+                            validate_provider_destination(row[3])
+                        except ValueError as exc:
+                            raise HTTPException(status_code=403, detail=str(exc)) from exc
                         return {
                             "model_id": row[0],
                             "backend_type": row[1],
@@ -657,6 +678,8 @@ def resolve_model_for_context(context: str = "text", *, model_override: str = ""
                             "api_key": decrypt_secret_value(row[4]),
                             "context": row[5],
                         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("Failed to resolve model profile for context '%s', falling back to legacy settings: %s", ctx, exc)
 
@@ -1172,6 +1195,7 @@ def create_presets() -> dict[str, Any]:
         "presets": list(CREATE_STYLE_PRESETS.values()),
         "sizes": CREATE_SUPPORTED_SIZES,
         "default_model": img_cfg["default_model"],
+        "image_generation_enabled": IMAGE_GENERATION_ENABLED,
     }
 
 
@@ -1306,6 +1330,8 @@ def _invoke_upstream_image_generation(
     model_override: str = "",
     response_format: str = "b64_json",
 ) -> tuple[str, dict[str, Any]]:
+    if not IMAGE_GENERATION_ENABLED:
+        raise HTTPException(status_code=503, detail="Image generation is disabled until a compatible backend is configured.")
     resolved = resolve_model_for_context("image", model_override=model_override)
     target_model = resolved["model_id"]
     is_google = resolved.get("provider") == "google" or "generativelanguage.googleapis.com" in resolved["api_base_url"]
@@ -2764,6 +2790,10 @@ def restore_backup(req: RestoreBackupRequest, request: Request) -> dict[str, Any
         "backup_name": safe_name,
         "restored_databases": restored_databases,
         "restored_collections": restored_collections,
+        "warnings": [
+            "The API restores databases and Qdrant only. Restore application files, "
+            "plugin and script archives, certificates, and separately escrowed keys manually."
+        ],
     }
 
 
@@ -2795,35 +2825,35 @@ def _execute_ingest_source_job(job_id: int, source_id: int, triggered_by: str) -
             cur.execute("UPDATE ingest_jobs SET status = 'running' WHERE id = %s", (job_id,))
         conn.commit()
 
-    if not row:
-        raise RuntimeError(f"Ingest source {source_id} not found.")
-
-    (
-        slug,
-        name,
-        source_kind,
-        plugin_id,
-        config,
-        secrets_enc,
-        pipeline_spec,
-        script_name,
-        chunk_cfg_raw,
-        sync_mode,
-        cursor_state,
-        collection_name,
-        rag_enabled,
-    ) = row
-
-    if not rag_enabled or not collection_name:
-        raise RuntimeError("Cannot ingest documents into a non-RAG clean project.")
-
     logs: list[str] = []
-    new_cursor: dict[str, Any] | None = None
-    secrets_dict = decrypt_secrets(secrets_enc)
-    merged_config = {**(config or {}), **secrets_dict}
-    default_chunking = ChunkConfig.model_validate(chunk_cfg_raw or {})
-
+    slug = row[0] if row else None
     try:
+        if not row:
+            raise RuntimeError(f"Ingest source {source_id} not found.")
+        (
+            slug,
+            name,
+            source_kind,
+            plugin_id,
+            config,
+            secrets_enc,
+            pipeline_spec,
+            script_name,
+            chunk_cfg_raw,
+            sync_mode,
+            cursor_state,
+            collection_name,
+            rag_enabled,
+        ) = row
+
+        if not rag_enabled or not collection_name:
+            raise RuntimeError("Cannot ingest documents into a non-RAG clean project.")
+
+        new_cursor: dict[str, Any] | None = None
+        secrets_dict = decrypt_secrets(secrets_enc)
+        merged_config = {**(config or {}), **secrets_dict}
+        default_chunking = ChunkConfig.model_validate(chunk_cfg_raw or {})
+
         if source_kind == "plugin":
             plugins = discover_plugins()
             if plugin_id not in plugins:
@@ -2938,7 +2968,7 @@ def enqueue_ingest_source_job(
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT s.project_slug, p.rag_enabled, p.collection_name FROM ingest_sources s "
-                "JOIN projects p ON p.slug = s.project_slug WHERE s.id = %s",
+                "JOIN projects p ON p.slug = s.project_slug WHERE s.id = %s FOR UPDATE OF s",
                 (source_id,),
             )
             row = cur.fetchone()
@@ -2947,6 +2977,18 @@ def enqueue_ingest_source_job(
             slug, rag_enabled, collection_name = row
             if not rag_enabled or not collection_name:
                 raise HTTPException(status_code=400, detail="Cannot sync documents to a non-RAG clean project.")
+
+            cur.execute(
+                "SELECT id, status FROM ingest_jobs WHERE source_id = %s "
+                "AND status IN ('queued', 'running') ORDER BY id LIMIT 1",
+                (source_id,),
+            )
+            active_job = cur.fetchone()
+            if active_job:
+                if trigger_type == "schedule":
+                    return {"status": active_job[1], "job_id": active_job[0],
+                            "source_id": source_id, "project_slug": slug}
+                raise HTTPException(status_code=409, detail="An ingest job is already queued or running for this source.")
 
             cur.execute(
                 "INSERT INTO ingest_jobs (source_id, project_slug, trigger_type, triggered_by, status) "
@@ -3496,12 +3538,20 @@ def _resolve_llm_backend_update(req: LlmBackendConfigRequest, current: dict[str,
         api_base_url = THIRD_PARTY_LLM_PRESETS.get(preset_id, {}).get("api_base_url", "")
     if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
         raise HTTPException(status_code=400, detail="api_base_url must start with http:// or https://.")
+    try:
+        validate_provider_destination(api_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     provider = normalize_third_party_provider(req.provider, api_base_url) if backend_type == "third_party" else "ark_llm"
 
     health_url = req.health_url.strip()
     if health_url and not (health_url.startswith("http://") or health_url.startswith("https://")):
         raise HTTPException(status_code=400, detail="health_url must start with http:// or https://.")
+    try:
+        validate_provider_destination(health_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     backend_admin_url = req.backend_admin_url.strip().rstrip("/") if backend_type == "ark_llm" else ""
     if backend_admin_url and not (backend_admin_url.startswith("http://") or backend_admin_url.startswith("https://")):
@@ -3746,6 +3796,10 @@ def update_image_backend(req: ImageBackendConfigRequest, request: Request) -> di
     api_base_url = req.api_base_url.strip().rstrip("/")
     if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
         raise HTTPException(status_code=400, detail="api_base_url must start with http:// or https://.")
+    try:
+        validate_provider_destination(api_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     default_model = req.default_model.strip() or "ark-image"
     health_url = req.health_url.strip()
@@ -3753,6 +3807,10 @@ def update_image_backend(req: ImageBackendConfigRequest, request: Request) -> di
         raise HTTPException(status_code=400, detail="health_url must start with http:// or https://.")
 
     current = get_image_backend_settings()
+    try:
+        validate_provider_destination(health_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if req.clear_api_key:
         new_api_key = ""
     elif req.api_key is not None and req.api_key.strip():
@@ -3922,6 +3980,10 @@ def upsert_model_profile(req: ModelProfileRequest, request: Request) -> dict[str
         api_base_url = THIRD_PARTY_LLM_PRESETS.get(preset_id, {}).get("api_base_url", "")
     if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
         raise HTTPException(status_code=400, detail="api_base_url must start with http:// or https://.")
+    try:
+        validate_provider_destination(api_base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     provider = normalize_third_party_provider(req.provider, api_base_url) if backend_type == "third_party" else "ark_llm"
     name = req.name.strip()
@@ -5000,6 +5062,15 @@ async def project_image_generations(
     auth: dict[str, Any] = Depends(authenticate_project_key),
 ) -> JSONResponse:
     _require_key_scope(auth, "images", slug)
+    if not IMAGE_GENERATION_ENABLED:
+        audit.record(
+            "api.image_generation",
+            actor=f"key:{auth['key_label']}",
+            project_slug=slug,
+            status="unavailable",
+            details={"reason": "image_generation_disabled"},
+        )
+        raise HTTPException(status_code=503, detail="Image generation is disabled until a compatible backend is configured.")
     body = await request.json()
     raw_prompt = str(body.get("prompt") or "").strip()
     if not raw_prompt:

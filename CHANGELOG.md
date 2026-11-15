@@ -9,6 +9,18 @@ using `YYYY.MM.PATCH` (for example, `2026.11.0`).
 ## [Unreleased]
 
 ### Changed
+- Integration tests use per-run Docker resources and scoped cleanup; the offline
+  installer and snapshot tools parse configuration without executing shell code.
+- Backup manifest verification rejects incomplete or unchecked database dumps.
+  Recovery screens now describe their database/vector scope and required
+  separately protected application-state and key backups.
+- The standalone LLM console requires a separate management token and defaults
+  to localhost. Scheduled ingest jobs no longer overlap for the same source.
+- Image generation is disabled until explicitly enabled. Known public model
+  providers require connected-mode opt-in; network egress controls remain an
+  operator responsibility.
+- CI validates every shell script, refuses skipped unit tests, and tests the
+  extracted release archive before publishing.
 - **UI/UX pass across Admin Console, User Portal, Project Console and Create Studio (no visual rebrand):**
   - Added shared local assets `admin/static/ark-ui.css` and `admin/static/ark-ui.js` (served from the existing `/admin-console/static`, `/portal/static` and `/create/static` mounts; no external resources) providing a visible `:focus-visible` ring, an accessible confirm dialog (focus move/trap/restore, `Esc` and backdrop close), keyboard-operable ARIA tabs (arrow keys, `aria-controls`) and KPI cards, busy-state protection against double submits, inline field validation, higher-contrast helper text, a sticky error banner, and small-screen/reduced-motion rules.
   - User Portal: revoking an API key now asks for confirmation, a newly issued key shows a dedicated "shown once" box with a **Copy** button and toast, and API errors show the server's `detail` message.

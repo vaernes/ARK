@@ -10,6 +10,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo '0.0.0-dev')"
+# shellcheck source=load-env.sh
+source "${SCRIPT_DIR}/load-env.sh"
 
 ARTIFACTS_DIR="${REPO_ROOT}/artifacts"
 IMAGES_ARCHIVE=""
@@ -149,10 +151,7 @@ main() {
     err "${REPO_ROOT}/.env not found. Copy .env.example to .env and configure site secrets before installing."
   fi
 
-  set -a
-  # shellcheck disable=SC1091
-  source "${REPO_ROOT}/.env"
-  set +a
+  load_ark_env "${REPO_ROOT}/.env" || err "Could not load environment configuration."
 
   IMAGES_ARCHIVE="${IMAGES_ARCHIVE:-${ARTIFACTS_DIR}/ark-images.tar.zst}"
   MODELS_ARCHIVE="${MODELS_ARCHIVE:-${ARTIFACTS_DIR}/ark-models.tar.zst}"
@@ -291,6 +290,9 @@ import sys
 from pathlib import Path
 
 env_path = Path(sys.argv[1])
+sys.path.insert(0, str(env_path.parent / "scripts"))
+from parse_env import parse_env
+
 realm_path = Path(sys.argv[2])
 domain = sys.argv[3]
 backup_dir = sys.argv[4]
@@ -315,12 +317,7 @@ def is_placeholder(val: str) -> bool:
 if llm_key and not is_placeholder(llm_key):
     updates["LLM_API_KEY"] = llm_key
 
-env_map: dict[str, str] = {}
-for raw in lines:
-    s = raw.strip()
-    if s and not s.startswith("#") and "=" in s:
-        k, v = s.split("=", 1)
-        env_map[k.strip()] = v.strip()
+env_map = parse_env(env_path)
 
 secret_generators = {
     "POSTGRES_PASSWORD": lambda: secrets.token_hex(24),
@@ -347,20 +344,30 @@ if "LLM_API_KEY" not in updates and is_placeholder(env_map.get("LLM_API_KEY", ""
 
 new_lines: list[str] = []
 seen: set[str] = set()
+
+def format_env_value(value: str) -> str:
+    if any(char in value for char in ("\x00", "\n", "\r")):
+        raise ValueError("Environment values cannot contain control characters.")
+    if not value or all(char.isalnum() or char in "_./:@-" for char in value):
+        return value
+    return "'" + value.replace("'", "\\'") + "'"
+
 for raw in lines:
     s = raw.strip()
     if s and not s.startswith("#") and "=" in s:
+        if s.startswith("export "):
+            s = s[len("export "):].lstrip()
         k = s.split("=", 1)[0].strip()
         seen.add(k)
         if k in updates:
-            new_lines.append(f"{k}={updates[k]}")
+            new_lines.append(f"{k}={format_env_value(updates[k])}")
             env_map[k] = updates[k]
             continue
     new_lines.append(raw)
 
 for k, v in updates.items():
     if k not in seen:
-        new_lines.append(f"{k}={v}")
+        new_lines.append(f"{k}={format_env_value(v)}")
         env_map[k] = v
 
 env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")

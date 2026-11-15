@@ -219,41 +219,49 @@ def verify_backup_manifest(backup_dir: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Backup manifest not found: {manifest_path}")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for db_entry in manifest.get("databases", []):
-        rel_file = db_entry.get("file", "")
-        target = (root / rel_file).resolve()
-        if root not in target.parents or not target.is_file():
-            raise FileNotFoundError(f"Missing database dump in backup: {rel_file}")
-        expected_sha = db_entry.get("sha256", "")
-        actual_sha = sha256_file(target)
-        if expected_sha and actual_sha != expected_sha:
-            raise ValueError(f"SHA-256 mismatch for {rel_file}: expected {expected_sha}, got {actual_sha}")
-        verify_gzip_file(target)
+    if not isinstance(manifest, dict):
+        raise ValueError("Backup manifest must be an object.")
+    databases = manifest.get("databases")
+    snapshots = manifest.get("qdrant_snapshots")
+    if not isinstance(databases, list) or not all(isinstance(entry, dict) for entry in databases):
+        raise ValueError("Backup manifest must contain database entries.")
+    database_names = [entry.get("database") for entry in databases]
+    if (len(database_names) != 3 or not all(isinstance(name, str) for name in database_names)
+            or set(database_names) != {"openwebui", "keycloak", "ark_admin"}):
+        raise ValueError("Backup must contain exactly the openwebui, keycloak, and ark_admin databases.")
+    if not isinstance(snapshots, list) or not all(isinstance(entry, dict) for entry in snapshots):
+        raise ValueError("Backup manifest must contain a Qdrant snapshot list.")
+    extra_archives = manifest.get("extra_archives", {})
+    if not isinstance(extra_archives, dict):
+        raise ValueError("Backup extra_archives must be an object.")
 
-    for snap_entry in manifest.get("qdrant_snapshots", []):
-        rel_path = snap_entry.get("path", "")
+    def verify_entry(entry: dict[str, Any], path_key: str, kind: str) -> Path:
+        rel_path = entry.get(path_key)
+        expected_sha = entry.get("sha256")
+        if not isinstance(rel_path, str) or not rel_path:
+            raise ValueError(f"Missing path for {kind}.")
+        if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+            raise ValueError(f"Missing or invalid SHA-256 checksum for {kind}.")
         target = (root / rel_path).resolve()
         if root not in target.parents or not target.is_file():
-            raise FileNotFoundError(f"Missing Qdrant snapshot in backup: {rel_path}")
-        expected_sha = snap_entry.get("sha256", "")
+            raise FileNotFoundError(f"Missing {kind} in backup: {rel_path}")
         actual_sha = sha256_file(target)
-        if expected_sha and actual_sha != expected_sha:
+        if actual_sha != expected_sha:
             raise ValueError(f"SHA-256 mismatch for {rel_path}: expected {expected_sha}, got {actual_sha}")
+        return target
 
-    extra_archives = manifest.get("extra_archives") or {}
-    if isinstance(extra_archives, dict):
-        for archive_key, entry in extra_archives.items():
-            if not isinstance(entry, dict):
-                continue
-            rel_file = entry.get("file", "")
-            if not rel_file:
-                continue
-            target = (root / rel_file).resolve()
-            if root not in target.parents or not target.is_file():
-                raise FileNotFoundError(f"Missing extra archive '{archive_key}' in backup: {rel_file}")
-            expected_sha = entry.get("sha256", "")
-            actual_sha = sha256_file(target)
-            if expected_sha and actual_sha != expected_sha:
-                raise ValueError(f"SHA-256 mismatch for {rel_file}: expected {expected_sha}, got {actual_sha}")
+    for db_entry in databases:
+        verify_gzip_file(verify_entry(db_entry, "file", "database dump"))
+    collections: set[str] = set()
+    for snap_entry in snapshots:
+        collection = snap_entry.get("collection")
+        if not isinstance(collection, str) or not collection or collection in collections:
+            raise ValueError("Each Qdrant snapshot must identify a unique collection.")
+        collections.add(collection)
+        verify_entry(snap_entry, "path", "Qdrant snapshot")
+    for archive_key, entry in extra_archives.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"Invalid extra archive '{archive_key}' in backup.")
+        verify_entry(entry, "file", f"extra archive '{archive_key}'")
 
     return manifest

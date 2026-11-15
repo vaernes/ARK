@@ -405,7 +405,7 @@
       portalProjects = projects || [];
       const verLabel = `v${ver.version}`;
       document.getElementById('ark-version').textContent = verLabel;
-      document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel} • ${ver.license} License • Strict Air-Gap Mode`;
+      document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel} • ${ver.license} License • ${ver.air_gap_mode ? 'Offline mode' : 'Connected mode: cloud access enabled'}`;
       document.getElementById('me-user').textContent = me.user;
       document.getElementById('me-groups').textContent = me.groups.length ? me.groups.join(', ') : 'none';
       if (me.is_admin) {

@@ -13,12 +13,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Shell syntax check
-        run: bash -n scripts/*.sh
+        run: for script in scripts/*.sh; do bash -n "$script"; done
 
       - name: Python unit tests
         run: |
           python3 -m pip install --no-cache-dir -r admin/requirements.txt
-          python3 -m unittest discover -s tests -v
+          python3 scripts/run_unit_tests.py
 
       - name: Air-gap & offline-flag invariants check
         run: |

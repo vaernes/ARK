@@ -33,6 +33,7 @@ from llm_backend import (  # noqa: E402
     normalize_third_party_provider,
     resolve_image_backend_config,
     resolve_llm_backend_config,
+    validate_provider_destination,
 )
 from mock_inference import deterministic_embedding, generate_mock_png_b64  # noqa: E402
 from security import authorize_proxy_request, normalize_groups  # noqa: E402
@@ -204,9 +205,16 @@ class TestBackupUtils(unittest.TestCase):
             snap_file = snap_dir / "Project_Alpha-1.snapshot"
             snap_file.write_bytes(b"snapshot-binary-payload")
 
+            db_entries = [db_entry]
+            for name in ("openwebui", "keycloak"):
+                db_entries.append(dump_postgres_gzip(
+                    db_name=name, out_file=backup_dir / f"{name}.sql.gz",
+                    pg_host="postgres", pg_port=5432, pg_user="ark_webui",
+                    pg_password="pw", pg_dump_bin=str(mock_pg_dump),
+                ))
             manifest = {
                 "created_at": "2026-11-13T00:00:00+00:00",
-                "databases": [db_entry],
+                "databases": db_entries,
                 "qdrant_snapshots": [
                     {
                         "collection": "Project_Alpha",
@@ -220,7 +228,7 @@ class TestBackupUtils(unittest.TestCase):
             (backup_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
             verified = verify_backup_manifest(backup_dir)
-            self.assertEqual(len(verified["databases"]), 1)
+            self.assertEqual(len(verified["databases"]), 3)
             self.assertEqual(len(verified["qdrant_snapshots"]), 1)
 
             # Verify restore streams SQL into psql without shell
@@ -249,6 +257,20 @@ class TestBackupUtils(unittest.TestCase):
             snap_file.write_bytes(b"tampered")
             with self.assertRaises(ValueError):
                 verify_backup_manifest(backup_dir)
+
+    def test_manifest_rejects_empty_incomplete_and_unchecked_backups(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            for manifest in (
+                {},
+                {"databases": [], "qdrant_snapshots": []},
+                {"databases": [{"database": "ark_admin"}, {"database": "openwebui"},
+                               {"database": "keycloak"}], "qdrant_snapshots": []},
+            ):
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    verify_backup_manifest(root)
 
     def test_dump_failure_removes_partial_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,6 +303,177 @@ class TestUiXssSafety(unittest.TestCase):
             self.assertNotIn("innerHTML", content, f"{rel_path} must use safe DOM APIs instead of innerHTML")
             external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', content, re.I)
             self.assertEqual(external_urls, [], f"{rel_path} must not reference external URLs")
+
+
+class TestEnvironmentConfiguration(unittest.TestCase):
+    def test_template_and_quoted_values_are_loaded_without_shell_execution(self) -> None:
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "executed"
+            env_file = root / "test.env"
+            env_file.write_text(
+                "LABEL=Corporate Active Directory\n"
+                "FILTER=(&(objectClass=user)(uid=test))\n"
+                "PASSWORD='literal$secret'\n"
+                f"INERT='$(touch {marker})'\n",
+                encoding="utf-8",
+            )
+            shell = (
+                'SCRIPT_DIR="$1"; source "$SCRIPT_DIR/load-env.sh"; '
+                'load_ark_env "$2"; printf "%s\\0%s\\0%s\\0%s" '
+                '"$LABEL" "$FILTER" "$PASSWORD" "$INERT"'
+            )
+            proc = subprocess.run(
+                ["bash", "-e", "-c", shell, "env-test", str(REPO_ROOT / "scripts"), str(env_file)],
+                capture_output=True, check=True,
+            )
+            self.assertEqual(proc.stdout.split(b"\0"), [
+                b"Corporate Active Directory",
+                b"(&(objectClass=user)(uid=test))",
+                b"literal$secret",
+                f"$(touch {marker})".encode(),
+            ])
+            self.assertFalse(marker.exists())
+
+            proc = subprocess.run(
+                ["python3", str(REPO_ROOT / "scripts" / "parse_env.py"), str(REPO_ROOT / ".env.example")],
+                capture_output=True, check=True,
+            )
+            self.assertIn(b"LDAP_SERVER_LABEL\0Corporate Active Directory\0", proc.stdout)
+
+            env_file.write_text("SAFE=new\nBAD=$(untrusted)\n", encoding="utf-8")
+            proc = subprocess.run(
+                ["bash", "-e", "-c", shell, "env-test", str(REPO_ROOT / "scripts"), str(env_file)],
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(b"single quotes", proc.stderr)
+            self.assertEqual(proc.stdout, b"")
+
+    def test_offline_installer_preserves_quoted_client_secret(self) -> None:
+        import hashlib
+        import shutil
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ("VERSION", "config/keycloak/ark-realm.json", "scripts/install-offline.sh",
+                        "scripts/load-env.sh", "scripts/parse_env.py"):
+                target = root / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPO_ROOT / rel, target)
+            template = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+            template = template.replace(
+                "OIDC_OPENWEBUI_CLIENT_SECRET=ark-openwebui-oidc-secret-change-me",
+                "OIDC_OPENWEBUI_CLIENT_SECRET='client$secret'",
+            )
+            (root / ".env").write_text(template, encoding="utf-8")
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            for model in ("Qwen--Qwen2.5-14B-Instruct", "BAAI--bge-m3", "BAAI--bge-reranker-v2-m3"):
+                (artifacts / "models" / model).mkdir(parents=True)
+            archive = artifacts / "ark-images.tar.zst"
+            archive.write_bytes(b"test archive")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            (artifacts / "ark-images.tar.zst.sha256").write_text(f"{digest}  {archive.name}\n")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            docker = bin_dir / "docker"
+            docker.write_text(
+                '#!/bin/sh\nif [ "$1" = compose ] && [ "$2" = version ]; then exit 0; fi\n'
+                'if [ "$1" = load ]; then cat >/dev/null; exit 0; fi\nexit 1\n',
+                encoding="utf-8",
+            )
+            zstd = bin_dir / "zstd"
+            zstd.write_text('#!/bin/sh\ncat "$3"\n', encoding="utf-8")
+            docker.chmod(0o755)
+            zstd.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+            proc = subprocess.run(
+                ["bash", str(root / "scripts" / "install-offline.sh"), "--skip-gpu-check",
+                 "--min-free-gb", "0", "--non-interactive", "--no-start"],
+                cwd=root, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            realm = json.loads((root / "config/keycloak/ark-realm.json").read_text())
+            webui = next(client for client in realm["clients"] if client["clientId"] == "open-webui")
+            self.assertEqual(webui["secret"], "client$secret")
+
+
+class TestIntegrationRunnerIsolation(unittest.TestCase):
+    def test_failed_concurrent_runs_only_clean_up_owned_resources(self) -> None:
+        import subprocess
+        import textwrap
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docker = root / "docker"
+            docker.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json
+                import os
+                import sys
+
+                args = sys.argv[1:]
+                with open(os.environ["ARK_TEST_DOCKER_LOG"], "a", encoding="utf-8") as log:
+                    log.write(json.dumps(args) + "\\n")
+                if args[:2] == ["buildx", "version"]:
+                    sys.exit(1)
+                if args[:2] == ["image", "inspect"]:
+                    print(os.environ["ARK_TEST_VERSION"])
+                elif args[:2] == ["network", "create"]:
+                    print("network-" + args[-1])
+                elif args[0] == "run":
+                    if "--rm" in args:
+                        sys.exit(0)
+                    name = args[args.index("--name") + 1]
+                    if name.endswith("-postgres"):
+                        sys.exit(42)
+                    print("container-" + name)
+                elif args[0] == "port":
+                    print("127.0.0.1:49123")
+                """), encoding="utf-8")
+            docker.chmod(0o755)
+
+            processes = []
+            logs = []
+            for index in range(2):
+                log = root / f"docker-{index}.jsonl"
+                logs.append(log)
+                env = os.environ.copy()
+                env.update({
+                    "PATH": f"{root}{os.pathsep}{env.get('PATH', '')}",
+                    "TMPDIR": str(root),
+                    "ARK_TEST_DOCKER_LOG": str(log),
+                    "ARK_TEST_VERSION": (REPO_ROOT / "VERSION").read_text().strip(),
+                })
+                env.pop("TEST_HTTPS_PORT", None)
+                processes.append(subprocess.Popen(
+                    ["bash", str(REPO_ROOT / "scripts" / "test-integration.sh")],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                ))
+
+            resource_sets = []
+            for process, log in zip(processes, logs):
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertNotEqual(process.returncode, 0, stdout + stderr)
+                calls = [json.loads(line) for line in log.read_text().splitlines()]
+                networks = {f"network-{call[-1]}" for call in calls if call[:2] == ["network", "create"]}
+                containers = {
+                    f"container-{call[call.index('--name') + 1]}"
+                    for call in calls if call[0] == "run" and "--name" in call
+                    and not call[call.index("--name") + 1].endswith("-postgres")
+                }
+                removed_containers = {call[-1] for call in calls if call[:2] == ["rm", "-f"]}
+                removed_networks = {call[-1] for call in calls if call[:2] == ["network", "rm"]}
+                self.assertEqual(removed_containers, containers)
+                self.assertEqual(removed_networks, networks)
+                self.assertTrue(any("127.0.0.1::443" in call for call in calls if call[0] == "run"))
+                resource_sets.append(containers | networks)
+            self.assertTrue(resource_sets[0].isdisjoint(resource_sets[1]))
 
 
 class TestVersionAndLicense(unittest.TestCase):
@@ -429,6 +622,14 @@ class TestVersionAndLicense(unittest.TestCase):
 
 
 class TestLlmBackendConfig(unittest.TestCase):
+    def test_public_provider_requires_connected_mode(self) -> None:
+        for url in ("https://api.openai.com/v1", "https://API.ANTHROPIC.COM./v1",
+                    "https://router.huggingface.co/v1", "https://generativelanguage.googleapis.com/v1"):
+            with self.assertRaises(ValueError):
+                validate_provider_destination(url, {"ARK_CONNECTED_MODE": "false"})
+            validate_provider_destination(url, {"ARK_CONNECTED_MODE": "true"})
+        validate_provider_destination("http://litellm.internal:4000/v1", {"ARK_CONNECTED_MODE": "false"})
+
     def test_explicit_external_openai_backend(self) -> None:
         cfg = resolve_llm_backend_config(
             {

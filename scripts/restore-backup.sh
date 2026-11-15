@@ -2,13 +2,15 @@
 set -euo pipefail
 
 # ==============================================================================
-# ARK Full-Stack Backup Verification & Disaster Recovery Restore
+# ARK Database and Vector Backup Verification & Restore
 # Verifies manifest.json SHA-256 checksums and gzip integrity, then restores
 # PostgreSQL databases (openwebui, keycloak, ark_admin) and Qdrant snapshots.
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=load-env.sh
+source "${SCRIPT_DIR}/load-env.sh"
 
 BACKUP_DIR=""
 ENV_FILE="${REPO_ROOT}/.env"
@@ -65,10 +67,7 @@ main() {
   [[ -f "${BACKUP_DIR}/manifest.json" ]] || err "Backup manifest missing: ${BACKUP_DIR}/manifest.json"
 
   if [[ -f "${ENV_FILE}" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "${ENV_FILE}"
-    set +a
+    load_ark_env "${ENV_FILE}" || err "Could not load environment configuration."
   fi
 
   local pg_user="${POSTGRES_USER:-ark_webui}"
@@ -153,7 +152,8 @@ for d in m.get("databases", []):
     log "All PostgreSQL databases restored and verified."
   fi
 
-  log "Full-stack restore completed successfully from ${BACKUP_DIR}."
+  warn "Application files, plugin/script archives, certificates, and escrowed keys must be restored separately."
+  log "Database and vector restore completed successfully from ${BACKUP_DIR}."
 }
 
 main "$@"

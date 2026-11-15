@@ -679,7 +679,7 @@
           <span id="proj-mode-badge" class="badge rag">...</span>
           <span id="proj-role-badge" class="badge clean">...</span>
         </div>
-        <small id="proj-subtitle">Dedicated Project Workspace &bull; Strict Air-Gap</small>
+        <small id="proj-subtitle">Dedicated Project Workspace</small>
       </div>
     </div>
     <div class="status-strip">
@@ -1478,7 +1478,7 @@
       document.getElementById('card-chat-link').href = chatUrl;
 
       const verLabel = `v${ver.version || ''}`;
-      document.getElementById('ark-footer').textContent = `${ver.product || 'ARK'} ${verLabel} \u2022 Project Console (${proj.slug}) \u2022 Strict Air-Gap Mode`;
+      document.getElementById('ark-footer').textContent = `${ver.product || 'ARK'} ${verLabel} \u2022 Project Console (${proj.slug}) \u2022 ${ver.air_gap_mode ? 'Offline mode' : 'Connected mode: cloud access enabled'}`;
 
       // Overview KPIs & inputs
       document.getElementById('kpi-mode-val').textContent = proj.rag_enabled ? 'RAG Isolated KB' : 'Clean (No-RAG)';

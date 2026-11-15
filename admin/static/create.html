@@ -476,7 +476,7 @@
       </div>
 
       <div class="btn-row">
-        <button id="btn-generate" class="amber" type="button" style="width:100%; padding:11px; font-size:0.92rem;"
+        <button id="btn-generate" class="amber" type="button" disabled style="width:100%; padding:11px; font-size:0.92rem;"
           onclick="generateImage()">
           Generate Visual Asset
         </button>
@@ -493,7 +493,7 @@
       <div id="canvas-stage" class="canvas-stage">
         <div class="empty-stage" id="empty-stage">
           Select a visual style preset, describe your image or diagram on the left, and click
-          <strong>Generate Visual Asset</strong>. All generation runs 100% inside your air-gapped ARK appliance.
+          <strong>Generate Visual Asset</strong>. The configured backend determines where generation runs.
         </div>
       </div>
 
@@ -539,6 +539,7 @@
     let loadedPresets = [];
     let loadedCreations = [];
     let activeCreation = null;
+    let imageGenerationEnabled = false;
 
     const showError = (msg) => {
       const elNode = document.getElementById('ui-alert');
@@ -710,7 +711,7 @@
       const statusLabel = document.getElementById('preview-status');
       btn.disabled = true;
       statusLabel.textContent = 'Generating visual asset...';
-      showStatus('Generating image in air-gapped studio...');
+      showStatus('Generating image with the configured backend...');
 
       try {
         const projVal = document.getElementById('create-project').value;
@@ -732,7 +733,7 @@
         statusLabel.textContent = 'Error';
         showStatus('');
       } finally {
-        btn.disabled = false;
+        btn.disabled = !imageGenerationEnabled;
       }
     }
 
@@ -796,13 +797,18 @@
       const verLabel = `v${ver.version}`;
       document.getElementById('ark-version').textContent = verLabel;
       document.getElementById('ark-footer').textContent =
-        `${ver.product} ${verLabel} • ${ver.license} License • Strict Air-Gap Mode`;
+        `${ver.product} ${verLabel} • ${ver.license} License • ${ver.air_gap_mode ? 'Offline mode' : 'Connected mode: cloud access enabled'}`;
       document.getElementById('me-user').textContent = me.user;
       if (me.is_admin) {
         document.getElementById('admin-link').style.display = 'inline-block';
       }
 
       document.getElementById('active-model-badge').textContent = presetMeta.default_model || 'ark-image';
+      imageGenerationEnabled = presetMeta.image_generation_enabled === true;
+      document.getElementById('btn-generate').disabled = !imageGenerationEnabled;
+      if (!imageGenerationEnabled) {
+        showStatus('Image generation is unavailable until an administrator configures and enables a compatible backend.');
+      }
       loadedPresets = presetMeta.presets || [];
       if (loadedPresets.length && !loadedPresets.some(p => p.id === selectedPreset)) {
         selectedPreset = loadedPresets[0].id;

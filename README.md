@@ -6,7 +6,7 @@
 
 **Version:** `2026.11.1` · **License:** [Apache-2.0](LICENSE) · **Changelog:** [CHANGELOG.md](CHANGELOG.md) · **Security:** [SECURITY.md](SECURITY.md)
 
-**ARK** is a 100% open-source, self-hosted AI assistant and knowledge platform built for **strictly air-gapped (offline)** organizations. It gives your teams private LLM chat, document-grounded search (RAG), corporate Single Sign-On, and project-scoped APIs for IDEs and Office tools—without a single byte ever leaving your network.
+**ARK** is a 100% open-source, self-hosted AI assistant and knowledge platform designed for **strictly air-gapped (offline)** organizations. It gives teams private LLM chat, document-grounded search (RAG), corporate Single Sign-On, and project-scoped APIs. Operators must enforce network isolation; public cloud providers require explicit connected-mode opt-in.
 
 ---
 
@@ -20,7 +20,7 @@
 
 ## Key Capabilities
 
-- **100% Offline by Design:** Runs completely inside your internal network with no external API calls, cloud dependencies, or telemetry.
+- **Offline by Default:** Designed for internal services without cloud dependencies or telemetry. Enforce egress restrictions at the network boundary.
 - **Isolated Project Workspaces:** Create **RAG-enabled projects** (each with its own private document collection and assistant) or **Clean projects** (general-purpose AI chat with no document retrieval) so sensitive project data never mixes.
 - **Enterprise Single Sign-On:** Users sign in with their existing corporate credentials (Active Directory, Kerberos, SAML 2.0, or OIDC), and project permissions follow their IT security groups automatically.
 - **Built-in Document Ingestion:** Connect **SharePoint On-Prem**, **M-Files**, **SMB/NFS file shares**, or custom data pipelines to automatically index PDFs, Word, Excel, PowerPoint, and text files.
@@ -37,7 +37,8 @@ Team members sign in with Corporate SSO to chat with their authorized project as
 ![ARK WebChat UI](docs/images/webchat-ui.png)
 
 ### 2. ARK Create Studio (`/create/`)
-**ARK Create Studio** gives authenticated users a dedicated visual studio to generate images, diagrams, icons, and presentation graphics 100% offline—complete with style presets, AI prompt enhancement powered by the ARK LLM, aspect-ratio controls, and a personal creation gallery.
+**ARK Create Studio** gives authenticated users a dedicated visual studio to generate images, diagrams, icons, and presentation graphics with a configured backend, style presets, AI prompt enhancement, aspect-ratio controls, and a personal creation gallery.
+Image generation requires a compatible backend and is disabled by default.
 
 ![ARK Create Studio](docs/images/create-studio.png)
 
@@ -71,7 +72,7 @@ For detailed instructions and API examples, see the **[User & Operations Guide](
 ### For Administrators
 1. **Bundle at HQ:** On an internet-connected build machine, run `./scripts/bundle-offline.sh --package-models` to package container images and model weights for offline transfer.
 2. **Install Offline:** Transfer the bundle to your air-gapped Linux GPU server, configure `.env`, and run `./scripts/install-offline.sh`.
-3. **Provision & Operate:** Open `/admin-console/` to create projects, connect SharePoint/M-Files/SMB data sources, manage API keys, and schedule backups.
+3. **Provision & Operate:** Open `/admin-console/` to create projects, connect SharePoint/M-Files/SMB data sources, manage API keys, and back up databases and vectors.
 
 For the full deployment runbook, see the **[Installation & Setup Guide](docs/INSTALL.md)**.
 

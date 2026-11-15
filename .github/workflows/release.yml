@@ -92,9 +92,12 @@ jobs:
 
       - name: Shell syntax & unit tests
         run: |
-          bash -n scripts/*.sh
+          for script in scripts/*.sh; do bash -n "$script"; done
           python3 -m pip install --no-cache-dir -r admin/requirements.txt
-          python3 -m unittest discover -s tests -v
+          python3 scripts/run_unit_tests.py
+
+      - name: Run GPU-less integration tests
+        run: ./scripts/test-integration.sh
 
       - name: Build ark-admin image with OCI metadata
         run: |
@@ -114,22 +117,11 @@ jobs:
           STAGE_DIR="dist/ark-${VERSION}"
           mkdir -p dist "${STAGE_DIR}"
           cp -a \
-            VERSION LICENSE NOTICE CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md \
+            VERSION versions.env LICENSE NOTICE CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md \
             README.md AGENTS.md .env.example docker-compose.yml docker-compose.llm.yml docker-compose.test.yml \
             admin llm-admin config docs provisioning scripts tests \
             "${STAGE_DIR}/"
-          printf '%s\n' "${VERSION}" > "${STAGE_DIR}/VERSION"
-          python3 - "${STAGE_DIR}/README.md" "${VERSION}" <<'PYEOF'
-          import re, sys
-          from pathlib import Path
-          p = Path(sys.argv[1])
-          ver = sys.argv[2]
-          text = p.read_text(encoding="utf-8")
-          updated, n = re.subn(r'^(\*\*Version:\*\* )`[^`]+`', rf'\g<1>`{ver}`', text, count=1, flags=re.M)
-          if n != 1:
-              raise RuntimeError("Failed to update **Version:** in staged README.md")
-          p.write_text(updated, encoding="utf-8")
-          PYEOF
+          "${STAGE_DIR}/scripts/bump-version.sh" --update-changelog "${VERSION}"
           find "${STAGE_DIR}" -name '__pycache__' -type d -prune -exec rm -rf {} +
           tar -C dist -czf "dist/ark-${VERSION}.tar.gz" "ark-${VERSION}"
           (cd dist && sha256sum "ark-${VERSION}.tar.gz" > "ark-${VERSION}.tar.gz.sha256")
@@ -150,6 +142,15 @@ jobs:
           Path(sys.argv[1]).write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
           PYEOF
           (cd dist && sha256sum "ark-${VERSION}-manifest.json" >> "SHA256SUMS" && sha256sum "ark-${VERSION}.tar.gz" >> "SHA256SUMS")
+
+      - name: Verify extracted release archive
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          VERIFY_DIR="$(mktemp -d)"
+          tar -xzf "dist/ark-${VERSION}.tar.gz" -C "${VERIFY_DIR}"
+          cd "${VERIFY_DIR}/ark-${VERSION}"
+          ./scripts/sync-versions.sh --check
+          python3 scripts/run_unit_tests.py
 
       - name: Extract release notes from CHANGELOG.md
         id: notes

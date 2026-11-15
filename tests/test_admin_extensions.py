@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ADMIN_DIR = ROOT_DIR / "admin"
@@ -119,16 +120,19 @@ class TestBackupManifestExtraArchives(unittest.TestCase):
     def test_verify_backup_manifest_validates_extra_archives(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            db_gz = root / "ark_admin.sql.gz"
-            with gzip.open(db_gz, "wb") as fh:
-                fh.write(b"-- sql dump\n")
+            databases = []
+            for name in ("ark_admin", "openwebui", "keycloak"):
+                db_gz = root / f"{name}.sql.gz"
+                with gzip.open(db_gz, "wb") as fh:
+                    fh.write(b"-- sql dump\n")
+                databases.append({"database": name, "file": db_gz.name, "sha256": backup_utils.sha256_file(db_gz)})
             plugins_gz = root / "plugins.tar.gz"
             with gzip.open(plugins_gz, "wb") as fh:
                 fh.write(b"fake plugin archive payload\n")
 
             manifest = {
                 "ark_version": "test",
-                "databases": [{"name": "ark_admin", "file": "ark_admin.sql.gz", "sha256": backup_utils.sha256_file(db_gz)}],
+                "databases": databases,
                 "qdrant_snapshots": [],
                 "extra_archives": {
                     "plugins": {"file": "plugins.tar.gz", "sha256": backup_utils.sha256_file(plugins_gz)},
@@ -210,6 +214,27 @@ class TestUiAndLlmAdminSecurity(unittest.TestCase):
             r'@app\.get\("/api/status",\s*dependencies=\[Depends\(require_admin_token\)\]\)',
         )
 
+    @unittest.skipUnless(importlib.util.find_spec("fastapi"), "LLM admin dependencies not installed")
+    def test_llm_admin_requires_a_separate_configured_token(self):
+        from fastapi import HTTPException, Request
+
+        spec = importlib.util.spec_from_file_location("ark_llm_admin_test", LLM_ADMIN_DIR / "app.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {"LLM_ADMIN_TOKEN": "", "LLM_API_KEY": "inference-key"}):
+            with mock.patch.dict(sys.modules, {spec.name: module}):
+                spec.loader.exec_module(module)
+                request = Request({"type": "http", "headers": []})
+                with self.assertRaises(HTTPException) as missing:
+                    module.require_admin_token(request)
+                self.assertEqual(missing.exception.status_code, 503)
+                module.LLM_ADMIN_TOKEN = "admin-key"
+                with self.assertRaises(HTTPException) as denied:
+                    module.require_admin_token(request)
+                self.assertEqual(denied.exception.status_code, 401)
+                authorized = Request({"type": "http", "headers": [(b"authorization", b"Bearer admin-key")]})
+                module.require_admin_token(authorized)
+
 
 @unittest.skipUnless(HAS_INGEST_DEPS, "admin ingest dependencies not installed in host python")
 class TestIngestSecretsAndChunking(unittest.TestCase):
@@ -240,6 +265,131 @@ class TestIngestSecretsAndChunking(unittest.TestCase):
         self.assertGreaterEqual(len(md_chunks), 2)
         line_chunks = ingest.chunk_lines("\n".join(f"line-{i}" for i in range(30)), chunk_size=40, overlap=10)
         self.assertGreaterEqual(len(line_chunks), 2)
+
+
+@unittest.skipUnless(HAS_INGEST_DEPS, "admin ingest dependencies not installed in host python")
+class TestAdminRuntimePolicies(unittest.TestCase):
+    def test_existing_job_prevents_duplicate_source_sync(self):
+        from fastapi import HTTPException
+
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = importlib.util.spec_from_file_location("ark_admin_scheduling_test", ADMIN_DIR / "app.py")
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            settings = {
+                "ARK_ADMIN_DB_URL": "postgresql://unused",
+                "ARK_AUDIT_LOG_FILE": str(Path(tmp) / "audit.jsonl"),
+            }
+            with mock.patch.dict(os.environ, settings), mock.patch.dict(sys.modules, {spec.name: module}):
+                spec.loader.exec_module(module)
+                try:
+                    cursor = mock.MagicMock()
+                    cursor.__enter__.return_value = cursor
+                    cursor.fetchone.side_effect = [("alpha", True, "Alpha"), (42, "running")]
+                    connection = mock.MagicMock()
+                    connection.__enter__.return_value = connection
+                    connection.cursor.return_value = cursor
+                    with mock.patch.object(module.psycopg, "connect", return_value=connection), \
+                            mock.patch.object(module.ingest_executor, "submit") as submit:
+                        result = module.enqueue_ingest_source_job(
+                            source_id=1, triggered_by="scheduler", trigger_type="schedule",
+                        )
+                        self.assertEqual(result["job_id"], 42)
+                        self.assertEqual(result["status"], "running")
+                        self.assertIn("FOR UPDATE OF s", cursor.execute.call_args_list[0].args[0])
+                        submit.assert_not_called()
+
+                        cursor.fetchone.side_effect = [("alpha", True, "Alpha"), (42, "running")]
+                        with self.assertRaises(HTTPException) as conflict:
+                            module.enqueue_ingest_source_job(source_id=1, triggered_by="admin")
+                        self.assertEqual(conflict.exception.status_code, 409)
+                        submit.assert_not_called()
+
+                    cursor.reset_mock()
+                    cursor.fetchone.side_effect = [None]
+                    with mock.patch.object(module.psycopg, "connect", return_value=connection), \
+                            mock.patch.object(module.audit, "record") as record:
+                        with self.assertRaises(RuntimeError):
+                            module._execute_ingest_source_job(42, 1, "admin")
+                        self.assertTrue(any(
+                            "UPDATE ingest_jobs SET status = 'failed'" in call.args[0]
+                            for call in cursor.execute.call_args_list
+                        ))
+                        self.assertEqual(record.call_args.kwargs["status"], "error")
+                finally:
+                    module.ingest_executor.shutdown(wait=False)
+
+    def test_image_generation_is_gated_and_audited(self):
+        import asyncio
+        from fastapi import HTTPException, Request
+
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = importlib.util.spec_from_file_location("ark_admin_image_test", ADMIN_DIR / "app.py")
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            settings = {
+                "ARK_ADMIN_DB_URL": "postgresql://unused",
+                "ARK_AUDIT_LOG_FILE": str(Path(tmp) / "audit.jsonl"),
+                "ENABLE_IMAGE_GENERATION": "false",
+            }
+            with mock.patch.dict(os.environ, settings), mock.patch.dict(sys.modules, {spec.name: module}):
+                spec.loader.exec_module(module)
+                try:
+                    with self.assertRaises(HTTPException) as unavailable:
+                        module._invoke_upstream_image_generation(prompt="test", size="1024x1024")
+                    self.assertEqual(unavailable.exception.status_code, 503)
+                    request = Request({"type": "http", "headers": []})
+                    with mock.patch.object(module, "_require_key_scope"), \
+                            mock.patch.object(module.audit, "record") as record:
+                        with self.assertRaises(HTTPException) as denied:
+                            asyncio.run(module.project_image_generations(
+                                "alpha", request, {"key_label": "test-key"},
+                            ))
+                        self.assertEqual(denied.exception.status_code, 503)
+                        self.assertEqual(record.call_args.kwargs["status"], "unavailable")
+
+                    module.IMAGE_GENERATION_ENABLED = True
+                    response = mock.Mock(ok=True)
+                    response.json.return_value = {"data": [{"b64_json": "test"}]}
+                    config = {"model_id": "image-model", "provider": "custom",
+                              "api_base_url": "http://image.internal/v1", "api_key": ""}
+                    with mock.patch.object(module, "resolve_model_for_context", return_value=config), \
+                            mock.patch.object(module.requests, "post", return_value=response):
+                        model, result = module._invoke_upstream_image_generation(prompt="test", size="1024x1024")
+                    self.assertEqual(model, "image-model")
+                    self.assertEqual(result["data"][0]["b64_json"], "test")
+                finally:
+                    module.ingest_executor.shutdown(wait=False)
+
+    def test_public_provider_profile_is_blocked_before_fallback(self):
+        from fastapi import HTTPException
+
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = importlib.util.spec_from_file_location("ark_admin_provider_test", ADMIN_DIR / "app.py")
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            settings = {
+                "ARK_ADMIN_DB_URL": "postgresql://unused",
+                "ARK_AUDIT_LOG_FILE": str(Path(tmp) / "audit.jsonl"),
+                "ARK_CONNECTED_MODE": "false",
+            }
+            with mock.patch.dict(os.environ, settings), mock.patch.dict(sys.modules, {spec.name: module}):
+                spec.loader.exec_module(module)
+                try:
+                    cursor = mock.MagicMock()
+                    cursor.__enter__.return_value = cursor
+                    cursor.fetchone.return_value = ("model", "third_party", "openai", "https://api.openai.com/v1", "", "text")
+                    connection = mock.MagicMock()
+                    connection.__enter__.return_value = connection
+                    connection.cursor.return_value = cursor
+                    with mock.patch.object(module.psycopg, "connect", return_value=connection), \
+                            mock.patch.object(module, "get_llm_backend_settings") as fallback:
+                        with self.assertRaises(HTTPException) as denied:
+                            module.resolve_model_for_context("text")
+                        self.assertEqual(denied.exception.status_code, 403)
+                        fallback.assert_not_called()
+                finally:
+                    module.ingest_executor.shutdown(wait=False)
 
 
 @unittest.skipUnless(HAS_PIPELINE_DEPS, "admin pipeline dependencies not installed in host python")

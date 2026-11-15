@@ -37,5 +37,5 @@ def get_version_info() -> dict[str, Any]:
         "license": ARK_LICENSE,
         "git_commit": (os.environ.get("ARK_GIT_COMMIT") or "unknown").strip() or "unknown",
         "build_date": (os.environ.get("ARK_BUILD_DATE") or "unknown").strip() or "unknown",
-        "air_gap_mode": True,
+        "air_gap_mode": (os.environ.get("ARK_CONNECTED_MODE") or "").strip().lower() not in {"1", "true"},
     }

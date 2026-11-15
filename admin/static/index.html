@@ -523,7 +523,7 @@
     <div class="status-strip">
       <div class="projects-pill">ARK <strong id="ark-version">...</strong></div>
       <div class="projects-pill">PROJECTS DEPLOYED <strong id="proj-count">0</strong></div>
-      <div class="offline-banner">&#9888; Strict Air-Gap &bull; Offline Mode</div>
+      <div id="network-mode-banner" class="offline-banner">Offline mode &bull; Network isolation must be enforced by the operator</div>
       <a class="nav-link" href="/">Open WebUI Chat</a>
       <a class="nav-link" href="/portal/">User Portal</a>
       <a class="nav-link" href="/create/">Create Studio</a>
@@ -1286,10 +1286,10 @@
         <input id="backup-dir" />
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
           <button class="amber" style="margin-top:0;" onclick="saveBackupDir()">Save Backup Path</button>
-          <button style="margin-top:0;" onclick="runBackup()">Run Full Backup Now</button>
+          <button style="margin-top:0;" onclick="runBackup()">Back Up Databases &amp; Vectors</button>
         </div>
         <hr style="border-color: var(--border); margin: 16px 0;" />
-        <label for="restore-backup-select">Restore Full Backup Bundle</label>
+        <label for="restore-backup-select">Restore Databases &amp; Vectors</label>
         <select id="restore-backup-select"></select>
         <button class="danger" style="margin-top:10px;padding:8px 14px;font-size:0.82rem;"
           onclick="restoreSelectedBackup()">Verify &amp; Restore Backup</button>
@@ -1968,7 +1968,11 @@
       const verLabel = `v${ver.version}`;
       document.getElementById('ark-version').textContent = verLabel;
       const commitSuffix = ver.git_commit && ver.git_commit !== 'unknown' ? ` (${ver.git_commit.slice(0, 7)})` : '';
-      document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel}${commitSuffix} \u2022 ${ver.license} License \u2022 Strict Air-Gap Mode`;
+      const networkMode = ver.air_gap_mode ? 'Offline mode' : 'Connected mode: cloud access enabled';
+      document.getElementById('network-mode-banner').textContent = ver.air_gap_mode
+        ? 'Offline mode • Network isolation must be enforced by the operator'
+        : 'Connected mode • Cloud access is enabled';
+      document.getElementById('ark-footer').textContent = `${ver.product} ${verLabel}${commitSuffix} \u2022 ${ver.license} License \u2022 ${networkMode}`;
 
       renderHealthSection(health);
       renderProjectsSection(projects);
@@ -2281,8 +2285,8 @@
       const name = document.getElementById('restore-backup-select').value;
       if (!name) return showError('No backup bundle selected.');
       const { confirmed } = await confirmModal({
-        title: 'Verify & Restore Full Backup',
-        message: `Verify SHA-256 checksums and restore PostgreSQL databases and Qdrant snapshots from '${name}'?\n\nThis will overwrite current state.`,
+        title: 'Verify & Restore Databases and Vectors',
+        message: `Verify SHA-256 checksums and restore PostgreSQL databases and Qdrant snapshots from '${name}'?\n\nApplication files and keys must be restored separately. This will overwrite current database and vector state.`,
         confirmText: 'Verify & Restore',
         danger: true
       });
@@ -2292,6 +2296,7 @@
         body: JSON.stringify({ backup_name: name, restore_databases: true, restore_qdrant: true })
       });
       showOps(res);
+      if (res.warnings && res.warnings.length) showError(res.warnings.join(' '));
       showToast(`Restored backup '${name}'.`, 'ok');
       await refreshAll();
     }

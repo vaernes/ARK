@@ -10,6 +10,7 @@ set -euo pipefail
 #   ./scripts/dev-up.sh --down          # Stop and remove dev containers & network
 #
 # Cloud / External LLM Environment Overrides:
+#   ARK_CONNECTED_MODE=true                        (required for public provider presets)
 #   LLM_PROVIDER=openai|anthropic|google|huggingface|custom
 #   LLM_API_KEY=sk-...
 #   LLM_API_BASE_URL=https://api.openai.com/v1   (auto-filled if LLM_PROVIDER is set)
@@ -256,6 +257,8 @@ docker run -d --name ark-dev-ark-admin --network "${NET_NAME}" --network-alias a
   -e LLM_BACKEND_TYPE="${LLM_BACKEND_TYPE_VAL}" \
   -e LLM_PROVIDER="${LLM_PROVIDER_VAL}" \
   -e LLM_API_BASE_URL="${LLM_BASE_URL_VAL}" \
+  -e ARK_CONNECTED_MODE="${ARK_CONNECTED_MODE:-false}" \
+  -e ENABLE_IMAGE_GENERATION="${ENABLE_IMAGE_GENERATION:-false}" \
   -e LLM_API_KEY="${LLM_KEY_VAL}" \
   -e VLLM_URL="${LLM_BASE_URL_VAL%/v1}" \
   -e VLLM_API_KEY="${LLM_KEY_VAL}" \
@@ -313,7 +316,7 @@ if [[ "${FULL_STACK}" == true ]]; then
     -e OPENAI_API_BASE_URL="${LLM_BASE_URL_VAL}" \
     -e OPENAI_API_KEY="${LLM_KEY_VAL}" \
     -e DEFAULT_MODELS="${LLM_MODEL_VAL}" \
-    -e ENABLE_IMAGE_GENERATION=true \
+    -e ENABLE_IMAGE_GENERATION="${ENABLE_IMAGE_GENERATION:-false}" \
     -e IMAGE_GENERATION_ENGINE=openai \
     -e IMAGES_OPENAI_API_BASE_URL="${IMAGE_BASE_URL_VAL}" \
     -e IMAGES_OPENAI_API_KEY="${IMAGE_KEY_VAL}" \

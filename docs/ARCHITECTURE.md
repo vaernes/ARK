@@ -35,7 +35,7 @@ flowchart LR
 
 ### Technical Design & Invariants
 
-- **Strict Air-Gap Compliance:** Zero external network calls. `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `DO_NOT_TRACK=1`, `OFFLINE_MODE=true`, `QDRANT__TELEMETRY_DISABLED=true`, and `VLLM_NO_USAGE_STATS=1` are enforced across the stack, along with Caddy `ocsp_stapling off` and `tls internal`.
+- **Offline Defaults:** `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `DO_NOT_TRACK=1`, `OFFLINE_MODE=true`, `QDRANT__TELEMETRY_DISABLED=true`, and `VLLM_NO_USAGE_STATS=1` are set across the stack, along with Caddy `ocsp_stapling off` and `tls internal`. Known public model providers require explicit connected mode; operators must enforce the complete egress policy at the network boundary.
 - **Unified Enterprise SSO:** **Keycloak** federates on-prem Active Directory (LDAPS), Kerberos, and SAML 2.0 into OIDC for both **Open WebUI** and **ark-admin** (via `oauth2-proxy` gated on `ark-admins` and `X-Ark-Proxy-Secret`).
 - **Multi-Tenant Data Compartmentalization:** Each RAG-enabled project receives an isolated Qdrant collection, RBAC group, and locked Workspace Assistant—or can be created as a **clean (non-RAG) project**.
 - **Scoped Per-Project API Gateway:** Office add-ins, IDE plugins, and scripts authenticate via `/projects/<slug>/v1/chat/completions` using project-scoped `ark_proj_*` keys (SHA-256 hashed in PostgreSQL) with rate limits and audit logging. Unauthenticated raw `/v1/*` access is blocked at Caddy (`403`).
@@ -133,7 +133,7 @@ Run [`scripts/test-integration.sh`](../scripts/test-integration.sh):
 ./scripts/test-integration.sh
 ```
 
-This spins up an isolated `ark-test-net` environment using [`tests/mock_inference.py`](../tests/mock_inference.py) and verifies:
+This spins up uniquely named test networks and containers using [`tests/mock_inference.py`](../tests/mock_inference.py) and verifies:
 1. Keycloak OIDC discovery through Caddy (`/auth/realms/ark/.well-known/openid-configuration`).
 2. `oauth2-proxy` SSO redirect on `/admin-console/` (`HTTP 302`).
 3. Raw `/v1/*` bypass block (`HTTP 403`).
@@ -148,6 +148,9 @@ To leave the test containers running so you can inspect endpoints manually:
 ./scripts/test-integration.sh --keep
 ```
 
+The script prints the exact container IDs, network IDs, image tag, and temporary
+directory to remove after inspection. It never cleans up other test runs.
+
 ### Option B: Docker Compose Test Override
 
 If `docker compose` is installed, you can start the stack with mock inference using [`docker-compose.test.yml`](../docker-compose.test.yml):
@@ -161,8 +164,8 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
 
 ```bash
 # Shell syntax & Python unit tests
-bash -n scripts/*.sh
-python3 -m unittest discover -s tests -v
+for script in scripts/*.sh; do bash -n "$script"; done
+python3 scripts/run_unit_tests.py
 
 # Interactive local dev environment at https://localhost:8443
 ./scripts/dev-up.sh

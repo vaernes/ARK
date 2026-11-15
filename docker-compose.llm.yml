@@ -69,12 +69,12 @@ services:
     container_name: ark-llm-admin
     restart: unless-stopped
     ports:
-      - "${LLM_ADMIN_BIND_IP:-0.0.0.0}:${LLM_ADMIN_PORT:-8095}:8095"
+      - "${LLM_ADMIN_BIND_IP:-127.0.0.1}:${LLM_ADMIN_PORT:-8095}:8095"
     environment:
       ARK_VERSION: "${ARK_VERSION:-2026.11.1}"
       VLLM_URL: "http://vllm:8000"
       LLM_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
-      LLM_ADMIN_TOKEN: "${LLM_ADMIN_TOKEN:-${LLM_API_KEY:-${VLLM_API_KEY}}}"
+      LLM_ADMIN_TOKEN: "${LLM_ADMIN_TOKEN:-}"
       LLM_MODEL_ID: "${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
       LLM_MODEL_DIR: "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
       LLM_SERVED_NAME: "${LLM_SERVED_NAME:-ark-llm}"

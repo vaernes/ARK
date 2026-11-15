@@ -39,7 +39,7 @@ APP_DIR = Path(__file__).resolve().parent
 ARK_VERSION = os.environ.get("ARK_VERSION", "2026.11.1")
 VLLM_URL = os.environ.get("VLLM_URL", "http://vllm:8000").strip().rstrip("/")
 LLM_API_KEY = (os.environ.get("LLM_API_KEY") or os.environ.get("VLLM_API_KEY") or "").strip()
-LLM_ADMIN_TOKEN = (os.environ.get("LLM_ADMIN_TOKEN") or LLM_API_KEY).strip()
+LLM_ADMIN_TOKEN = os.environ.get("LLM_ADMIN_TOKEN", "").strip()
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "Qwen/Qwen2.5-14B-Instruct")
 LLM_MODEL_DIR = os.environ.get("LLM_MODEL_DIR", "Qwen--Qwen2.5-14B-Instruct")
 LLM_SERVED_NAME = os.environ.get("LLM_SERVED_NAME", "ark-llm")
@@ -56,7 +56,7 @@ app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="stati
 
 def require_admin_token(request: Request) -> None:
     if not LLM_ADMIN_TOKEN:
-        return
+        raise HTTPException(status_code=503, detail="LLM Backend admin token is not configured.")
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
     if not token or not hmac.compare_digest(token, LLM_ADMIN_TOKEN):
@@ -184,7 +184,7 @@ def model_switch_plan(req: ModelSwitchPlanRequest) -> dict[str, Any]:
 
 
 @app.delete("/api/models/{model_dir}", dependencies=[Depends(require_admin_token)])
-def delete_local_model(model_dir: str) -> dict[str, str]:
+def delete_local_model(model_dir: str, request: Request) -> dict[str, str]:
     safe_dir = _validate_model_dir_name(model_dir)
     if safe_dir == LLM_MODEL_DIR:
         raise HTTPException(status_code=409, detail=f"Cannot delete active LLM directory '{safe_dir}'.")
@@ -192,11 +192,15 @@ def delete_local_model(model_dir: str) -> dict[str, str]:
     if ARK_MODELS_DIR.resolve() not in target.parents or not target.is_dir():
         raise HTTPException(status_code=404, detail=f"Model directory '{safe_dir}' not found.")
     shutil.rmtree(target)
+    logger.info("%s", json.dumps({
+        "event_type": "llm_admin.model.delete", "actor": "admin_token",
+        "client": request.client.host if request.client else "", "model_dir": safe_dir,
+    }))
     return {"status": "deleted", "model_dir": safe_dir}
 
 
 @app.post("/api/models/upload", dependencies=[Depends(require_admin_token)])
-async def upload_model_archive(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_model_archive(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     filename = Path(file.filename or "model.tar.zst").name
     lower = filename.lower()
     if not (lower.endswith(".tar.zst") or lower.endswith(".tzst") or lower.endswith(".tar.gz") or lower.endswith(".tgz") or lower.endswith(".tar")):
@@ -247,4 +251,8 @@ async def upload_model_archive(file: UploadFile = File(...)) -> dict[str, Any]:
             raise HTTPException(status_code=409, detail=f"Model directory '{model_name}' already exists.")
         shutil.move(str(model_src), str(dest))
 
+    logger.info("%s", json.dumps({
+        "event_type": "llm_admin.model.upload", "actor": "admin_token",
+        "client": request.client.host if request.client else "", "model_dir": model_name,
+    }))
     return {"status": "staged", "model_dir": model_name}

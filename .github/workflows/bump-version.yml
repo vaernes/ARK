@@ -65,8 +65,9 @@ jobs:
 
       - name: Verify shell syntax & unit tests
         run: |
-          bash -n scripts/*.sh
-          python3 -m unittest discover -s tests -v
+          for script in scripts/*.sh; do bash -n "$script"; done
+          python3 -m pip install --no-cache-dir -r admin/requirements.txt
+          python3 scripts/run_unit_tests.py
 
       - name: Commit, push, and optionally tag
         id: commit

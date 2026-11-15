@@ -9,6 +9,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=load-env.sh
+source "${SCRIPT_DIR}/load-env.sh"
 
 OUTPUT_DIR="${REPO_ROOT}/artifacts/snapshots"
 OUT_ARG=""
@@ -56,10 +58,7 @@ main() {
   [[ -n "${COLLECTION_NAME}" ]] || { usage; err "--collection NAME is required."; }
 
   if [[ -f "${ENV_FILE}" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "${ENV_FILE}"
-    set +a
+    load_ark_env "${ENV_FILE}" || err "Could not load environment configuration."
   fi
 
   local qdrant_url="${QDRANT_URL:-http://127.0.0.1:6333}"

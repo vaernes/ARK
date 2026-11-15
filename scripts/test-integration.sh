@@ -9,12 +9,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=load-env.sh
+source "${SCRIPT_DIR}/load-env.sh"
 
 if [[ -f "${REPO_ROOT}/versions.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "${REPO_ROOT}/versions.env"
-  set +a
+  load_ark_env "${REPO_ROOT}/versions.env" || exit 1
 fi
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
 QDRANT_IMAGE="${QDRANT_IMAGE:-qdrant/qdrant:v1.12.5}"
@@ -27,58 +26,81 @@ if [[ "${1:-}" == "--keep" ]]; then
   KEEP_RUNNING=true
 fi
 
-NET_NAME="ark-test-net"
-CONTROL_NET="ark-test-control"
-TMP_ROOT="$(mktemp -d /tmp/ark-test-XXXXXX)"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ark-test-XXXXXX")"
+RUN_ID="ark-test-$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
+NET_NAME="${RUN_ID}-net"
+CONTROL_NET="${RUN_ID}-control"
+TEST_IMAGE="${RUN_ID}-admin:latest"
+TEST_ADMIN="${RUN_ID}-admin"
+TEST_CADDY="${RUN_ID}-caddy"
+TEST_OAUTH="${RUN_ID}-oauth2-proxy"
+TEST_KEYCLOAK="${RUN_ID}-keycloak"
+TEST_VLLM="${RUN_ID}-vllm"
+TEST_EMBED="${RUN_ID}-tei-embed"
+TEST_RERANK="${RUN_ID}-tei-rerank"
+TEST_QDRANT="${RUN_ID}-qdrant"
+TEST_POSTGRES="${RUN_ID}-postgres"
+CREATED_CONTAINERS=()
+CREATED_NETWORKS=()
+IMAGE_BUILT=false
 PG_PASS="ark-test-pg-pass"
 KC_PASS="ark-test-kc-pass"
 QDRANT_KEY="ark-test-qdrant-key"
 VLLM_KEY="ark-test-vllm-key"
 COOKIE_SECRET="$(python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
 PROXY_AUTH_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-if [[ -z "${TEST_HTTPS_PORT:-}" ]]; then
-  if python3 -c "import socket; s=socket.socket(); s.settimeout(0.2); exit(0 if s.connect_ex(('127.0.0.1', 8443)) == 0 else 1)" 2>/dev/null; then
-    TEST_HTTPS_PORT="18443"
-  else
-    TEST_HTTPS_PORT="8443"
-  fi
-fi
 
 log()  { printf '[%s] [TEST] %s\n' "$(date -u +'%H:%M:%S')" "$*"; }
 pass() { printf '[%s] [PASS] %s\n' "$(date -u +'%H:%M:%S')" "$*"; }
 fail() { printf '[%s] [FAIL] %s\n' "$(date -u +'%H:%M:%S')" "$*" >&2; exit 1; }
 
-stop_test_containers() {
-  docker exec ark-test-ark-admin rm -rf /backups/* /var/log/ark/* >/dev/null 2>&1 || true
-  docker rm -f \
-    ark-test-caddy \
-    ark-test-ark-admin \
-    ark-test-oauth2-proxy \
-    ark-test-keycloak \
-    ark-test-vllm \
-    ark-test-tei-embed \
-    ark-test-tei-rerank \
-    ark-test-qdrant \
-    ark-test-postgres >/dev/null 2>&1 || true
-  docker network rm "${NET_NAME}" "${CONTROL_NET}" >/dev/null 2>&1 || true
+run_test_container() {
+  local container_id
+  container_id="$(docker run -d "$@")"
+  CREATED_CONTAINERS+=("${container_id}")
 }
 
 cleanup() {
+  local original_status=$?
   if [[ "${KEEP_RUNNING}" == true ]]; then
-    log "Containers left running (--keep). Clean up manually with: docker rm -f \$(docker ps -aq --filter name=ark-test-)"
+    log "Resources retained for ${RUN_ID}:"
+    log "Containers: ${CREATED_CONTAINERS[*]}"
+    log "Networks: ${CREATED_NETWORKS[*]}"
+    log "Image: ${TEST_IMAGE}; temporary data: ${TMP_ROOT}"
     return
   fi
   log "Cleaning up test containers and temporary files..."
-  stop_test_containers
-  rm -rf "${TMP_ROOT}" 2>/dev/null || true
+  local resource cleanup_failed=false
+  if [[ -d "${TMP_ROOT}/backups" || -d "${TMP_ROOT}/audit" ]]; then
+    docker run --rm --network none -v "${TMP_ROOT}:/work" python:3.12-slim-bookworm \
+      python3 -c 'import os, shutil
+for name in ("backups", "audit"):
+    path = os.path.join("/work", name)
+    if os.path.isdir(path):
+        shutil.rmtree(path)' || { log "Could not remove container-owned test data."; cleanup_failed=true; }
+  fi
+  for resource in "${CREATED_CONTAINERS[@]}"; do
+    docker rm -f "${resource}" >/dev/null || { log "Could not remove test container ${resource}."; cleanup_failed=true; }
+  done
+  for resource in "${CREATED_NETWORKS[@]}"; do
+    docker network rm "${resource}" >/dev/null || { log "Could not remove test network ${resource}."; cleanup_failed=true; }
+  done
+  if [[ "${IMAGE_BUILT}" == true ]]; then
+    docker image rm "${TEST_IMAGE}" >/dev/null || { log "Could not remove test image ${TEST_IMAGE}."; cleanup_failed=true; }
+  fi
+  if [[ "${cleanup_failed}" == false ]]; then
+    rm -rf -- "${TMP_ROOT}" || { log "Could not remove test data ${TMP_ROOT}."; cleanup_failed=true; }
+  else
+    log "Test data retained at ${TMP_ROOT}."
+  fi
+  if [[ "${cleanup_failed}" == true && "${original_status}" -eq 0 ]]; then
+    exit 1
+  fi
 }
 trap cleanup EXIT
 
 main() {
-  stop_test_containers
   mkdir -p "${TMP_ROOT}/backups" "${TMP_ROOT}/audit" "${TMP_ROOT}/keycloak" "${TMP_ROOT}/plugins" "${TMP_ROOT}/ingest-scripts"
-  cp "${REPO_ROOT}/config/keycloak/ark-realm.json" "${TMP_ROOT}/keycloak/ark-realm.json"
-  sed -i "s|https://ark\.local|https://localhost:${TEST_HTTPS_PORT}|g" "${TMP_ROOT}/keycloak/ark-realm.json"
 
   ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
   GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
@@ -89,23 +111,45 @@ main() {
       --build-arg "ARK_VERSION=${ARK_VERSION}" \
       --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
       --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
-      -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+      -t "${TEST_IMAGE}" "${REPO_ROOT}/admin" >/dev/null
   else
     docker build -q \
       --build-arg "ARK_VERSION=${ARK_VERSION}" \
       --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
       --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
-      -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null 2> >(grep -vE '^(DEPRECATED: The legacy builder|            Install the buildx|            https://docs\.docker\.com/go/buildx/|$)' >&2 || true)
+      -t "${TEST_IMAGE}" "${REPO_ROOT}/admin" >/dev/null 2> >(grep -vE '^(DEPRECATED: The legacy builder|            Install the buildx|            https://docs\.docker\.com/go/buildx/|$)' >&2 || true)
   fi
-  img_ver=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' ark-admin:latest)
+  IMAGE_BUILT=true
+  img_ver=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "${TEST_IMAGE}")
   [[ "${img_ver}" == "${ARK_VERSION}" ]] || fail "Expected OCI image version label '${ARK_VERSION}', got '${img_ver}'"
 
   log "Creating isolated Docker networks '${NET_NAME}' and '${CONTROL_NET}'..."
-  docker network create "${NET_NAME}" >/dev/null
-  docker network create --internal "${CONTROL_NET}" >/dev/null
+  local network_id
+  network_id="$(docker network create "${NET_NAME}")"
+  CREATED_NETWORKS+=("${network_id}")
+  network_id="$(docker network create --internal "${CONTROL_NET}")"
+  CREATED_NETWORKS+=("${network_id}")
+
+  if [[ -n "${TEST_HTTPS_PORT:-}" && ! "${TEST_HTTPS_PORT}" =~ ^[0-9]+$ ]]; then
+    fail "TEST_HTTPS_PORT must be a numeric TCP port."
+  fi
+  log "Starting Caddy reverse proxy on an isolated localhost port..."
+  run_test_container --name "${TEST_CADDY}" --network "${NET_NAME}" --network-alias caddy \
+    -p "127.0.0.1:${TEST_HTTPS_PORT:-}:443" \
+    -e ARK_DOMAIN="localhost" \
+    -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
+    -v "${REPO_ROOT}/config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+    "${CADDY_IMAGE}"
+  docker network connect "${CONTROL_NET}" "${TEST_CADDY}" >/dev/null
+  TEST_HTTPS_PORT="$(docker port "${TEST_CADDY}" 443/tcp)"
+  TEST_HTTPS_PORT="${TEST_HTTPS_PORT##*:}"
+  [[ "${TEST_HTTPS_PORT}" =~ ^[0-9]+$ ]] || fail "Could not determine the Caddy HTTPS port."
+  log "Caddy is available on 127.0.0.1:${TEST_HTTPS_PORT}."
+  cp "${REPO_ROOT}/config/keycloak/ark-realm.json" "${TMP_ROOT}/keycloak/ark-realm.json"
+  sed -i "s|https://ark\.local|https://localhost:${TEST_HTTPS_PORT}|g" "${TMP_ROOT}/keycloak/ark-realm.json"
 
   log "Starting PostgreSQL 16..."
-  docker run -d --name ark-test-postgres --network "${NET_NAME}" --network-alias postgres \
+  run_test_container --name "${TEST_POSTGRES}" --network "${NET_NAME}" --network-alias postgres \
     -e POSTGRES_USER=ark_webui \
     -e POSTGRES_PASSWORD="${PG_PASS}" \
     -e POSTGRES_DB=openwebui \
@@ -113,35 +157,35 @@ main() {
     "${POSTGRES_IMAGE}" >/dev/null
 
   log "Starting Qdrant..."
-  docker run -d --name ark-test-qdrant --network "${NET_NAME}" --network-alias qdrant \
+  run_test_container --name "${TEST_QDRANT}" --network "${NET_NAME}" --network-alias qdrant \
     -e QDRANT__TELEMETRY_DISABLED=true \
     -e QDRANT__SERVICE__API_KEY="${QDRANT_KEY}" \
     -v "${REPO_ROOT}/config/qdrant/config.yaml:/qdrant/config/production.yaml:ro" \
     "${QDRANT_IMAGE}" >/dev/null
 
   log "Starting Mock vLLM & Mock TEI..."
-  docker run -d --name ark-test-vllm --network "${NET_NAME}" --network-alias vllm \
+  run_test_container --name "${TEST_VLLM}" --network "${NET_NAME}" --network-alias vllm \
     -v "${REPO_ROOT}/tests:/tests:ro" \
     python:3.12-slim-bookworm python3 /tests/mock_inference.py 8000 >/dev/null
 
-  docker run -d --name ark-test-tei-embed --network "${NET_NAME}" --network-alias tei-embed \
+  run_test_container --name "${TEST_EMBED}" --network "${NET_NAME}" --network-alias tei-embed \
     -v "${REPO_ROOT}/tests:/tests:ro" \
     python:3.12-slim-bookworm python3 /tests/mock_inference.py 80 >/dev/null
 
-  docker run -d --name ark-test-tei-rerank --network "${NET_NAME}" --network-alias tei-rerank \
+  run_test_container --name "${TEST_RERANK}" --network "${NET_NAME}" --network-alias tei-rerank \
     -v "${REPO_ROOT}/tests:/tests:ro" \
     python:3.12-slim-bookworm python3 /tests/mock_inference.py 80 >/dev/null
 
   log "Waiting for PostgreSQL readiness..."
   for _ in $(seq 1 30); do
-    if docker exec ark-test-postgres pg_isready -U ark_webui -d ark_admin >/dev/null 2>&1; then
+    if docker exec "${TEST_POSTGRES}" pg_isready -U ark_webui -d ark_admin >/dev/null 2>&1; then
       break
     fi
     sleep 1
   done
 
   log "Starting Keycloak (importing ark-realm.json)..."
-  docker run -d --name ark-test-keycloak --network "${NET_NAME}" --network-alias keycloak \
+  run_test_container --name "${TEST_KEYCLOAK}" --network "${NET_NAME}" --network-alias keycloak \
     -e KC_DB=postgres \
     -e KC_DB_URL="jdbc:postgresql://postgres:5432/keycloak" \
     -e KC_DB_USERNAME=ark_webui \
@@ -155,11 +199,11 @@ main() {
 
   log "Waiting for Keycloak readiness (up to 120s)..."
   for i in $(seq 1 120); do
-    if docker exec ark-test-keycloak bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e "GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && grep -q "200 OK" <&3' >/dev/null 2>&1; then
+    if docker exec "${TEST_KEYCLOAK}" bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e "GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && grep -q "200 OK" <&3' >/dev/null 2>&1; then
       break
     fi
     if [[ "$i" -eq 120 ]]; then
-      docker logs --tail 30 ark-test-keycloak >&2 || true
+      docker logs --tail 30 "${TEST_KEYCLOAK}" >&2 || true
       fail "Keycloak did not become ready in time."
     fi
     sleep 1
@@ -167,7 +211,7 @@ main() {
   pass "Keycloak is ready."
 
   log "Starting oauth2-proxy..."
-  docker run -d --name ark-test-oauth2-proxy --network "${NET_NAME}" --network-alias oauth2-proxy \
+  run_test_container --name "${TEST_OAUTH}" --network "${NET_NAME}" --network-alias oauth2-proxy \
     "${OAUTH2_PROXY_IMAGE}" \
     --provider=oidc \
     --skip-oidc-discovery=true \
@@ -195,7 +239,7 @@ main() {
   touch "${TMP_ROOT}/models/Qwen--Qwen2.5-14B-Instruct/model.safetensors" "${TMP_ROOT}/models/Qwen--Qwen2.5-32B-Instruct/model.safetensors"
 
   log "Starting ark-admin..."
-  docker run -d --name ark-test-ark-admin --network "${NET_NAME}" --network-alias ark-admin \
+  run_test_container --name "${TEST_ADMIN}" --network "${NET_NAME}" --network-alias ark-admin \
     -e ARK_ADMIN_DB_URL="postgresql://ark_webui:${PG_PASS}@postgres:5432/ark_admin" \
     -e POSTGRES_HOST=postgres \
     -e POSTGRES_PORT=5432 \
@@ -208,6 +252,7 @@ main() {
     -e LLM_API_BASE_URL="http://vllm:8000/v1" \
     -e LLM_API_KEY="${VLLM_KEY}" \
     -e LLM_SERVED_NAME="ark-llm" \
+    -e ENABLE_IMAGE_GENERATION=true \
     -e ARK_MODELS_DIR="/models" \
     -e TEI_EMBED_URL="http://tei-embed:80" \
     -e TEI_RERANK_URL="http://tei-rerank:80" \
@@ -224,21 +269,12 @@ main() {
     -v "${TMP_ROOT}/models:/models" \
     -v "${TMP_ROOT}/plugins:/plugins:ro" \
     -v "${TMP_ROOT}/ingest-scripts:/ingest-scripts:ro" \
-    ark-admin:latest >/dev/null
-  docker network connect --alias ark-admin-control "${CONTROL_NET}" ark-test-ark-admin >/dev/null
-
-  log "Starting Caddy reverse proxy on 127.0.0.1:${TEST_HTTPS_PORT}..."
-  docker run -d --name ark-test-caddy --network "${NET_NAME}" --network-alias caddy \
-    -p 127.0.0.1:${TEST_HTTPS_PORT}:443 \
-    -e ARK_DOMAIN="localhost" \
-    -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
-    -v "${REPO_ROOT}/config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
-    "${CADDY_IMAGE}" >/dev/null
-  docker network connect "${CONTROL_NET}" ark-test-caddy >/dev/null
+    "${TEST_IMAGE}" >/dev/null
+  docker network connect --alias ark-admin-control "${CONTROL_NET}" "${TEST_ADMIN}" >/dev/null
 
   log "Waiting for ark-admin readiness..."
   for _ in $(seq 1 30); do
-    if docker exec ark-test-ark-admin python3 -c "import urllib.request, urllib.error
+    if docker exec "${TEST_ADMIN}" python3 -c "import urllib.request, urllib.error
 try:
     urllib.request.urlopen('http://localhost:8090/admin-console/api/version', timeout=2)
 except urllib.error.HTTPError:
@@ -268,7 +304,7 @@ except urllib.error.HTTPError:
     "https://localhost:${TEST_HTTPS_PORT}/admin-console/api/projects")
   [[ "${spoof_caddy_code}" == "302" ]] || fail "Expected 302 for forged proxy headers at Caddy, got ${spoof_caddy_code}"
 
-  peer_bypass_code=$(docker exec ark-test-vllm python3 -c "
+  peer_bypass_code=$(docker exec "${TEST_VLLM}" python3 -c "
 import urllib.request, urllib.error
 req = urllib.request.Request(
     'http://ark-admin:8090/admin-console/api/projects',
@@ -282,7 +318,7 @@ except urllib.error.HTTPError as e:
 ")
   [[ "${peer_bypass_code}" == "403" ]] || fail "Expected 403 for peer-container bypass to ark-admin, got ${peer_bypass_code}"
 
-  non_admin_code=$(docker exec ark-test-ark-admin python3 -c "
+  non_admin_code=$(docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 r = requests.get('http://localhost:8090/admin-console/api/projects', headers={
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -293,7 +329,7 @@ print(r.status_code)
 ")
   [[ "${non_admin_code}" == "403" ]] || fail "Expected 403 for non-admin user on /admin-console/api/projects, got ${non_admin_code}"
 
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 H_ADMIN = {
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -336,7 +372,7 @@ assert h.json()['services'].get('llm_backend') == 'healthy', h.json()
 
   # 4. Create RAG projects + Clean project via ark-admin
   log "4/8 Provisioning RAG projects (Project_Alpha, Shared_KB) and Clean project (Clean_Sandbox)..."
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 H = {
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -355,7 +391,7 @@ r3.raise_for_status()
   # 5. Issue API keys, link Shared_KB to Project_Alpha, & ingest sample document vectors
   log "5/8 Issuing scoped API keys and testing project-linked Qdrant RAG + Clean project routing..."
   local keys_json
-  keys_json=$(docker exec ark-test-ark-admin python3 -c "
+  keys_json=$(docker exec "${TEST_ADMIN}" python3 -c "
 import json, requests
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct
@@ -402,8 +438,8 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
     -d '{"include_citations":true,"messages":[{"role":"system","content":"Always respond concisely."},{"role":"user","content":[{"type":"text","text":"Summarize spec and policy"}]}]}')
   alpha_resp="${alpha_headers_body}"
   if ! echo "${alpha_resp}" | grep -q "RAG_CONTEXT_INJECTED=True"; then
-    docker logs --tail 30 ark-test-caddy >&2 || true
-    docker logs --tail 30 ark-test-ark-admin >&2 || true
+    docker logs --tail 30 "${TEST_CADDY}" >&2 || true
+    docker logs --tail 30 "${TEST_ADMIN}" >&2 || true
     fail "Expected RAG_CONTEXT_INJECTED=True, got: ${alpha_resp}"
   fi
   echo "${alpha_resp}" | grep -q "HAS_CLIENT_INSTRUCTIONS=True" || fail "Expected client system prompt to be preserved (HAS_CLIENT_INSTRUCTIONS=True), got: ${alpha_resp}"
@@ -419,7 +455,7 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
     -H "Content-Type: application/json" \
     -d '{"messages":[{"role":"user","content":"Hello"}]}')
   if ! echo "${clean_resp}" | grep -q "RAG_CONTEXT_INJECTED=False"; then
-    docker logs --tail 30 ark-test-ark-admin >&2 || true
+    docker logs --tail 30 "${TEST_ADMIN}" >&2 || true
     fail "Expected RAG_CONTEXT_INJECTED=False, got: ${clean_resp}"
   fi
   pass "Clean_Sandbox API Gateway routed directly to vLLM without RAG."
@@ -432,7 +468,7 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   pass "Cross-project API key rejected (HTTP 403)."
 
   # 5a. Test per-user project access control from admin side -> portal enforcement
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 H_ADMIN = {
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -582,7 +618,7 @@ assert denied_chat2.status_code == 403, denied_chat2.status_code
   pass "Project_Alpha SSE streaming returned chunks and [DONE]."
 
   # 5c. Test API key revocation and project deletion
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 H = {
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -601,7 +637,7 @@ requests.delete(f'http://localhost:8090/admin-console/api/keys/{clean_id}', head
   [[ "${revoked_code}" == "403" ]] || fail "Expected 403 for revoked API key, got ${revoked_code}"
   pass "Revoked API key rejected (HTTP 403)."
 
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 H = {
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -636,7 +672,7 @@ if __name__ == "__main__":
 PYEOF
 
   local ingest_key
-  ingest_key=$(docker exec ark-test-ark-admin python3 -c "
+  ingest_key=$(docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 H = {
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -682,7 +718,7 @@ print(r.json()['api_key'])
     -H "Authorization: Bearer ${ingest_key}" | grep -q '"status":"deleted"' || fail "Push delete failed."
 
   # Test Plugin discovery, YAML Pipeline Dry-Run & Sync, and Custom Script Sync
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 from qdrant_client import QdrantClient
 
@@ -787,7 +823,7 @@ assert qc.count(collection_name='Project_Alpha').count == 1, 'Expected only orig
 
   # 6. Test LLM & Model Management APIs
   log "6/8 Testing LLM & Model Management APIs..."
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import requests
 H = {
     'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
@@ -955,7 +991,7 @@ assert base64.b64decode(proj_b64).startswith(b'\x89PNG\r\n\x1a\n')
 
   # 7. Test Full Backup (Postgres + Qdrant snapshot files) & Full-Stack Restore
   log "7/8 Testing full PostgreSQL + Qdrant backup & restore..."
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 from pathlib import Path
 import requests
 from qdrant_client import QdrantClient
@@ -1015,7 +1051,7 @@ assert len(dl.content) > 0, 'Downloaded Project_Alpha.snapshot is empty'
 
   # 8. Test Audit Logs (PostgreSQL + append-only audit.jsonl) & In-Container Unit Tests
   log "8/8 Verifying audit logs and running full unit tests inside container..."
-  docker exec ark-test-ark-admin python3 -c "
+  docker exec "${TEST_ADMIN}" python3 -c "
 import json, requests
 from pathlib import Path
 H = {
@@ -1065,8 +1101,8 @@ assert 'auth.denied' in jsonl_events, jsonl_events
 "
   pass "All expected events recorded in PostgreSQL audit_logs and audit.jsonl."
 
-  docker cp "${REPO_ROOT}/tests/test_admin_extensions.py" ark-test-ark-admin:/app/test_admin_extensions.py
-  docker exec -w /app ark-test-ark-admin python3 -m unittest \
+  docker cp "${REPO_ROOT}/tests/test_admin_extensions.py" "${TEST_ADMIN}":/app/test_admin_extensions.py
+  docker exec -w /app "${TEST_ADMIN}" python3 -m unittest \
     test_admin_extensions.TestSecurityCronAndMessages \
     test_admin_extensions.TestBackupManifestExtraArchives \
     test_admin_extensions.TestIngestSecretsAndChunking \

@@ -47,6 +47,12 @@ On the air-gapped server, create `.env` from `.env.example` and replace all plac
 cp .env.example .env
 ```
 
+The installer and snapshot tools read `.env` as data, not shell commands.
+Use single quotes around literal `$` characters in values (for example,
+`POSTGRES_PASSWORD='a$long-secret'`); shell substitutions and multiline values
+are not supported. Existing values containing spaces or LDAP filters do not
+need shell escaping.
+
 Generate strong random values for:
 - `VLLM_API_KEY`
 - `QDRANT_API_KEY`
@@ -57,9 +63,21 @@ Generate strong random values for:
 - `OIDC_OAUTH2_PROXY_CLIENT_SECRET`
 - `OAUTH2_PROXY_COOKIE_SECRET` (must be 32-byte URL-safe base64, e.g. `python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())'`)
 - `ARK_PROXY_AUTH_SECRET` (shared secret between Caddy and `ark-admin` to block peer-container proxy bypass, e.g. `python3 -c 'import secrets; print(secrets.token_hex(32))'`)
+- `LLM_ADMIN_TOKEN` (a separate token for the LLM Backend Console; the offline
+  installer generates one when it is unset)
 
 Optional enterprise settings in `.env`:
 - **SIEM Forwarding:** Set `SIEM_SYSLOG_HOST`, `SIEM_SYSLOG_PORT`, and `SIEM_SYSLOG_PROTOCOL` (`udp` or `tcp`).
+- **Connected mode:** Set `ARK_CONNECTED_MODE=true` only when intentionally
+  using a public cloud provider. The default blocks the built-in public LLM
+  provider hosts, but it is not a general egress firewall: enforce the
+  organization's approved destination allowlist at the host/network boundary,
+  including connectors, DNS, image services, and alternate hostnames.
+
+The LLM Backend Console binds to localhost by default and rejects management
+requests when its token is unset. Existing standalone deployments that relied
+on the inference key must configure `LLM_ADMIN_TOKEN` explicitly. For remote
+administration, expose it only through a trusted encrypted channel.
 
 ---
 
@@ -131,7 +149,18 @@ Keycloak boots with the `ark` realm pre-imported from [config/keycloak/ark-realm
 
 ---
 
-## 8. Phase 7 — Backup Verification & Full-Stack Restore (Disaster Recovery)
+## 8. Phase 7 — Backup Verification & Disaster Recovery
+
+The built-in backup and restore cover PostgreSQL and Qdrant, not the complete
+appliance. Plugin and ingest-script archives may be included in the bundle, but
+neither restore path extracts them. Independently back up and test recovery of
+`data/open-webui`, `data/caddy`, `data/audit`, `plugins`, `data/ingest-scripts`,
+site configuration, certificates, and model artifacts. Keep `.env`, private
+keys, and `ARK_SECRETS_KEY` in separately protected offline escrow; losing the
+original encryption key prevents recovery of encrypted connector credentials.
+The database dumps and snapshots are taken sequentially, so quiesce application
+writes and ingestion during a coordinated backup window. Schedule and monitor
+off-host backups according to your organization's recovery objectives.
 
 Full backups created from the Admin Console (`Run Full Backup Now`) write a timestamped directory under `ARK_BACKUP_DIR` (`ark-backup-<UTC_TIMESTAMP>/`) containing:
 - `openwebui.sql.gz`, `keycloak.sql.gz`, and `ark_admin.sql.gz` (PostgreSQL dumps)
@@ -144,7 +173,7 @@ Full backups created from the Admin Console (`Run Full Backup Now`) write a time
 ```
 This validates every file in `manifest.json` against its SHA-256 digest and verifies `gzip` stream integrity on all PostgreSQL archives.
 
-### 2. Full-Stack Restore via CLI (Recommended for Disaster Recovery)
+### 2. Database and Vector Restore via CLI
 Ensure `postgres` and `qdrant` containers are healthy (`docker compose up -d postgres qdrant`), then run:
 ```bash
 ./scripts/restore-backup.sh --backup-dir /path/to/ark-backup-YYYYMMDDTHHMMSSZ
@@ -155,7 +184,9 @@ docker compose up -d
 ```
 
 ### 3. Restore via Admin Console
-For online rollback while `ark-admin` is running, select a verified bundle in **Backup & Project KB Snapshot Sync → Restore Full Backup Bundle** and click **Verify & Restore Backup** (calls `POST /admin-console/api/backups/restore`).
+For online database and vector rollback while `ark-admin` is running, select a
+verified bundle in **Backups & Recovery → Restore Databases & Vectors** and
+click **Verify & Restore Backup** (calls `POST /admin-console/api/backups/restore`).
 
 ### 4. Post-Restore Verification
 1. Check container health: `docker compose ps`
