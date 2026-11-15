@@ -18,6 +18,12 @@ This guide covers day-to-day usage of **ARK (Air-gapped Retrieval & Knowledge)**
 2. **Keep projects separated:** Start a new chat when switching between projects so conversation context never mixes.
 3. **Uploading project files:** In your project's Workspace/Knowledge tab (if granted write access), upload PDFs, Word, Excel, PowerPoint, or text files. ARK extracts text offline via Apache Tika and indexes it into that project's isolated Qdrant collection only.
 
+### 2b. Generating Images & Diagrams in ARK Create Studio (`/create/`)
+1. Open `https://<your-ark-domain>/create/` (or click **Create Studio** from the User Portal or Admin Console).
+2. Enter a description of the image, diagram, icon, or slide graphic you want to create, or click **Enhance Prompt (ARK LLM)** to expand a short idea into a rich visual prompt.
+3. Choose a **Visual Style Preset** (`Photorealistic`, `Digital Illustration`, `Isometric Diagram`, `App / UI Icon`, `Slide Graphic`, `Technical Blueprint`, or `Raw Prompt`), select a **Canvas Size / Ratio** (`1024x1024`, `1344x768`, or `768x1344`), and click **Generate Visual Asset**.
+4. Download the generated PNG, copy its Data URL, or revisit past assets in **My Recent Creations**.
+
 ### 3. Connecting Office Add-ins, IDEs & Internal Tools
 If your administrator issued a **Project API Key** (`ark_proj_...`) for your team (or you generated a personal key in `/portal/`), configure your OpenAI-compatible tool (Office add-in, VS Code Continue/Cline, or Python script) with:
 
@@ -28,12 +34,13 @@ If your administrator issued a **Project API Key** (`ark_proj_...`) for your tea
 **Supported OpenAI-compatible & Ingest endpoints on `/projects/<project-slug>/v1`:**
 - `GET /models` — returns the project's assistant model metadata (`<project-slug>-assistant`)
 - `POST /chat/completions` — supports both non-streaming (`"stream": false`) and Server-Sent Events streaming (`"stream": true`) (requires `chat` key scope)
+- `POST /images/generations` — generates images (`b64_json`) via the configured image generation backend with optional `style_preset` support (requires `images` key scope)
 - `POST /ingest/documents` — push JSON (`{"documents": [...]}`) or `application/x-ndjson` Document IR records into the project's Qdrant collection (requires `ingest` key scope)
 - `POST /ingest/files` — multipart file upload extracted via Apache Tika and indexed into the project's Qdrant collection (requires `ingest` key scope)
 - `DELETE /ingest/documents/<doc_id>` — remove a document's vectors from the project's Qdrant collection (requires `ingest` key scope)
 - `GET /ingest/documents` & `GET /ingest/jobs/<job_id>` — list tracked document hashes and check async ingest job status (requires `ingest` key scope)
 
-> **Scope Note:** Other OpenAI endpoints (`/embeddings`, `/completions`, `/images/*`, `/audio/*`, `/files/*`, `/assistants/*`) are intentionally not exposed by the project gateway. Direct unauthenticated calls to `/v1/chat/completions` are also blocked (`403 Forbidden`) so RBAC, key scopes (`chat` / `ingest`), rate limits, and audit logging are always enforced.
+> **Scope Note:** Other OpenAI endpoints (`/embeddings`, `/completions`, `/audio/*`, `/files/*`, `/assistants/*`) are intentionally not exposed by the project gateway. Direct unauthenticated calls to `/v1/chat/completions` are also blocked (`403 Forbidden`) so RBAC, key scopes (`chat` / `images` / `ingest`), rate limits, and audit logging are always enforced.
 
 **Example `curl` call:**
 ```bash

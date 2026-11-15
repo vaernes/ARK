@@ -14,6 +14,7 @@ Provides:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -36,7 +37,7 @@ import threading
 import psycopg
 import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
@@ -44,7 +45,15 @@ from qdrant_client.http.models import Distance, VectorParams
 from starlette.concurrency import run_in_threadpool
 
 from audit import AuditLogger
-from llm_backend import build_llm_headers, normalize_backend_type, resolve_llm_backend_config
+from llm_backend import (
+    CREATE_STYLE_PRESETS,
+    CREATE_SUPPORTED_SIZES,
+    apply_create_style_preset,
+    build_llm_headers,
+    normalize_backend_type,
+    resolve_image_backend_config,
+    resolve_llm_backend_config,
+)
 from backup_utils import (
     dump_postgres_gzip,
     restore_postgres_gzip,
@@ -94,10 +103,12 @@ DB_DSN = os.environ["ARK_ADMIN_DB_URL"]
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or None
 _llm_cfg = resolve_llm_backend_config()
+_image_cfg = resolve_image_backend_config()
 LLM_API_BASE_URL = _llm_cfg["api_base_url"]
 LLM_API_KEY = _llm_cfg["api_key"]
 LLM_HEALTH_URL = _llm_cfg["health_url"]
 LLM_SERVED_NAME = os.environ.get("LLM_SERVED_NAME", "ark-llm")
+IMAGE_SERVED_NAME = _image_cfg["default_model"]
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "Qwen/Qwen2.5-14B-Instruct")
 LLM_MODEL_DIR = os.environ.get("LLM_MODEL_DIR", "Qwen--Qwen2.5-14B-Instruct")
 EMBED_MODEL_DIR = os.environ.get("EMBED_MODEL_DIR", "BAAI--bge-m3")
@@ -137,6 +148,7 @@ app = FastAPI(
 )
 app.mount("/admin-console/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 app.mount("/portal/static", StaticFiles(directory=str(APP_DIR / "static")), name="portal-static")
+app.mount("/create/static", StaticFiles(directory=str(APP_DIR / "static")), name="create-static")
 
 
 @app.middleware("http")
@@ -276,6 +288,21 @@ def init_db() -> None:
                     PRIMARY KEY (project_slug, user_identifier)
                 );
                 CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_identifier);
+
+                CREATE TABLE IF NOT EXISTS image_creations (
+                    id BIGSERIAL PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    project_slug TEXT REFERENCES projects(slug) ON DELETE SET NULL,
+                    prompt TEXT NOT NULL,
+                    enhanced_prompt TEXT NOT NULL DEFAULT '',
+                    style_preset TEXT NOT NULL DEFAULT 'none',
+                    size TEXT NOT NULL DEFAULT '1024x1024',
+                    model TEXT NOT NULL DEFAULT 'ark-image',
+                    mime_type TEXT NOT NULL DEFAULT 'image/png',
+                    image_b64 TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_image_creations_owner ON image_creations(owner, created_at DESC);
                 """
             )
             cur.execute(
@@ -510,6 +537,45 @@ def get_llm_backend_settings() -> dict[str, str]:
     return cfg
 
 
+def get_image_backend_settings() -> dict[str, str]:
+    """Return active Image Generation backend settings from system_settings, falling back to env/LLM defaults."""
+    llm_cfg = get_llm_backend_settings()
+    cfg = dict(_image_cfg)
+    if not (os.environ.get("IMAGE_API_BASE_URL") or "").strip():
+        cfg["api_base_url"] = llm_cfg["api_base_url"]
+    if not (os.environ.get("IMAGE_API_KEY") or "").strip():
+        cfg["api_key"] = llm_cfg["api_key"]
+    if not (os.environ.get("IMAGE_HEALTH_URL") or "").strip():
+        cfg["health_url"] = f"{cfg['api_base_url']}/models"
+
+    keys = (
+        "image_api_base_url",
+        "image_api_key",
+        "image_default_model",
+        "image_health_url",
+    )
+    try:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM system_settings WHERE key = ANY(%s)", (list(keys),))
+                rows = dict(cur.fetchall())
+    except Exception as exc:
+        logger.warning("Failed to read Image backend settings from DB, falling back to env: %s", exc)
+        return cfg
+
+    if rows.get("image_api_base_url", "").strip():
+        cfg["api_base_url"] = rows["image_api_base_url"].strip().rstrip("/")
+    if "image_api_key" in rows:
+        cfg["api_key"] = decrypt_secret_value(rows["image_api_key"].strip())
+    if rows.get("image_default_model", "").strip():
+        cfg["default_model"] = rows["image_default_model"].strip()
+    if "image_health_url" in rows:
+        cfg["health_url"] = rows["image_health_url"].strip() or f"{cfg['api_base_url']}/models"
+    elif "image_api_base_url" in rows:
+        cfg["health_url"] = f"{cfg['api_base_url']}/models"
+    return cfg
+
+
 def _validate_model_dir_name(name: str) -> str:
     cleaned = name.strip()
     if not cleaned or "/" in cleaned or "\\" in cleaned or ".." in cleaned or cleaned.startswith("."):
@@ -659,10 +725,10 @@ class CreateKeyRequest(BaseModel):
 
 
 def _normalize_key_scopes(scopes: list[str] | None) -> list[str]:
-    allowed = {"chat", "ingest"}
+    allowed = {"chat", "ingest", "images"}
     cleaned = sorted({s.strip().lower() for s in (scopes or ["chat"]) if s and s.strip().lower() in allowed})
     if not cleaned:
-        raise HTTPException(status_code=400, detail="API key scopes must include at least one of: chat, ingest.")
+        raise HTTPException(status_code=400, detail="API key scopes must include at least one of: chat, ingest, images.")
     return cleaned
 
 
@@ -677,6 +743,28 @@ class LlmBackendConfigRequest(BaseModel):
     clear_api_key: bool = False
     health_url: str = ""
     backend_admin_url: str = ""
+
+
+class ImageBackendConfigRequest(BaseModel):
+    api_base_url: str = Field(min_length=1)
+    api_key: str | None = None
+    clear_api_key: bool = False
+    default_model: str = Field(default="ark-image", min_length=1, max_length=128)
+    health_url: str = ""
+
+
+class EnhancePromptRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    style_preset: str = Field(default="photorealistic", max_length=64)
+    size: str = Field(default="1024x1024", max_length=32)
+
+
+class CreateImageRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    style_preset: str = Field(default="photorealistic", max_length=64)
+    size: str = Field(default="1024x1024", max_length=32)
+    project_slug: str | None = None
+    model: str = Field(default="", max_length=128)
 
 
 class RestoreBackupRequest(BaseModel):
@@ -882,6 +970,350 @@ def portal_revoke_key(key_id: int, request: Request) -> dict[str, str]:
         conn.commit()
     audit.record("apikey.revoke", actor=actor, project_slug=row[0], details={"key_id": key_id, "portal": True})
     return {"status": "revoked"}
+
+
+# ==============================================================================
+# ARK Create Studio (/create & /create/api/*) — Air-Gapped Visual Asset Studio
+# ==============================================================================
+
+def _validate_image_size(raw_size: str) -> str:
+    cleaned = (raw_size or "1024x1024").strip().lower()
+    if not re.fullmatch(r"\d{2,4}x\d{2,4}", cleaned):
+        raise HTTPException(status_code=400, detail="Invalid image size format. Expected WxH (e.g. 1024x1024).")
+    w_str, h_str = cleaned.split("x", 1)
+    w, h = int(w_str), int(h_str)
+    if w < 64 or h < 64 or w > 4096 or h > 4096:
+        raise HTTPException(status_code=400, detail="Image dimensions must be between 64x64 and 4096x4096.")
+    return cleaned
+
+
+@app.get("/create/", response_class=HTMLResponse)
+@app.get("/create", response_class=HTMLResponse)
+def create_studio_ui() -> HTMLResponse:
+    html_path = APP_DIR / "static" / "create.html"
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/create/api/me")
+def create_me(request: Request) -> dict[str, Any]:
+    return portal_me(request)
+
+
+@app.get("/create/api/version")
+def create_version() -> dict[str, Any]:
+    return get_version_info()
+
+
+@app.get("/create/api/projects")
+def create_projects(request: Request) -> list[dict[str, Any]]:
+    return portal_projects(request)
+
+
+@app.get("/create/api/presets")
+def create_presets() -> dict[str, Any]:
+    img_cfg = get_image_backend_settings()
+    return {
+        "presets": list(CREATE_STYLE_PRESETS.values()),
+        "sizes": CREATE_SUPPORTED_SIZES,
+        "default_model": img_cfg["default_model"],
+    }
+
+
+@app.post("/create/api/enhance-prompt")
+async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    preset_id, _ = apply_create_style_preset(req.prompt, req.style_preset)
+    preset_meta = CREATE_STYLE_PRESETS[preset_id]
+    size = _validate_image_size(req.size)
+    llm_cfg = get_llm_backend_settings()
+    target_model = get_default_llm_model()
+
+    system_msg = (
+        "You are the ARK Create Studio Visual Prompt Architect. "
+        "Expand the user's idea into a vivid, detailed, high-clarity image generation prompt "
+        f"optimized for the '{preset_meta['label']}' style ({preset_meta['description']}) and {size} aspect ratio. "
+        "Return ONLY the enhanced prompt text with no preamble, markdown quotes, or commentary."
+    )
+    llm_payload = {
+        "model": target_model,
+        "messages": [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": req.prompt.strip()},
+        ],
+        "temperature": 0.6,
+        "max_tokens": 300,
+        "stream": False,
+    }
+    llm_headers = build_llm_headers(llm_cfg["api_key"], json_content=True)
+    chat_url = f"{llm_cfg['api_base_url']}/chat/completions"
+
+    try:
+        resp = await run_in_threadpool(
+            lambda: requests.post(chat_url, headers=llm_headers, json=llm_payload, timeout=45)
+        )
+    except requests.RequestException as exc:
+        audit.record(
+            "create.enhance_prompt",
+            actor=actor,
+            status="upstream_unreachable",
+            details={"style_preset": preset_id, "model": target_model, "error": str(exc)},
+        )
+        raise HTTPException(status_code=502, detail=f"LLM backend unreachable: {exc}") from exc
+
+    if not resp.ok:
+        audit.record(
+            "create.enhance_prompt",
+            actor=actor,
+            status=f"http_{resp.status_code}",
+            details={"style_preset": preset_id, "model": target_model},
+        )
+        raise HTTPException(status_code=resp.status_code, detail=f"LLM prompt enhancement failed: {resp.text}")
+
+    data = resp.json()
+    choices = data.get("choices") or []
+    raw_enhanced = ""
+    if choices and isinstance(choices[0], dict):
+        raw_enhanced = str((choices[0].get("message") or {}).get("content") or "").strip()
+    if raw_enhanced.startswith("[MOCK-LLM]"):
+        _, styled_fallback = apply_create_style_preset(req.prompt, preset_id)
+        enhanced = f"{styled_fallback} — cinematic composition, ultra-crisp lighting, high detail"
+    else:
+        enhanced = raw_enhanced.strip('"\'') or req.prompt.strip()
+
+    audit.record(
+        "create.enhance_prompt",
+        actor=actor,
+        details={"style_preset": preset_id, "size": size, "model": target_model},
+    )
+    return {
+        "original_prompt": req.prompt.strip(),
+        "enhanced_prompt": enhanced,
+        "style_preset": preset_id,
+        "model": target_model,
+    }
+
+
+def _invoke_upstream_image_generation(
+    *,
+    prompt: str,
+    size: str,
+    n: int = 1,
+    model_override: str = "",
+    response_format: str = "b64_json",
+) -> tuple[str, dict[str, Any]]:
+    img_cfg = get_image_backend_settings()
+    target_model = (model_override or "").strip() or img_cfg["default_model"]
+    headers = build_llm_headers(img_cfg["api_key"], json_content=True)
+    url = f"{img_cfg['api_base_url']}/images/generations"
+    payload = {
+        "model": target_model,
+        "prompt": prompt,
+        "n": max(1, min(n, 4)),
+        "size": size,
+        "response_format": response_format,
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=180)
+    if not resp.ok:
+        try:
+            err_detail = resp.json()
+        except ValueError:
+            err_detail = resp.text
+        raise HTTPException(status_code=resp.status_code, detail=f"Image generation failed: {err_detail}")
+    return target_model, resp.json()
+
+
+@app.post("/create/api/generate")
+async def create_generate_image(req: CreateImageRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    owner_norm = actor.strip().lower()
+    groups = get_user_groups(request)
+    identities = get_user_identities(request) or {owner_norm}
+    member_roles = _get_user_project_roles(identities)
+
+    project_slug = (req.project_slug or "").strip() or None
+    if project_slug:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT group_name FROM projects WHERE slug = %s", (project_slug,))
+                proj = cur.fetchone()
+        role = resolve_user_project_role(groups, project_slug, proj[0], member_roles) if proj else None
+        if not proj or role is None:
+            audit.record(
+                "create.generate",
+                actor=actor,
+                project_slug=project_slug,
+                status="denied",
+                details={"reason": "project_access_denied"},
+            )
+            raise HTTPException(status_code=403, detail="You do not have access to the selected project.")
+
+    size = _validate_image_size(req.size)
+    preset_id, styled_prompt = apply_create_style_preset(req.prompt, req.style_preset)
+    if not styled_prompt:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+
+    try:
+        target_model, upstream_data = await run_in_threadpool(
+            _invoke_upstream_image_generation,
+            prompt=styled_prompt,
+            size=size,
+            n=1,
+            model_override=req.model,
+            response_format="b64_json",
+        )
+    except HTTPException as exc:
+        audit.record(
+            "create.generate",
+            actor=actor,
+            project_slug=project_slug,
+            status=f"http_{exc.status_code}",
+            details={"style_preset": preset_id, "size": size, "error": str(exc.detail)},
+        )
+        raise
+    except requests.RequestException as exc:
+        audit.record(
+            "create.generate",
+            actor=actor,
+            project_slug=project_slug,
+            status="upstream_unreachable",
+            details={"style_preset": preset_id, "size": size, "error": str(exc)},
+        )
+        raise HTTPException(status_code=502, detail=f"Image generation backend unreachable: {exc}") from exc
+
+    items = upstream_data.get("data") if isinstance(upstream_data, dict) else None
+    if not items or not isinstance(items, list) or not isinstance(items[0], dict):
+        raise HTTPException(status_code=502, detail="Upstream image backend returned an empty or invalid response.")
+
+    first = items[0]
+    b64_json = str(first.get("b64_json") or "").strip()
+    if not b64_json:
+        raise HTTPException(status_code=502, detail="Upstream image backend did not return b64_json image data.")
+    revised_prompt = str(first.get("revised_prompt") or styled_prompt).strip()
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO image_creations (owner, project_slug, prompt, enhanced_prompt, style_preset, size, model, mime_type, image_b64)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'image/png', %s)
+                RETURNING id, created_at
+                """,
+                (owner_norm, project_slug, req.prompt.strip(), revised_prompt, preset_id, size, target_model, b64_json),
+            )
+            creation_id, created_at = cur.fetchone()
+        conn.commit()
+
+    audit.record(
+        "create.generate",
+        actor=actor,
+        project_slug=project_slug,
+        details={
+            "creation_id": creation_id,
+            "style_preset": preset_id,
+            "size": size,
+            "model": target_model,
+        },
+    )
+    return {
+        "id": creation_id,
+        "owner": owner_norm,
+        "project_slug": project_slug,
+        "prompt": req.prompt.strip(),
+        "enhanced_prompt": revised_prompt,
+        "style_preset": preset_id,
+        "size": size,
+        "model": target_model,
+        "mime_type": "image/png",
+        "image_b64": b64_json,
+        "image_url": f"/create/api/creations/{creation_id}/image",
+        "created_at": created_at.isoformat(),
+    }
+
+
+@app.get("/create/api/creations")
+def create_list_creations(request: Request, limit: int = 24) -> list[dict[str, Any]]:
+    actor = get_actor(request)
+    identities = get_user_identities(request) or {actor.strip().lower()}
+    clamped_limit = max(1, min(limit, 100))
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, owner, project_slug, prompt, enhanced_prompt, style_preset, size, model, mime_type, image_b64, created_at
+                FROM image_creations
+                WHERE LOWER(owner) = ANY(%s)
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (sorted(identities), clamped_limit),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "owner": r[1],
+            "project_slug": r[2],
+            "prompt": r[3],
+            "enhanced_prompt": r[4],
+            "style_preset": r[5],
+            "size": r[6],
+            "model": r[7],
+            "mime_type": r[8],
+            "image_b64": r[9],
+            "image_url": f"/create/api/creations/{r[0]}/image",
+            "created_at": r[10].isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@app.get("/create/api/creations/{creation_id}/image")
+def create_get_creation_image(creation_id: int, request: Request) -> Response:
+    actor = get_actor(request)
+    groups = get_user_groups(request)
+    identities = get_user_identities(request) or {actor.strip().lower()}
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT owner, mime_type, image_b64 FROM image_creations WHERE id = %s",
+                (creation_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Creation not found.")
+    if (row[0] or "").strip().lower() not in identities and "ark-admins" not in groups:
+        raise HTTPException(status_code=403, detail="Forbidden: you can only view your own creations.")
+    try:
+        raw_bytes = base64.b64decode(row[2])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Corrupt image payload: {exc}") from exc
+    return Response(
+        content=raw_bytes,
+        media_type=row[1] or "image/png",
+        headers={
+            "Content-Disposition": f'inline; filename="ark-create-{creation_id}.png"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
+
+
+@app.delete("/create/api/creations/{creation_id}")
+def create_delete_creation(creation_id: int, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    groups = get_user_groups(request)
+    identities = get_user_identities(request) or {actor.strip().lower()}
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT owner, project_slug FROM image_creations WHERE id = %s", (creation_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Creation not found.")
+            if (row[0] or "").strip().lower() not in identities and "ark-admins" not in groups:
+                raise HTTPException(status_code=403, detail="Forbidden: you can only delete your own creations.")
+            cur.execute("DELETE FROM image_creations WHERE id = %s", (creation_id,))
+        conn.commit()
+    audit.record("create.delete", actor=actor, project_slug=row[1], details={"creation_id": creation_id})
+    return {"status": "deleted", "id": creation_id}
 
 
 @app.get("/admin-console/api/health")
@@ -2872,6 +3304,61 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
     return get_llm_backend()
 
 
+@app.get("/admin-console/api/image-backend")
+def get_image_backend() -> dict[str, Any]:
+    cfg = get_image_backend_settings()
+    return {
+        "api_base_url": cfg["api_base_url"],
+        "api_key_set": bool(cfg["api_key"]),
+        "default_model": cfg["default_model"],
+        "health_url": cfg["health_url"],
+    }
+
+
+@app.post("/admin-console/api/image-backend")
+def update_image_backend(req: ImageBackendConfigRequest, request: Request) -> dict[str, Any]:
+    actor = get_actor(request)
+    api_base_url = req.api_base_url.strip().rstrip("/")
+    if not (api_base_url.startswith("http://") or api_base_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="api_base_url must start with http:// or https://.")
+
+    default_model = req.default_model.strip() or "ark-image"
+    health_url = req.health_url.strip()
+    if health_url and not (health_url.startswith("http://") or health_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="health_url must start with http:// or https://.")
+
+    current = get_image_backend_settings()
+    if req.clear_api_key:
+        new_api_key = ""
+    elif req.api_key is not None and req.api_key.strip():
+        new_api_key = req.api_key.strip()
+    else:
+        new_api_key = current["api_key"]
+
+    updates = {
+        "image_api_base_url": api_base_url,
+        "image_api_key": encrypt_secret_value(new_api_key) if new_api_key else "",
+        "image_default_model": default_model,
+        "image_health_url": health_url,
+    }
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            for k, v in updates.items():
+                cur.execute(
+                    "INSERT INTO system_settings (key, value, updated_at) VALUES (%s, %s, NOW()) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                    (k, v),
+                )
+        conn.commit()
+
+    audit.record(
+        "image_backend.update",
+        actor=actor,
+        details={"api_base_url": api_base_url, "default_model": default_model},
+    )
+    return get_image_backend()
+
+
 @app.get("/admin-console/api/models")
 def list_models() -> dict[str, Any]:
     llm_cfg = get_llm_backend_settings()
@@ -3299,6 +3786,65 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
         },
     )
     return JSONResponse(status_code=resp.status_code, content=content, headers=rag_headers)
+
+
+@app.post("/projects/{slug}/v1/images/generations")
+async def project_image_generations(
+    slug: str,
+    request: Request,
+    auth: dict[str, Any] = Depends(authenticate_project_key),
+) -> JSONResponse:
+    _require_key_scope(auth, "images", slug)
+    body = await request.json()
+    raw_prompt = str(body.get("prompt") or "").strip()
+    if not raw_prompt:
+        raise HTTPException(status_code=400, detail="prompt is required.")
+
+    size = _validate_image_size(str(body.get("size") or "1024x1024"))
+    n = max(1, min(int(body.get("n") or 1), 4))
+    response_format = str(body.get("response_format") or "b64_json").strip()
+    style_preset = body.get("style_preset")
+    preset_id, final_prompt = apply_create_style_preset(raw_prompt, style_preset)
+
+    img_cfg = get_image_backend_settings()
+    target_model = str(body.get("model") or "").strip() or img_cfg["default_model"]
+    headers = build_llm_headers(img_cfg["api_key"], json_content=True)
+    gen_url = f"{img_cfg['api_base_url']}/images/generations"
+    payload = {
+        "model": target_model,
+        "prompt": final_prompt,
+        "n": n,
+        "size": size,
+        "response_format": response_format,
+    }
+
+    try:
+        resp = await run_in_threadpool(
+            lambda: requests.post(gen_url, headers=headers, json=payload, timeout=180)
+        )
+    except requests.RequestException as exc:
+        audit.record(
+            "api.image_generation",
+            actor=f"key:{auth['key_label']}",
+            project_slug=slug,
+            status="upstream_unreachable",
+            details={"model": target_model, "size": size, "n": n, "style_preset": preset_id, "error": str(exc)},
+        )
+        return JSONResponse(status_code=502, content={"error": f"Image generation backend unreachable: {exc}"})
+
+    try:
+        content = resp.json()
+    except ValueError:
+        content = {"error": resp.text}
+
+    audit.record(
+        "api.image_generation",
+        actor=f"key:{auth['key_label']}",
+        project_slug=slug,
+        status="success" if resp.ok else f"http_{resp.status_code}",
+        details={"model": target_model, "size": size, "n": n, "style_preset": preset_id},
+    )
+    return JSONResponse(status_code=resp.status_code, content=content)
 
 
 # ==============================================================================

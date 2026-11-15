@@ -305,6 +305,9 @@
       <a href="/"
         style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Open
         WebUI</a>
+      <a href="/create/"
+        style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">Create
+        Studio</a>
       <a href="/portal/"
         style="text-decoration:none;background:var(--void);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:0.82rem;font-weight:600;">User
         Portal</a>
@@ -404,6 +407,9 @@
       <div style="display:flex;gap:14px;align-items:center;margin:4px 0 8px;font-size:0.84rem;">
         <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
           <input id="key-scope-chat" type="checkbox" checked style="width:auto;" /> chat
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-images" type="checkbox" style="width:auto;" /> images
         </label>
         <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
           <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
@@ -646,6 +652,15 @@
       </div>
       <button class="amber" onclick="saveLlmBackend()">Save LLM Backend Settings</button>
       <hr style="border-color: var(--border); margin: 16px 0;" />
+      <label style="color:var(--cyan);">Image Generation Backend (<code>/create</code> &amp; <code>/v1/images/generations</code>)</label>
+      <label>Image OpenAI API Base URL (including <code>/v1</code>)</label>
+      <input id="image-api-base-url" placeholder="http://vllm:8000/v1" />
+      <label>Default Image Model ID</label>
+      <input id="image-default-model" placeholder="ark-image" />
+      <label>Image API Key (leave blank to keep existing)</label>
+      <input id="image-api-key" type="password" placeholder="Optional / unchanged" />
+      <button class="amber" onclick="saveImageBackend()">Save Image Backend Settings</button>
+      <hr style="border-color: var(--border); margin: 16px 0;" />
       <label>Local Air-Gapped Models (<code>/models</code>)</label>
       <table id="local-models-table">
         <thead>
@@ -776,10 +791,10 @@
       const auditEvtEl = document.getElementById('audit-event-filter');
       if (auditEvtEl && auditEvtEl.value.trim()) auditParams.set('event_type', auditEvtEl.value.trim());
 
-      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, knownUsers] = await Promise.all([
+      const [ver, health, projects, keys, backupCfg, backups, pluginMeta, sources, jobs, audits, modelsInfo, llmBackend, imageBackend, knownUsers] = await Promise.all([
         api('/version'), api('/health'), api('/projects'), api('/keys'), api('/settings/backup'), api('/backups'),
         api('/plugins'), api('/ingest-sources'), api('/ingest-jobs?limit=10'), api('/audit?' + auditParams.toString()), api('/models'), api('/llm-backend'),
-        api('/users')
+        api('/image-backend'), api('/users')
       ]);
 
       loadedSources = sources || [];
@@ -1028,6 +1043,13 @@
       document.getElementById('llm-health-url').value = llmBackend.health_url === `${llmBackend.api_base_url}/models` ? '' : (llmBackend.health_url || '');
       document.getElementById('llm-backend-admin-url').value = llmBackend.backend_admin_url || '';
       toggleBackendAdminField();
+
+      if (imageBackend) {
+        document.getElementById('image-api-base-url').value = imageBackend.api_base_url || '';
+        document.getElementById('image-default-model').value = imageBackend.default_model || 'ark-image';
+        document.getElementById('image-api-key').value = '';
+        document.getElementById('image-api-key').placeholder = imageBackend.api_key_set ? 'Configured (leave blank to keep)' : 'Optional (no API key set)';
+      }
     }
 
     function toggleCreateProjectRagFields() {
@@ -1150,6 +1172,7 @@
     async function createKey() {
       const scopes = [];
       if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
+      if (document.getElementById('key-scope-images').checked) scopes.push('images');
       if (document.getElementById('key-scope-ingest').checked) scopes.push('ingest');
       const res = await api('/keys', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1491,6 +1514,20 @@
             api_key: document.getElementById('llm-api-key').value || null,
             health_url: document.getElementById('llm-health-url').value,
             backend_admin_url: document.getElementById('llm-backend-admin-url').value,
+          })
+        });
+        showModelOps(res);
+        refreshAll();
+      }
+
+      async function saveImageBackend() {
+        const res = await api('/image-backend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_base_url: document.getElementById('image-api-base-url').value,
+            default_model: document.getElementById('image-default-model').value || 'ark-image',
+            api_key: document.getElementById('image-api-key').value || null
           })
         });
         showModelOps(res);

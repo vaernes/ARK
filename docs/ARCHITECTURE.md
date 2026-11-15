@@ -80,6 +80,7 @@ ark-stack/
 │   └── static/
 │       ├── index.html
 │       ├── portal.html
+│       ├── create.html
 │       └── ark-logo.svg
 ├── llm-admin/                       # Standalone ARK LLM Backend Console (port 8095)
 │   ├── Dockerfile

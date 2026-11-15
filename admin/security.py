@@ -24,7 +24,7 @@ def authorize_proxy_request(
     expected_secret: str,
 ) -> tuple[bool, int, str]:
     """
-    Enforce proxy authentication and group authorization on /admin-console* and /portal*.
+    Enforce proxy authentication and group authorization on /admin-console*, /portal*, and /create*.
 
     Returns (allowed, status_code, actor_or_reason).
     - When allowed is True, the third element is the authenticated actor identity.
@@ -32,8 +32,9 @@ def authorize_proxy_request(
     """
     is_admin_route = _is_subpath(path, "/admin-console")
     is_portal_route = _is_subpath(path, "/portal")
+    is_create_route = _is_subpath(path, "/create")
 
-    if not is_admin_route and not is_portal_route:
+    if not is_admin_route and not is_portal_route and not is_create_route:
         return True, 200, ""
 
     if not expected_secret:

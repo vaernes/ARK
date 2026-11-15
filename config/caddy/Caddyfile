@@ -82,6 +82,24 @@
 		}
 	}
 
+	# 3c. ARK Create Studio (/create) - Any authenticated Keycloak user
+	handle /create* {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-User X-Auth-Request-Email X-Auth-Request-Groups
+			@unauthorized status 401
+			handle_response @unauthorized {
+				redir * /oauth2/start?rd={uri}
+			}
+		}
+		reverse_proxy ark-admin-control:8090 {
+			header_up X-Ark-Proxy-Secret {env.ARK_PROXY_AUTH_SECRET}
+			header_up X-Forwarded-User {http.request.header.X-Auth-Request-User}
+			header_up X-Forwarded-Email {http.request.header.X-Auth-Request-Email}
+			header_up X-Forwarded-Groups {http.request.header.X-Auth-Request-Groups}
+		}
+	}
+
 	# 4. Per-Project Scoped OpenAI API Gateway (/projects/<slug>/v1/*)
 	@project_api path_regexp ^/projects/[^/]+/v1(/|$)
 	handle @project_api {

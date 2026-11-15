@@ -37,6 +37,99 @@ def resolve_llm_backend_config(env: Mapping[str, str] | None = None) -> dict[str
     }
 
 
+def resolve_image_backend_config(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Resolve OpenAI-compatible Image Generation (/v1/images/generations) settings."""
+    source = os.environ if env is None else env
+    llm_fallback = resolve_llm_backend_config(source)
+
+    raw_base = (source.get("IMAGE_API_BASE_URL") or "").strip().rstrip("/")
+    if not raw_base:
+        raw_base = llm_fallback["api_base_url"]
+
+    if "IMAGE_API_KEY" in source and (source.get("IMAGE_API_KEY") or "").strip():
+        api_key = (source.get("IMAGE_API_KEY") or "").strip()
+    else:
+        api_key = llm_fallback["api_key"]
+
+    default_model = (
+        (source.get("IMAGE_SERVED_NAME") or "").strip()
+        or (source.get("IMAGE_MODEL_ID") or "").strip()
+        or "ark-image"
+    )
+    health_url = (source.get("IMAGE_HEALTH_URL") or "").strip() or f"{raw_base}/models"
+
+    return {
+        "api_base_url": raw_base,
+        "api_key": api_key,
+        "default_model": default_model,
+        "health_url": health_url,
+    }
+
+
+CREATE_STYLE_PRESETS: dict[str, dict[str, str]] = {
+    "photorealistic": {
+        "id": "photorealistic",
+        "label": "Photorealistic",
+        "description": "Studio-grade photography with natural lighting and crisp detail",
+        "prompt_suffix": "Style: editorial studio photography, natural lighting, sharp focus, high dynamic range, photorealistic detail.",
+    },
+    "illustration": {
+        "id": "illustration",
+        "label": "Digital Illustration",
+        "description": "Clean modern vector illustration for articles and documentation",
+        "prompt_suffix": "Style: modern digital vector illustration, clean geometric forms, balanced enterprise palette, crisp edges.",
+    },
+    "isometric_diagram": {
+        "id": "isometric_diagram",
+        "label": "Isometric Diagram",
+        "description": "3D isometric technical architecture visual with slate, cyan, and amber accents",
+        "prompt_suffix": "Style: isometric 3D technical architecture diagram, dark slate background (#0A0E17), glowing cyan (#00E5FF) and signal amber (#F55A00) highlights, clean precision lines.",
+    },
+    "icon": {
+        "id": "icon",
+        "label": "App / UI Icon",
+        "description": "Centered minimalist emblem or product icon on a clean dark canvas",
+        "prompt_suffix": "Style: minimalist app icon emblem, centered composition, bold silhouette, subtle metallic and cyan gradient on dark slate background.",
+    },
+    "slide_graphic": {
+        "id": "slide_graphic",
+        "label": "Slide Graphic",
+        "description": "Executive presentation hero visual with uncluttered composition",
+        "prompt_suffix": "Style: widescreen executive presentation visual, modern abstract enterprise tech aesthetic, high contrast, uncluttered composition.",
+    },
+    "blueprint": {
+        "id": "blueprint",
+        "label": "Technical Blueprint",
+        "description": "CAD-style schematic wireframe and engineering blueprint",
+        "prompt_suffix": "Style: technical engineering schematic blueprint, precision CAD wireframe lines, grid overlay, dark navy and cyan schematic aesthetic.",
+    },
+    "none": {
+        "id": "none",
+        "label": "Raw Prompt",
+        "description": "Use your exact prompt without style modifiers",
+        "prompt_suffix": "",
+    },
+}
+
+CREATE_SUPPORTED_SIZES: list[dict[str, str]] = [
+    {"size": "1024x1024", "aspect": "1:1", "label": "Square (1024x1024)"},
+    {"size": "1344x768", "aspect": "16:9", "label": "Landscape / Slide (1344x768)"},
+    {"size": "768x1344", "aspect": "9:16", "label": "Portrait (768x1344)"},
+]
+
+
+def apply_create_style_preset(prompt: str, style_preset: str | None) -> tuple[str, str]:
+    """Return (normalized_preset_id, styled_prompt)."""
+    cleaned_prompt = (prompt or "").strip()
+    preset_key = (style_preset or "none").strip().lower()
+    if preset_key not in CREATE_STYLE_PRESETS:
+        preset_key = "none"
+    suffix = CREATE_STYLE_PRESETS[preset_key]["prompt_suffix"]
+    if not suffix:
+        return preset_key, cleaned_prompt
+    return preset_key, f"{cleaned_prompt}\n\n{suffix}"
+
+
 def build_llm_headers(api_key: str, *, json_content: bool = False) -> dict[str, str]:
     """Build upstream HTTP headers for OpenAI-compatible LLM requests."""
     headers: dict[str, str] = {}

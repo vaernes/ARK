@@ -244,9 +244,11 @@ except urllib.error.HTTPError:
 
   # 2. Test Admin Console SSO protection & peer-container bypass rejection
   log "2/8 Testing /admin-console/ SSO forward_auth & peer bypass rejection..."
-  local admin_code spoof_caddy_code peer_bypass_code non_admin_code
+  local admin_code create_code spoof_caddy_code peer_bypass_code non_admin_code
   admin_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/admin-console/")
   [[ "${admin_code}" == "302" ]] || fail "Expected 302 redirect for unauthenticated /admin-console/, got ${admin_code}"
+  create_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/create/")
+  [[ "${create_code}" == "302" ]] || fail "Expected 302 redirect for unauthenticated /create/, got ${create_code}"
   spoof_caddy_code=$(curl -ks -o /dev/null -w "%{http_code}" \
     -H "X-Ark-Proxy-Secret: ${PROXY_AUTH_SECRET}" \
     -H "X-Forwarded-User: attacker" \
@@ -301,6 +303,10 @@ assert va['scheme'] == 'CalVer', va
 v_portal = requests.get('http://localhost:8090/portal/api/version', headers=H_USER, timeout=5)
 v_portal.raise_for_status()
 assert v_portal.json()['version'] == '${ARK_VERSION}', v_portal.json()
+
+v_create = requests.get('http://localhost:8090/create/api/version', headers=H_USER, timeout=5)
+v_create.raise_for_status()
+assert v_create.json()['version'] == '${ARK_VERSION}', v_create.json()
 
 h = requests.get('http://localhost:8090/admin-console/api/health', headers=H_ADMIN, timeout=10)
 h.raise_for_status()
@@ -758,8 +764,113 @@ b_restore = requests.post('http://localhost:8090/admin-console/api/llm-backend',
 })
 b_restore.raise_for_status()
 assert b_restore.json()['backend_admin_url'] == 'http://localhost:8095', b_restore.json()
+
+# Verify Image Generation Backend configuration, ARK Create Studio (/create/api/*), and scoped /projects/<slug>/v1/images/generations
+import base64
+
+img_b = requests.get('http://localhost:8090/admin-console/api/image-backend', headers=H)
+img_b.raise_for_status()
+assert img_b.json()['api_base_url'] == 'http://vllm:8000/v1', img_b.json()
+assert img_b.json()['default_model'] == 'ark-image', img_b.json()
+
+img_upd = requests.post('http://localhost:8090/admin-console/api/image-backend', headers=H, json={
+    'api_base_url': 'http://vllm:8000/v1',
+    'default_model': 'ark-image',
+})
+img_upd.raise_for_status()
+
+H_ALICE = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-Email': 'alice@ark.local',
+    'X-Forwarded-Groups': 'project-alpha',
+}
+H_OUTSIDER = {
+    'X-Ark-Proxy-Secret': '${PROXY_AUTH_SECRET}',
+    'X-Forwarded-Email': 'outsider@ark.local',
+    'X-Forwarded-Groups': 'users',
+}
+
+ui_html = requests.get('http://localhost:8090/create/', headers=H_ALICE)
+ui_html.raise_for_status()
+assert 'ARK CREATE STUDIO' in ui_html.text
+
+presets = requests.get('http://localhost:8090/create/api/presets', headers=H_ALICE)
+presets.raise_for_status()
+preset_ids = {p['id'] for p in presets.json()['presets']}
+assert {'photorealistic', 'isometric_diagram', 'icon', 'slide_graphic'}.issubset(preset_ids), preset_ids
+
+enh = requests.post('http://localhost:8090/create/api/enhance-prompt', headers=H_ALICE, json={
+    'prompt': 'Secure air-gapped data vault',
+    'style_preset': 'isometric_diagram',
+    'size': '1024x1024',
+})
+enh.raise_for_status()
+assert len(enh.json()['enhanced_prompt']) > 10, enh.json()
+
+# Outsider cannot tag creation with project-alpha (403)
+denied_proj = requests.post('http://localhost:8090/create/api/generate', headers=H_OUTSIDER, json={
+    'prompt': 'Unauthorized project tag test',
+    'style_preset': 'icon',
+    'size': '1024x1024',
+    'project_slug': 'project-alpha',
+})
+assert denied_proj.status_code == 403, denied_proj.status_code
+
+gen = requests.post('http://localhost:8090/create/api/generate', headers=H_ALICE, json={
+    'prompt': 'Secure air-gapped data vault',
+    'style_preset': 'isometric_diagram',
+    'size': '1344x768',
+    'project_slug': 'project-alpha',
+})
+gen.raise_for_status()
+gen_item = gen.json()
+cid = gen_item['id']
+assert gen_item['style_preset'] == 'isometric_diagram', gen_item
+assert gen_item['size'] == '1344x768', gen_item
+assert base64.b64decode(gen_item['image_b64']).startswith(b'\x89PNG\r\n\x1a\n')
+
+gallery = requests.get('http://localhost:8090/create/api/creations', headers=H_ALICE)
+gallery.raise_for_status()
+assert any(c['id'] == cid for c in gallery.json()), gallery.json()
+
+# Outsider cannot see or download or delete Alice's creation
+outsider_gallery = requests.get('http://localhost:8090/create/api/creations', headers=H_OUTSIDER)
+outsider_gallery.raise_for_status()
+assert all(c['id'] != cid for c in outsider_gallery.json()), outsider_gallery.json()
+assert requests.get(f'http://localhost:8090/create/api/creations/{cid}/image', headers=H_OUTSIDER).status_code == 403
+assert requests.delete(f'http://localhost:8090/create/api/creations/{cid}', headers=H_OUTSIDER).status_code == 403
+
+img_bin = requests.get(f'http://localhost:8090/create/api/creations/{cid}/image', headers=H_ALICE)
+img_bin.raise_for_status()
+assert img_bin.content.startswith(b'\x89PNG\r\n\x1a\n')
+
+del_res = requests.delete(f'http://localhost:8090/create/api/creations/{cid}', headers=H_ALICE)
+del_res.raise_for_status()
+assert del_res.json()['status'] == 'deleted'
+
+# Test per-project /projects/project-alpha/v1/images/generations with 'images' scope vs 'chat' scope
+img_key = requests.post('http://localhost:8090/admin-console/api/keys', headers=H, json={
+    'project_slug': 'project-alpha', 'label': 'design-addin', 'scopes': ['images']
+}).json()['api_key']
+chat_only_key = '${alpha_key}'
+
+denied_scope = requests.post(
+    'http://localhost:8090/projects/project-alpha/v1/images/generations',
+    headers={'Authorization': f'Bearer {chat_only_key}'},
+    json={'prompt': 'Should be blocked without images scope'},
+)
+assert denied_scope.status_code == 403, denied_scope.status_code
+
+proj_img = requests.post(
+    'http://localhost:8090/projects/project-alpha/v1/images/generations',
+    headers={'Authorization': f'Bearer {img_key}'},
+    json={'prompt': 'Architecture diagram for Project Alpha', 'style_preset': 'blueprint', 'size': '1024x1024'},
+)
+proj_img.raise_for_status()
+proj_b64 = proj_img.json()['data'][0]['b64_json']
+assert base64.b64decode(proj_b64).startswith(b'\x89PNG\r\n\x1a\n')
 "
-  pass "LLM & Model Management endpoints verified."
+  pass "LLM & Model Management, ARK Create Studio (/create), and per-project /v1/images/generations endpoints verified."
 
   # 7. Test Full Backup (Postgres + Qdrant snapshot files) & Full-Stack Restore
   log "7/8 Testing full PostgreSQL + Qdrant backup & restore..."
@@ -844,8 +955,13 @@ for expected in (
     'apikey.create',
     'apikey.revoke',
     'api.chat_completion',
+    'api.image_generation',
     'api.auth_failed',
     'api.scope_denied',
+    'create.enhance_prompt',
+    'create.generate',
+    'create.delete',
+    'image_backend.update',
     'ingest.push',
     'ingest.delete',
     'ingest.dry_run',

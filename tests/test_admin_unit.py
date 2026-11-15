@@ -26,8 +26,13 @@ from backup_utils import (  # noqa: E402
     verify_backup_manifest,
 )
 from ark_ingest import Checkpoint, Document, Log, run as ark_ingest_run  # noqa: E402
-from llm_backend import build_llm_headers, resolve_llm_backend_config  # noqa: E402
-from mock_inference import deterministic_embedding  # noqa: E402
+from llm_backend import (  # noqa: E402
+    apply_create_style_preset,
+    build_llm_headers,
+    resolve_image_backend_config,
+    resolve_llm_backend_config,
+)
+from mock_inference import deterministic_embedding, generate_mock_png_b64  # noqa: E402
 from security import authorize_proxy_request, normalize_groups  # noqa: E402
 from version import get_ark_version, get_version_info  # noqa: E402
 
@@ -40,6 +45,18 @@ class TestMockInference(unittest.TestCase):
         self.assertEqual(len(vec1), 1024)
         self.assertEqual(vec1, vec2)
         self.assertNotEqual(vec1, vec3)
+
+    def test_generate_mock_png_b64_produces_valid_png(self) -> None:
+        import base64
+
+        b64_a = generate_mock_png_b64("Isometric network diagram", size="1024x1024", index=0)
+        b64_b = generate_mock_png_b64("Isometric network diagram", size="1024x1024", index=0)
+        b64_c = generate_mock_png_b64("Different prompt", size="1344x768", index=0)
+        self.assertEqual(b64_a, b64_b)
+        self.assertNotEqual(b64_a, b64_c)
+        raw_png = base64.b64decode(b64_a)
+        self.assertTrue(raw_png.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertIn(b"IEND", raw_png)
 
 
 class TestProxyAuthorization(unittest.TestCase):
@@ -55,7 +72,14 @@ class TestProxyAuthorization(unittest.TestCase):
         self.assertEqual(code, 403)
 
     def test_rejects_spoofed_admin_headers_without_proxy_secret(self) -> None:
-        for path in ("/admin-console/", "/admin-console/api/projects", "/admin-console/docs", "/portal/api/keys"):
+        for path in (
+            "/admin-console/",
+            "/admin-console/api/projects",
+            "/admin-console/docs",
+            "/portal/api/keys",
+            "/create/",
+            "/create/api/generate",
+        ):
             allowed, code, _ = authorize_proxy_request(
                 path,
                 {
@@ -106,18 +130,19 @@ class TestProxyAuthorization(unittest.TestCase):
         self.assertEqual(actor, "admin@corp.internal")
 
     def test_allows_authenticated_non_admin_on_portal(self) -> None:
-        allowed, code, actor = authorize_proxy_request(
-            "/portal/api/keys",
-            {
-                "X-Ark-Proxy-Secret": self.SECRET,
-                "X-Forwarded-User": "jdoe",
-                "X-Forwarded-Groups": "project-alpha",
-            },
-            self.SECRET,
-        )
-        self.assertTrue(allowed)
-        self.assertEqual(code, 200)
-        self.assertEqual(actor, "jdoe")
+        for route in ("/portal/api/keys", "/create/", "/create/api/generate"):
+            allowed, code, actor = authorize_proxy_request(
+                route,
+                {
+                    "X-Ark-Proxy-Secret": self.SECRET,
+                    "X-Forwarded-User": "jdoe",
+                    "X-Forwarded-Groups": "project-alpha",
+                },
+                self.SECRET,
+            )
+            self.assertTrue(allowed, route)
+            self.assertEqual(code, 200, route)
+            self.assertEqual(actor, "jdoe", route)
 
     def test_project_gateway_bypasses_proxy_secret(self) -> None:
         allowed, code, _ = authorize_proxy_request("/projects/project-alpha/v1/chat/completions", {}, self.SECRET)
@@ -244,7 +269,7 @@ class TestBackupUtils(unittest.TestCase):
 
 class TestUiXssSafety(unittest.TestCase):
     def test_no_innerhtml_interpolation_in_admin_or_portal_html(self) -> None:
-        for rel_path in ("admin/static/index.html", "admin/static/portal.html"):
+        for rel_path in ("admin/static/index.html", "admin/static/portal.html", "admin/static/create.html"):
             content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             self.assertNotIn("innerHTML", content, f"{rel_path} must use safe DOM APIs instead of innerHTML")
             external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', content, re.I)
@@ -426,6 +451,36 @@ class TestLlmBackendConfig(unittest.TestCase):
     def test_no_api_key_omits_authorization_header(self) -> None:
         self.assertEqual(build_llm_headers("", json_content=True), {"Content-Type": "application/json"})
         self.assertEqual(build_llm_headers(""), {})
+
+    def test_image_backend_config_and_style_presets(self) -> None:
+        img_cfg = resolve_image_backend_config(
+            {
+                "LLM_API_BASE_URL": "http://vllm:8000/v1/",
+                "LLM_API_KEY": "sk-llm-fallback",
+            }
+        )
+        self.assertEqual(img_cfg["api_base_url"], "http://vllm:8000/v1")
+        self.assertEqual(img_cfg["api_key"], "sk-llm-fallback")
+        self.assertEqual(img_cfg["default_model"], "ark-image")
+
+        img_override = resolve_image_backend_config(
+            {
+                "IMAGE_API_BASE_URL": "http://diffusion.internal:8010/v1/",
+                "IMAGE_API_KEY": "sk-img-only",
+                "IMAGE_SERVED_NAME": "flux-schnell",
+            }
+        )
+        self.assertEqual(img_override["api_base_url"], "http://diffusion.internal:8010/v1")
+        self.assertEqual(img_override["api_key"], "sk-img-only")
+        self.assertEqual(img_override["default_model"], "flux-schnell")
+
+        preset_id, styled = apply_create_style_preset("Data center vault", "isometric_diagram")
+        self.assertEqual(preset_id, "isometric_diagram")
+        self.assertIn("Data center vault", styled)
+        self.assertIn("isometric 3D", styled)
+        raw_id, raw_styled = apply_create_style_preset("Plain prompt", "unknown_preset")
+        self.assertEqual(raw_id, "none")
+        self.assertEqual(raw_styled, "Plain prompt")
 
 
 class TestArkIngestSdkAndBuiltinPlugins(unittest.TestCase):

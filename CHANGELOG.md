@@ -8,6 +8,12 @@ using `YYYY.MM.PATCH` (for example, `2026.11.0`).
 
 ## [Unreleased]
 
+### Added
+- **ARK Create Studio (`/create/`) & Image Generation Support:**
+  - Added **ARK Create Studio** (`/create/`) protected by Keycloak SSO (`oauth2-proxy` `forward_auth` + `X-Ark-Proxy-Secret`), featuring visual style presets (`photorealistic`, `illustration`, `isometric_diagram`, `icon`, `slide_graphic`, `blueprint`, `none`), aspect ratio/size controls (`1024x1024`, `1344x768`, `768x1344`), AI prompt enhancement via the ARK LLM (`POST /create/api/enhance-prompt`), and a per-user PostgreSQL-backed creation gallery (`/create/api/creations`).
+  - Added per-project OpenAI-compatible image generation gateway endpoint (`POST /projects/<slug>/v1/images/generations`) gated by the `images` API key scope, per-key rate limits, and structured audit logging (`api.image_generation`, `create.generate`, `create.enhance_prompt`, `create.delete`, `image_backend.update`).
+  - Added runtime Image Generation Backend configuration in the Admin Console (`/admin-console/api/image-backend`), Open WebUI image generation wiring in `docker-compose.yml` and `scripts/dev-up.sh`, and deterministic stdlib PNG mock inference in `tests/mock_inference.py`.
+
 ## [2026.11.1] - 2026-11-15
 
 ### Added

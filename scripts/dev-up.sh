@@ -39,7 +39,8 @@ stop_stack() {
     ark-dev-qdrant \
     ark-dev-postgres >/dev/null 2>&1 || true
   docker network rm "${NET_NAME}" "${CONTROL_NET}" >/dev/null 2>&1 || true
-  rm -rf "${STATE_DIR}"
+  rm -rf "${STATE_DIR}" 2>/dev/null || docker run --rm -v "${STATE_DIR}:/state" python:3.12-slim-bookworm sh -c "rm -rf /state/* /state/.[!.]*" >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR}" 2>/dev/null || true
   log "ARK dev stack stopped."
 }
 
@@ -234,6 +235,12 @@ if [[ "${FULL_STACK}" == true ]]; then
     -e OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true \
     -e OPENAI_API_BASE_URL="http://vllm:8000/v1" \
     -e OPENAI_API_KEY="${VLLM_KEY}" \
+    -e ENABLE_IMAGE_GENERATION=true \
+    -e IMAGE_GENERATION_ENGINE=openai \
+    -e IMAGES_OPENAI_API_BASE_URL="http://vllm:8000/v1" \
+    -e IMAGES_OPENAI_API_KEY="${VLLM_KEY}" \
+    -e IMAGE_GENERATION_MODEL="ark-image" \
+    -e IMAGE_SIZE="1024x1024" \
     -e VECTOR_DB=qdrant \
     -e QDRANT_URI="http://qdrant:6333" \
     -e QDRANT_API_KEY="${QDRANT_KEY}" \
@@ -264,6 +271,8 @@ cat <<EOF
 ARK Dev Stack is RUNNING!
 ====================================================================
   Admin Console:    https://localhost:8443/admin-console/
+  Create Studio:    https://localhost:8443/create/
+  User Portal:      https://localhost:8443/portal/
   SSO Login:        username: ${DEV_USER}   password: ${DEV_PASS}
   Keycloak Admin:   https://localhost:8443/auth/admin/
   KC Master Login:  username: admin         password: ${KC_PASS}

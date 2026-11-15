@@ -269,6 +269,7 @@
       <div class="pill">User: <strong id="me-user">...</strong></div>
       <div class="pill">Groups: <strong id="me-groups">-</strong></div>
       <a class="nav-link" href="/">Open WebUI Chat</a>
+      <a class="nav-link" href="/create/">Create Studio</a>
       <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
       <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
     </div>
@@ -308,6 +309,9 @@
       <div style="display:flex;gap:14px;align-items:center;margin:4px 0 8px;font-size:0.84rem;">
         <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
           <input id="key-scope-chat" type="checkbox" checked style="width:auto;" /> chat
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+          <input id="key-scope-images" type="checkbox" style="width:auto;" /> images
         </label>
         <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
           <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
@@ -470,6 +474,7 @@
       if (!proj) return showError('No accessible project selected.');
       const scopes = [];
       if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
+      if (document.getElementById('key-scope-images').checked) scopes.push('images');
       const ingestEl = document.getElementById('key-scope-ingest');
       if (!ingestEl.disabled && ingestEl.checked) scopes.push('ingest');
       const res = await api('/keys', {

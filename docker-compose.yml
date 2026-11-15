@@ -292,6 +292,13 @@ services:
       # LLM Inference (Separate vLLM Server or 3rd-Party OpenAI-Compatible API)
       OPENAI_API_BASE_URL: "${LLM_API_BASE_URL:-http://vllm:8000/v1}"
       OPENAI_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
+      # Image Generation (ARK Create / OpenAI-Compatible Images API)
+      ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-true}"
+      IMAGE_GENERATION_ENGINE: "openai"
+      IMAGES_OPENAI_API_BASE_URL: "${IMAGE_API_BASE_URL:-${LLM_API_BASE_URL:-http://vllm:8000/v1}}"
+      IMAGES_OPENAI_API_KEY: "${IMAGE_API_KEY:-${LLM_API_KEY:-${VLLM_API_KEY}}}"
+      IMAGE_GENERATION_MODEL: "${IMAGE_SERVED_NAME:-ark-image}"
+      IMAGE_SIZE: "${IMAGE_DEFAULT_SIZE:-1024x1024}"
       # Vector DB (Qdrant)
       VECTOR_DB: "qdrant"
       QDRANT_URI: "http://qdrant:6333"
@@ -443,6 +450,10 @@ services:
       LLM_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
       LLM_HEALTH_URL: "${LLM_HEALTH_URL:-}"
       LLM_SERVED_NAME: "${LLM_SERVED_NAME:-ark-llm}"
+      IMAGE_API_BASE_URL: "${IMAGE_API_BASE_URL:-${LLM_API_BASE_URL:-http://vllm:8000/v1}}"
+      IMAGE_API_KEY: "${IMAGE_API_KEY:-${LLM_API_KEY:-${VLLM_API_KEY}}}"
+      IMAGE_SERVED_NAME: "${IMAGE_SERVED_NAME:-ark-image}"
+      IMAGE_HEALTH_URL: "${IMAGE_HEALTH_URL:-}"
       LLM_MODEL_ID: "${LLM_MODEL_ID:-Qwen/Qwen2.5-14B-Instruct}"
       LLM_MODEL_DIR: "${LLM_MODEL_DIR:-Qwen--Qwen2.5-14B-Instruct}"
       EMBED_MODEL_DIR: "${EMBED_MODEL_DIR:-BAAI--bge-m3}"
