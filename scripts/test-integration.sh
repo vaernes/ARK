@@ -24,17 +24,19 @@ QDRANT_KEY="ark-test-qdrant-key"
 VLLM_KEY="ark-test-vllm-key"
 COOKIE_SECRET="$(python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
 PROXY_AUTH_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+if [[ -z "${TEST_HTTPS_PORT:-}" ]]; then
+  if python3 -c "import socket; s=socket.socket(); s.settimeout(0.2); exit(0 if s.connect_ex(('127.0.0.1', 8443)) == 0 else 1)" 2>/dev/null; then
+    TEST_HTTPS_PORT="18443"
+  else
+    TEST_HTTPS_PORT="8443"
+  fi
+fi
 
 log()  { printf '[%s] [TEST] %s\n' "$(date -u +'%H:%M:%S')" "$*"; }
 pass() { printf '[%s] [PASS] %s\n' "$(date -u +'%H:%M:%S')" "$*"; }
 fail() { printf '[%s] [FAIL] %s\n' "$(date -u +'%H:%M:%S')" "$*" >&2; exit 1; }
 
-cleanup() {
-  if [[ "${KEEP_RUNNING}" == true ]]; then
-    log "Containers left running (--keep). Clean up manually with: docker rm -f \$(docker ps -aq --filter name=ark-test-)"
-    return
-  fi
-  log "Cleaning up test containers and temporary files..."
+stop_test_containers() {
   docker exec ark-test-ark-admin rm -rf /backups/* /var/log/ark/* >/dev/null 2>&1 || true
   docker rm -f \
     ark-test-caddy \
@@ -47,24 +49,42 @@ cleanup() {
     ark-test-qdrant \
     ark-test-postgres >/dev/null 2>&1 || true
   docker network rm "${NET_NAME}" "${CONTROL_NET}" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  if [[ "${KEEP_RUNNING}" == true ]]; then
+    log "Containers left running (--keep). Clean up manually with: docker rm -f \$(docker ps -aq --filter name=ark-test-)"
+    return
+  fi
+  log "Cleaning up test containers and temporary files..."
+  stop_test_containers
   rm -rf "${TMP_ROOT}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 main() {
+  stop_test_containers
   mkdir -p "${TMP_ROOT}/backups" "${TMP_ROOT}/audit" "${TMP_ROOT}/keycloak" "${TMP_ROOT}/plugins" "${TMP_ROOT}/ingest-scripts"
   cp "${REPO_ROOT}/config/keycloak/ark-realm.json" "${TMP_ROOT}/keycloak/ark-realm.json"
-  sed -i "s|https://ark\.local|https://localhost:8443|g" "${TMP_ROOT}/keycloak/ark-realm.json"
+  sed -i "s|https://ark\.local|https://localhost:${TEST_HTTPS_PORT}|g" "${TMP_ROOT}/keycloak/ark-realm.json"
 
   ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
   GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
   BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   log "Building ark-admin image (ARK v${ARK_VERSION})..."
-  docker build -q \
-    --build-arg "ARK_VERSION=${ARK_VERSION}" \
-    --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
-    --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
-    -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+  if docker buildx version >/dev/null 2>&1; then
+    docker buildx build --load -q \
+      --build-arg "ARK_VERSION=${ARK_VERSION}" \
+      --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
+      --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
+      -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+  else
+    docker build -q \
+      --build-arg "ARK_VERSION=${ARK_VERSION}" \
+      --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
+      --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
+      -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null 2> >(grep -vE '^(DEPRECATED: The legacy builder|            Install the buildx|            https://docs\.docker\.com/go/buildx/|$)' >&2 || true)
+  fi
   img_ver=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' ark-admin:latest)
   [[ "${img_ver}" == "${ARK_VERSION}" ]] || fail "Expected OCI image version label '${ARK_VERSION}', got '${img_ver}'"
 
@@ -119,7 +139,7 @@ main() {
     -e KC_HEALTH_ENABLED=true \
     -v "${TMP_ROOT}/keycloak:/opt/keycloak/data/import:ro" \
     quay.io/keycloak/keycloak:26.0 \
-    start --import-realm --http-enabled=true --http-relative-path=/auth --hostname=https://localhost:8443/auth --hostname-strict=false --hostname-backchannel-dynamic=true --proxy-headers=xforwarded >/dev/null
+    start --import-realm --http-enabled=true --http-relative-path=/auth --hostname=https://localhost:${TEST_HTTPS_PORT}/auth --hostname-strict=false --hostname-backchannel-dynamic=true --proxy-headers=xforwarded >/dev/null
 
   log "Waiting for Keycloak readiness (up to 120s)..."
   for i in $(seq 1 120); do
@@ -139,15 +159,15 @@ main() {
     quay.io/oauth2-proxy/oauth2-proxy:v7.7.1 \
     --provider=oidc \
     --skip-oidc-discovery=true \
-    --oidc-issuer-url=https://localhost:8443/auth/realms/ark \
-    --login-url=https://localhost:8443/auth/realms/ark/protocol/openid-connect/auth \
+    --oidc-issuer-url=https://localhost:${TEST_HTTPS_PORT}/auth/realms/ark \
+    --login-url=https://localhost:${TEST_HTTPS_PORT}/auth/realms/ark/protocol/openid-connect/auth \
     --redeem-url=http://keycloak:8080/auth/realms/ark/protocol/openid-connect/token \
     --oidc-jwks-url=http://keycloak:8080/auth/realms/ark/protocol/openid-connect/certs \
     --profile-url=http://keycloak:8080/auth/realms/ark/protocol/openid-connect/userinfo \
     --client-id=oauth2-proxy \
     --client-secret=ark-oauth2-proxy-secret-change-me \
     --cookie-secret="${COOKIE_SECRET}" \
-    --redirect-url=https://localhost:8443/oauth2/callback \
+    --redirect-url=https://localhost:${TEST_HTTPS_PORT}/oauth2/callback \
     --http-address=0.0.0.0:4180 \
     --email-domain=* \
     --insecure-oidc-allow-unverified-email=true \
@@ -195,9 +215,9 @@ main() {
     ark-admin:latest >/dev/null
   docker network connect --alias ark-admin-control "${CONTROL_NET}" ark-test-ark-admin >/dev/null
 
-  log "Starting Caddy reverse proxy on 127.0.0.1:8443..."
+  log "Starting Caddy reverse proxy on 127.0.0.1:${TEST_HTTPS_PORT}..."
   docker run -d --name ark-test-caddy --network "${NET_NAME}" --network-alias caddy \
-    -p 127.0.0.1:8443:443 \
+    -p 127.0.0.1:${TEST_HTTPS_PORT}:443 \
     -e ARK_DOMAIN="localhost" \
     -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
     -v "${REPO_ROOT}/config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
@@ -218,20 +238,20 @@ except urllib.error.HTTPError:
 
   # 1. Test Keycloak OIDC Discovery through Caddy
   log "1/8 Testing Keycloak OIDC discovery via Caddy..."
-  curl -ksf "https://localhost:8443/auth/realms/ark/.well-known/openid-configuration" | grep -q '"issuer"' || \
+  curl -ksf "https://localhost:${TEST_HTTPS_PORT}/auth/realms/ark/.well-known/openid-configuration" | grep -q '"issuer"' || \
     fail "Keycloak OIDC discovery failed through Caddy."
   pass "Keycloak OIDC discovery reachable via Caddy."
 
   # 2. Test Admin Console SSO protection & peer-container bypass rejection
   log "2/8 Testing /admin-console/ SSO forward_auth & peer bypass rejection..."
   local admin_code spoof_caddy_code peer_bypass_code non_admin_code
-  admin_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:8443/admin-console/")
+  admin_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/admin-console/")
   [[ "${admin_code}" == "302" ]] || fail "Expected 302 redirect for unauthenticated /admin-console/, got ${admin_code}"
   spoof_caddy_code=$(curl -ks -o /dev/null -w "%{http_code}" \
     -H "X-Ark-Proxy-Secret: ${PROXY_AUTH_SECRET}" \
     -H "X-Forwarded-User: attacker" \
     -H "X-Forwarded-Groups: ark-admins" \
-    "https://localhost:8443/admin-console/api/projects")
+    "https://localhost:${TEST_HTTPS_PORT}/admin-console/api/projects")
   [[ "${spoof_caddy_code}" == "302" ]] || fail "Expected 302 for forged proxy headers at Caddy, got ${spoof_caddy_code}"
 
   peer_bypass_code=$(docker exec ark-test-vllm python3 -c "
@@ -292,7 +312,7 @@ assert h.json()['services'].get('llm_backend') == 'healthy', h.json()
   # 3. Test raw /v1 bypass blocking
   log "3/8 Testing raw /v1/* bypass block..."
   local raw_code
-  raw_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:8443/v1/chat/completions")
+  raw_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/v1/chat/completions")
   [[ "${raw_code}" == "403" ]] || fail "Expected 403 for raw /v1/*, got ${raw_code}"
   pass "Raw /v1/* bypass blocked (HTTP 403)."
 
@@ -352,13 +372,13 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   clean_key=$(echo "${keys_json}" | python3 -c "import sys,json; print(json.load(sys.stdin)['clean_key'])")
 
   local alpha_resp alpha_headers_body clean_resp cross_code healthz_code v1_root_ct
-  healthz_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:8443/healthz")
-  [[ "${healthz_code}" == "200" ]] || fail "Expected 200 on https://localhost:8443/healthz, got ${healthz_code}"
+  healthz_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/healthz")
+  [[ "${healthz_code}" == "200" ]] || fail "Expected 200 on https://localhost:${TEST_HTTPS_PORT}/healthz, got ${healthz_code}"
 
-  v1_root_ct=$(curl -ks -o /dev/null -w "%{content_type}" -H "Authorization: Bearer ${alpha_key}" "https://localhost:8443/projects/project-alpha/v1")
+  v1_root_ct=$(curl -ks -o /dev/null -w "%{content_type}" -H "Authorization: Bearer ${alpha_key}" "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1")
   echo "${v1_root_ct}" | grep -qi "application/json" || fail "Expected Caddy to route /projects/project-alpha/v1 (no trailing slash) to ark-admin JSON API, got content-type: ${v1_root_ct}"
 
-  alpha_headers_body=$(curl -ksi -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
+  alpha_headers_body=$(curl -ksi -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/chat/completions" \
     -H "Authorization: Bearer ${alpha_key}" \
     -H "Content-Type: application/json" \
     -d '{"include_citations":true,"messages":[{"role":"system","content":"Always respond concisely."},{"role":"user","content":[{"type":"text","text":"Summarize spec and policy"}]}]}')
@@ -376,7 +396,7 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   echo "${alpha_resp}" | grep -q '"total_tokens":20' || fail "Expected token usage in chat completion response, got: ${alpha_resp}"
   pass "Project_Alpha API Gateway retrieved own + linked Shared_KB Qdrant context, preserved client system prompt, handled multimodal content, and returned X-Ark-Rag-Chunks & citations."
 
-  clean_resp=$(curl -ks -w "\nHTTP_CODE:%{http_code}" -X POST "https://localhost:8443/projects/clean-sandbox/v1/chat/completions" \
+  clean_resp=$(curl -ks -w "\nHTTP_CODE:%{http_code}" -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/clean-sandbox/v1/chat/completions" \
     -H "Authorization: Bearer ${clean_key}" \
     -H "Content-Type: application/json" \
     -d '{"messages":[{"role":"user","content":"Hello"}]}')
@@ -386,7 +406,7 @@ print(json.dumps({'alpha_key': k1, 'clean_key': k2}))
   fi
   pass "Clean_Sandbox API Gateway routed directly to vLLM without RAG."
 
-  cross_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
+  cross_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/chat/completions" \
     -H "Authorization: Bearer ${clean_key}" \
     -H "Content-Type: application/json" \
     -d '{"messages":[{"role":"user","content":"Cross-project probe"}]}')
@@ -470,7 +490,7 @@ assert denied2.status_code == 403, denied2.status_code
 
   # 5b. Test SSE streaming on Project_Alpha
   local stream_resp
-  stream_resp=$(curl -ks -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
+  stream_resp=$(curl -ks -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/chat/completions" \
     -H "Authorization: Bearer ${alpha_key}" \
     -H "Content-Type: application/json" \
     -d '{"messages":[{"role":"user","content":"Stream test"}],"stream":true}')
@@ -492,7 +512,7 @@ clean_id = next(k['id'] for k in keys if k['project_slug'] == 'clean-sandbox')
 requests.delete(f'http://localhost:8090/admin-console/api/keys/{clean_id}', headers=H).raise_for_status()
 "
   local revoked_code
-  revoked_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/clean-sandbox/v1/chat/completions" \
+  revoked_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/clean-sandbox/v1/chat/completions" \
     -H "Authorization: Bearer ${clean_key}" \
     -H "Content-Type: application/json" \
     -d '{"messages":[{"role":"user","content":"After revoke"}]}')
@@ -550,13 +570,13 @@ print(r.json()['api_key'])
 
   # Chat-only key must be rejected (403) on /ingest/documents; ingest-only key must be rejected (403) on /chat/completions
   local chat_on_ingest_code ingest_on_chat_code
-  chat_on_ingest_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/project-alpha/v1/ingest/documents" \
+  chat_on_ingest_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/documents" \
     -H "Authorization: Bearer ${alpha_key}" \
     -H "Content-Type: application/json" \
     -d '{"documents":[{"doc_id":"blocked","content":"nope"}]}')
   [[ "${chat_on_ingest_code}" == "403" ]] || fail "Expected 403 for chat-only key on /ingest/documents, got ${chat_on_ingest_code}"
 
-  ingest_on_chat_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:8443/projects/project-alpha/v1/chat/completions" \
+  ingest_on_chat_code=$(curl -ks -o /dev/null -w "%{http_code}" -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/chat/completions" \
     -H "Authorization: Bearer ${ingest_key}" \
     -H "Content-Type: application/json" \
     -d '{"messages":[{"role":"user","content":"Should fail"}]}')
@@ -564,19 +584,19 @@ print(r.json()['api_key'])
 
   # Push documents -> dedup skip -> shrink doc -> delete doc
   local push_resp1 push_resp2
-  push_resp1=$(curl -ksf -X POST "https://localhost:8443/projects/project-alpha/v1/ingest/documents" \
+  push_resp1=$(curl -ksf -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/documents" \
     -H "Authorization: Bearer ${ingest_key}" \
     -H "Content-Type: application/json" \
     -d '{"documents":[{"doc_id":"push/guide-1","filename":"guide.md","content":"# ARK Guide\nAir-gapped retrieval works offline.","metadata":{"doc_id":"spoofed","dept":"eng"}}]}')
   echo "${push_resp1}" | grep -q '"docs_upserted":1' || fail "Expected docs_upserted:1, got: ${push_resp1}"
 
-  push_resp2=$(curl -ksf -X POST "https://localhost:8443/projects/project-alpha/v1/ingest/documents" \
+  push_resp2=$(curl -ksf -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/documents" \
     -H "Authorization: Bearer ${ingest_key}" \
     -H "Content-Type: application/json" \
     -d '{"documents":[{"doc_id":"push/guide-1","filename":"guide.md","content":"# ARK Guide\nAir-gapped retrieval works offline.","metadata":{"doc_id":"spoofed","dept":"eng"}}]}')
   echo "${push_resp2}" | grep -q '"docs_skipped":1' || fail "Expected docs_skipped:1 on identical re-push, got: ${push_resp2}"
 
-  curl -ksf -X DELETE "https://localhost:8443/projects/project-alpha/v1/ingest/documents/push/guide-1" \
+  curl -ksf -X DELETE "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/documents/push/guide-1" \
     -H "Authorization: Bearer ${ingest_key}" | grep -q '"status":"deleted"' || fail "Push delete failed."
 
   # Test Plugin discovery, YAML Pipeline Dry-Run & Sync, and Custom Script Sync

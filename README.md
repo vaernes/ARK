@@ -4,7 +4,7 @@
 
 # ARK (Air-gapped Retrieval & Knowledge)
 
-**Version:** `2026.11.0` · **License:** [Apache-2.0](LICENSE) · **Changelog:** [CHANGELOG.md](CHANGELOG.md) · **Security:** [SECURITY.md](SECURITY.md)
+**Version:** `2026.11.1` · **License:** [Apache-2.0](LICENSE) · **Changelog:** [CHANGELOG.md](CHANGELOG.md) · **Security:** [SECURITY.md](SECURITY.md)
 
 **ARK** is a 100% open-source, self-hosted AI assistant and knowledge platform built for **strictly air-gapped (offline)** organizations. It gives your teams private LLM chat, document-grounded search (RAG), corporate Single Sign-On, and project-scoped APIs for IDEs and Office tools—without a single byte ever leaving your network.
 

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_VERSION = "2026.11.0"
+DEFAULT_VERSION = "2026.11.1"
 ARK_LICENSE = "Apache-2.0"
 VERSION_SCHEME = "CalVer"
 

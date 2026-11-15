@@ -1,6 +1,6 @@
 FROM python:3.12-slim-bookworm
 
-ARG ARK_VERSION=2026.11.0
+ARG ARK_VERSION=2026.11.1
 ARG ARK_GIT_COMMIT=unknown
 ARG ARK_BUILD_DATE=unknown
 

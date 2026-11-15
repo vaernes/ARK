@@ -58,7 +58,7 @@ services:
     build:
       context: ./llm-admin
       args:
-        ARK_VERSION: ${ARK_VERSION:-2026.11.0}
+        ARK_VERSION: ${ARK_VERSION:-2026.11.1}
     image: ${ARK_LLM_ADMIN_IMAGE:-ark-llm-admin:latest}
     container_name: ark-llm-admin
     profiles: ["local-llm"]
@@ -66,7 +66,7 @@ services:
     ports:
       - "${LLM_ADMIN_BIND_IP:-127.0.0.1}:${LLM_ADMIN_PORT:-8095}:8095"
     environment:
-      ARK_VERSION: "${ARK_VERSION:-2026.11.0}"
+      ARK_VERSION: "${ARK_VERSION:-2026.11.1}"
       VLLM_URL: "http://vllm:8000"
       LLM_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
       LLM_ADMIN_TOKEN: "${LLM_ADMIN_TOKEN:-${LLM_API_KEY:-${VLLM_API_KEY}}}"
@@ -410,11 +410,11 @@ services:
       context: ./admin
       dockerfile: Dockerfile
       args:
-        ARK_VERSION: ${ARK_VERSION:-2026.11.0}
+        ARK_VERSION: ${ARK_VERSION:-2026.11.1}
     image: ${ARK_ADMIN_IMAGE:-ark-admin:latest}
     labels:
       org.opencontainers.image.title: "ark-admin"
-      org.opencontainers.image.version: "${ARK_VERSION:-2026.11.0}"
+      org.opencontainers.image.version: "${ARK_VERSION:-2026.11.1}"
       org.opencontainers.image.licenses: "Apache-2.0"
     container_name: ark-admin
     restart: unless-stopped

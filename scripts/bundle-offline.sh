@@ -171,14 +171,18 @@ main() {
     local git_commit build_date
     git_commit="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
     build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-    docker build \
+    local build_cmd=(docker build)
+    if docker buildx version >/dev/null 2>&1; then
+      build_cmd=(docker buildx build --load)
+    fi
+    "${build_cmd[@]}" \
       --build-arg "ARK_VERSION=${ARK_VERSION}" \
       --build-arg "ARK_GIT_COMMIT=${git_commit}" \
       --build-arg "ARK_BUILD_DATE=${build_date}" \
       -t "${ARK_ADMIN_IMAGE}" "${REPO_ROOT}/admin"
 
     log "Building local ark-llm-admin image: ${ARK_LLM_ADMIN_IMAGE} (ARK v${ARK_VERSION})"
-    docker build \
+    "${build_cmd[@]}" \
       --build-arg "ARK_VERSION=${ARK_VERSION}" \
       --build-arg "ARK_GIT_COMMIT=${git_commit}" \
       --build-arg "ARK_BUILD_DATE=${build_date}" \

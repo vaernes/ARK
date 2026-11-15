@@ -64,11 +64,19 @@ ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION" 2>/dev/null || echo '0
 GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 log "Building ark-admin:latest (ARK v${ARK_VERSION})..."
-docker build -q \
-  --build-arg "ARK_VERSION=${ARK_VERSION}" \
-  --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
-  --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
-  -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+if docker buildx version >/dev/null 2>&1; then
+  docker buildx build --load -q \
+    --build-arg "ARK_VERSION=${ARK_VERSION}" \
+    --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
+    --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
+    -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null
+else
+  docker build -q \
+    --build-arg "ARK_VERSION=${ARK_VERSION}" \
+    --build-arg "ARK_GIT_COMMIT=${GIT_COMMIT}" \
+    --build-arg "ARK_BUILD_DATE=${BUILD_DATE}" \
+    -t ark-admin:latest "${REPO_ROOT}/admin" >/dev/null 2> >(grep -vE '^(DEPRECATED: The legacy builder|            Install the buildx|            https://docs\.docker\.com/go/buildx/|$)' >&2 || true)
+fi
 
 log "Creating networks '${NET_NAME}' and '${CONTROL_NET}'..."
 docker network create "${NET_NAME}" >/dev/null

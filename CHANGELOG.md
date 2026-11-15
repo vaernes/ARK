@@ -8,10 +8,12 @@ using `YYYY.MM.PATCH` (for example, `2026.11.0`).
 
 ## [Unreleased]
 
+## [2026.11.1] - 2026-11-15
+
 ### Added
 - **Project-to-Project RAG Linking & Per-Project Snapshots:**
   - Added explicit read-only RAG linking across projects via `extra_rag_projects`, `PATCH /admin-console/api/projects/{slug}/rag-projects`, Admin Console controls, User Portal indicators, and `--extra-rag-project` in `provisioning/bootstrap_ark.py`.
-  - Added per-project Qdrant snapshot export, download, and upload routes (`/admin-console/api/projects/{slug}/snapshot/*`) and CLI helpers (`scripts/export-project-kb.sh`, `scripts/sync-project-kb.sh`, with `--out` support and wrapper aliases on the legacy `*-company-kb.sh` scripts).
+  - Added per-project Qdrant snapshot export, download, and upload routes (`/admin-console/api/projects/{slug}/snapshot/*`) and CLI helpers (`scripts/export-project-kb.sh` with `--out` support and `scripts/sync-project-kb.sh`).
 - **Security, RBAC & Ingestion Platform:**
   - Added Fernet encryption at rest for connector/LLM backend secrets (`ARK_SECRETS_KEY`), fail-closed `X-Ark-Proxy-Secret` header validation, per-user project RBAC (`/portal/`, `/admin-console/api/projects/{slug}/members`), and scoped project API keys (`chat` / `ingest`).
   - Added declarative `ark-ingest/v1` pipelines, env-scrubbed plugin and custom Python ingest execution with path/SQL confinement, 5-field cron scheduling, and `audit_logs.tar.gz` checksum verification (`extra_archives`) in backups.
@@ -23,7 +25,7 @@ using `YYYY.MM.PATCH` (for example, `2026.11.0`).
 - CI and release workflows install `admin/requirements.txt` before running unit tests so ingest, pipeline, and plugin tests execute with zero skips.
 
 ### Removed
-- Removed the hardcoded global `Company_Common` collection and automatic cross-project provisioning/querying in favor of explicit project-to-project RAG linking.
+- Removed the hardcoded global `Company_Common` collection, automatic cross-project provisioning/querying, and legacy `scripts/*-company-kb.sh` scripts in favor of explicit project-to-project RAG linking and `scripts/*-project-kb.sh`.
 
 ## [2026.11.0] - 2026-11-13
 
@@ -48,5 +50,6 @@ using `YYYY.MM.PATCH` (for example, `2026.11.0`).
   - Structured audit logging to PostgreSQL (`ark_admin.audit_logs`), `./data/audit/audit.jsonl`, and optional Syslog SIEM.
   - GPU-less integration test suite (`scripts/test-integration.sh`), local dev stack (`scripts/dev-up.sh`), and Python unit tests (`tests/test_admin_unit.py`).
 
-[Unreleased]: https://github.com/vaernes/ARK/compare/v2026.11.0...HEAD
+[Unreleased]: https://github.com/vaernes/ARK/compare/v2026.11.1...HEAD
+[2026.11.1]: https://github.com/vaernes/ARK/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/vaernes/ARK/releases/tag/v2026.11.0

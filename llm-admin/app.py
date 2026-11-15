@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger("ark-llm-admin")
 
 APP_DIR = Path(__file__).resolve().parent
-ARK_VERSION = os.environ.get("ARK_VERSION", "2026.11.0")
+ARK_VERSION = os.environ.get("ARK_VERSION", "2026.11.1")
 VLLM_URL = os.environ.get("VLLM_URL", "http://vllm:8000").strip().rstrip("/")
 LLM_API_KEY = (os.environ.get("LLM_API_KEY") or os.environ.get("VLLM_API_KEY") or "").strip()
 LLM_ADMIN_TOKEN = (os.environ.get("LLM_ADMIN_TOKEN") or LLM_API_KEY).strip()

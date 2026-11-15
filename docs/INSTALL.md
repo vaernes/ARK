@@ -7,7 +7,7 @@ This guide walks through bundling ARK at a connected HQ environment, installing 
 ## 1. Prerequisites
 
 ### HQ Build Machine (Internet-Connected)
-- Linux x86_64 host with Docker Engine, `zstd`, `sha256sum`, and `huggingface_hub[cli]` (`hf` or `huggingface-cli`).
+- Linux x86_64 host with Docker Engine + BuildKit (`docker-buildx`), `zstd`, `sha256sum`, and `huggingface_hub[cli]` (`hf` or `huggingface-cli`).
 - At least **100 GB** free disk space for container images and Hugging Face model weights.
 
 ### Air-Gapped Office Server
