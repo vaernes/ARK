@@ -178,6 +178,14 @@ class TestUiAndLlmAdminSecurity(unittest.TestCase):
         self.assertIn("/oauth2/sign_out", admin_html)
         self.assertIn("/oauth2/sign_out", portal_html)
         self.assertIn("key-scope-hint", portal_html)
+        for tab_id in ("overview", "projects", "rag", "models", "security"):
+            self.assertIn(f'id="tab-btn-{tab_id}"', admin_html)
+            self.assertIn(f'id="panel-{tab_id}"', admin_html)
+        self.assertIn('onclick="exportProjectSnapshot()"', admin_html)
+        self.assertIn("refreshAuditOnly()", admin_html)
+        self.assertIn('id="project-config-drawer"', admin_html)
+        self.assertIn('id="ark-modal-backdrop"', admin_html)
+        self.assertNotRegex(admin_html, r"\b(?:prompt|alert|confirm)\s*\(")
 
     def test_llm_admin_protects_status_and_exposes_healthz(self):
         app_py = (LLM_ADMIN_DIR / "app.py").read_text(encoding="utf-8")
