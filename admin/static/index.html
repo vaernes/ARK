@@ -1875,7 +1875,7 @@
         } else {
           refBox.style.display = 'none';
         }
-        window.loadedLlmPresets = llmBackend.presets || [];
+        window.loadedLlmPresets = (llmBackend && llmBackend.presets) || (modelProfiles && modelProfiles.presets) || window.loadedLlmPresets || [];
         window.savedLlmBackend = llmBackend;
         setInputIfIdle('llm-backend-type', llmBackend.backend_type || 'ark_llm');
         if (llmBackend.provider && llmBackend.provider !== 'ark_llm') {
@@ -2638,14 +2638,30 @@
       }
     }
 
+    function getLlmPresets() {
+      if (window.loadedLlmPresets && window.loadedLlmPresets.length) {
+        return window.loadedLlmPresets;
+      }
+      return [
+        { id: 'huggingface', label: 'Hugging Face', api_base_url: 'https://router.huggingface.co/v1', default_model: 'Qwen/Qwen2.5-72B-Instruct', key_placeholder: 'hf_...' },
+        { id: 'anthropic', label: 'Anthropic (Claude)', api_base_url: 'https://api.anthropic.com/v1', default_model: 'claude-sonnet-4-20250514', key_placeholder: 'sk-ant-...' },
+        { id: 'openai', label: 'OpenAI', api_base_url: 'https://api.openai.com/v1', default_model: 'gpt-4o', default_image_model: 'dall-e-3', key_placeholder: 'sk-...' },
+        { id: 'google', label: 'Google (Gemini)', api_base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', default_model: 'gemini-2.5-flash', default_image_model: 'imagen-3.0-generate-002', key_placeholder: 'AIza...' },
+        { id: 'custom', label: 'Custom OpenAI-Compatible', api_base_url: '', default_model: '', key_placeholder: 'Bearer API key (optional)' },
+      ];
+    }
+
     function applyThirdPartyPreset(presetId) {
       const sel = document.getElementById('llm-third-party-provider');
       sel.value = presetId;
-      const presets = window.loadedLlmPresets || [];
+      const presets = getLlmPresets();
       const match = presets.find(p => p.id === presetId);
       if (!match) return;
+      const urlEl = document.getElementById('llm-api-base-url');
       if (match.api_base_url) {
-        document.getElementById('llm-api-base-url').value = match.api_base_url;
+        urlEl.value = match.api_base_url;
+      } else if (presets.some(p => p.api_base_url && p.api_base_url === urlEl.value.trim())) {
+        urlEl.value = '';
       }
       const saved = window.savedLlmBackend;
       const sameSavedProvider = saved && saved.backend_type === 'third_party' && saved.provider === presetId;
@@ -2802,18 +2818,29 @@
     }
 
     function applyMpProviderPreset(presetId) {
-      const presets = window.loadedLlmPresets || [];
+      const presets = getLlmPresets();
       const match = presets.find(p => p.id === presetId);
       if (!match) return;
-      if (match.api_base_url) document.getElementById('mp-api-base-url').value = match.api_base_url;
+      const urlEl = document.getElementById('mp-api-base-url');
+      if (match.api_base_url) {
+        urlEl.value = match.api_base_url;
+      } else if (presets.some(p => p.api_base_url && p.api_base_url === urlEl.value.trim())) {
+        urlEl.value = '';
+      }
       if (match.key_placeholder) document.getElementById('mp-api-key').placeholder = match.key_placeholder;
       const ctx = document.getElementById('mp-context').value || 'text';
       const suggestedModel = (ctx === 'image' && match.default_image_model) ? match.default_image_model : match.default_model;
-      if (suggestedModel && !document.getElementById('mp-model-id').value.trim()) {
-        document.getElementById('mp-model-id').value = suggestedModel;
+      const modelEl = document.getElementById('mp-model-id');
+      const curModel = modelEl.value.trim();
+      const knownModels = new Set(['', 'ark-llm', ...presets.flatMap(p => [p.default_model, p.default_image_model]).filter(Boolean)]);
+      if (suggestedModel && knownModels.has(curModel)) {
+        modelEl.value = suggestedModel;
       }
-      if (!document.getElementById('mp-name').value.trim()) {
-        document.getElementById('mp-name').value = `${match.label} (${ctx})`;
+      const nameEl = document.getElementById('mp-name');
+      const curName = nameEl.value.trim();
+      const isAutoName = !curName || presets.some(p => curName.startsWith(`${p.label} (`));
+      if (isAutoName) {
+        nameEl.value = `${match.label} (${ctx})`;
       }
     }
 
