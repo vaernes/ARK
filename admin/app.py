@@ -849,7 +849,14 @@ def portal_ui() -> HTMLResponse:
 def portal_me(request: Request) -> dict[str, Any]:
     actor = get_actor(request)
     groups = sorted(get_user_groups(request))
-    return {"user": actor, "groups": groups, "is_admin": "ark-admins" in groups}
+    default_llm = get_default_llm_model()
+    return {
+        "user": actor,
+        "groups": groups,
+        "is_admin": "ark-admins" in groups,
+        "default_llm_model": default_llm,
+        "default_webui_url": f"/?model={quote(default_llm, safe='')}",
+    }
 
 
 @app.get("/portal/api/version")
@@ -862,10 +869,11 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
     groups = get_user_groups(request)
     identities = get_user_identities(request)
     member_roles = _get_user_project_roles(identities)
+    default_llm = get_default_llm_model()
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT slug, name, group_name, model_id, rag_enabled, extra_rag_projects, created_at "
+                "SELECT slug, name, group_name, model_id, rag_enabled, extra_rag_projects, llm_model, created_at "
                 "FROM projects ORDER BY created_at DESC"
             )
             rows = cur.fetchall()
@@ -874,6 +882,7 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
         role = resolve_user_project_role(groups, r[0], r[2], member_roles)
         if role is None:
             continue
+        raw_llm = (r[6] or "").strip()
         result.append(
             {
                 "slug": r[0],
@@ -882,8 +891,11 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
                 "model_id": r[3],
                 "rag_enabled": r[4],
                 "extra_rag_projects": list(r[5] or []),
+                "llm_model": raw_llm,
+                "effective_llm_model": raw_llm or default_llm,
+                "webui_url": f"/?model={quote(r[3], safe='')}",
                 "user_role": role,
-                "created_at": r[6].isoformat(),
+                "created_at": r[7].isoformat(),
             }
         )
     return result
@@ -1502,6 +1514,7 @@ def list_projects() -> list[dict[str, Any]]:
             "system_prompt": r[7],
             "llm_model": r[8],
             "effective_llm_model": r[8].strip() if r[8] and r[8].strip() else default_llm,
+            "webui_url": f"/?model={quote(r[4], safe='')}",
             "created_at": r[9].isoformat(),
             "member_count": int(r[10]),
         }
@@ -3311,6 +3324,22 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
                 )
         conn.commit()
 
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+            requests.post(
+                f"{OPENWEBUI_URL}/openai/config/update",
+                headers=headers,
+                json={
+                    "ENABLE_OPENAI_API": True,
+                    "OPENAI_API_BASE_URLS": [api_base_url],
+                    "OPENAI_API_KEYS": [new_api_key],
+                },
+                timeout=10,
+            )
+        except Exception as exc:
+            logger.warning("Open WebUI OpenAI config sync warning: %s", exc)
+
     audit.record(
         "llm_backend.update",
         actor=actor,
@@ -3432,9 +3461,51 @@ def update_default_model(req: DefaultModelRequest, request: Request) -> dict[str
                 "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
                 (model_name,),
             )
+            cur.execute(
+                "SELECT model_id, name, system_prompt FROM projects WHERE COALESCE(TRIM(llm_model), '') = ''"
+            )
+            inherited_projects = cur.fetchall()
         conn.commit()
-    audit.record("model.default_update", actor=actor, details={"default_llm_model": model_name})
-    return {"default_llm_model": model_name}
+
+    webui_sync = "skipped_no_api_key"
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+            requests.post(
+                f"{OPENWEBUI_URL}/api/v1/configs/models",
+                headers=headers,
+                json={"DEFAULT_MODELS": model_name, "MODEL_ORDER_LIST": []},
+                timeout=10,
+            )
+            models_resp = requests.get(f"{OPENWEBUI_URL}/api/v1/models/", headers=headers, timeout=15)
+            if models_resp.ok:
+                existing_by_id = {m.get("id"): m for m in models_resp.json() if isinstance(m, dict) and m.get("id")}
+                for model_id, display, sys_prompt in inherited_projects:
+                    existing = existing_by_id.get(model_id)
+                    if existing:
+                        payload = {
+                            **existing,
+                            "base_model_id": model_name,
+                            "name": existing.get("name") or f"{display} Assistant",
+                            "params": {**(existing.get("params") or {}), "system": sys_prompt},
+                        }
+                        requests.post(
+                            f"{OPENWEBUI_URL}/api/v1/models/model/update?id={quote(model_id, safe='')}",
+                            headers=headers,
+                            json=payload,
+                            timeout=15,
+                        )
+            webui_sync = "synced"
+        except Exception as exc:
+            logger.warning("Open WebUI default model sync warning: %s", exc)
+            webui_sync = f"warning: {exc}"
+
+    audit.record(
+        "model.default_update",
+        actor=actor,
+        details={"default_llm_model": model_name, "webui_sync": webui_sync},
+    )
+    return {"default_llm_model": model_name, "webui_sync": webui_sync}
 
 
 @app.post("/admin-console/api/models/upload")

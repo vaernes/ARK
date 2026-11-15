@@ -281,15 +281,19 @@
 
   <div class="grid">
     <div class="card cyan-accent">
-      <h2>My Accessible Projects</h2>
-      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Use any project's Base URL below in IDE plugins
-        (Continue/Cline), Office add-ins, or scripts with your personal <code>ark_proj_*</code> key.</p>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h2 style="margin:0;">My Accessible Projects</h2>
+        <a id="default-webui-link" class="nav-link" href="/"
+          style="border-color:rgba(0,229,255,0.45);color:var(--cyan);font-size:0.78rem;padding:5px 10px;">Default WebUI Chat &rarr;</a>
+      </div>
+      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Click <strong>Open Chat</strong> to launch a project's assistant in Open WebUI, or use its Base URL in IDE plugins (Continue/Cline), Office add-ins, or scripts with your personal <code>ark_proj_*</code> key.</p>
       <table id="proj-table">
         <thead>
           <tr>
             <th>Project</th>
             <th>Mode</th>
             <th>Role</th>
+            <th>WebUI Chat</th>
             <th>OpenAI Base URL</th>
           </tr>
         </thead>
@@ -407,6 +411,15 @@
       if (me.is_admin) {
         document.getElementById('admin-link').style.display = 'inline-block';
       }
+      if (me.default_webui_url) {
+        const defLink = document.getElementById('default-webui-link');
+        if (defLink) {
+          defLink.href = me.default_webui_url;
+          defLink.textContent = me.default_llm_model
+            ? `Default WebUI (${me.default_llm_model}) \u2192`
+            : 'Default WebUI Chat \u2192';
+        }
+      }
 
       const origin = window.location.origin;
       const projBody = document.querySelector('#proj-table tbody');
@@ -424,6 +437,12 @@
                   : 'Clean'
               })),
               el('td', { text: p.user_role || 'member' }),
+              el('td', {}, el('a', {
+                className: 'nav-link',
+                href: p.webui_url || `/?model=${encodeURIComponent(p.model_id || (p.slug + '-assistant'))}`,
+                style: 'padding:4px 9px;font-size:0.76rem;border-color:rgba(0,229,255,0.45);color:var(--cyan);display:inline-block;',
+                text: 'Open Chat \u2192'
+              })),
               el('td', {}, el('code', { text: `${origin}/projects/${p.slug}/v1` }))
             ])
           )
@@ -431,7 +450,7 @@
       } else {
         projBody.replaceChildren(
           el('tr', {}, el('td', {
-            colspan: '4',
+            colspan: '5',
             style: 'color:var(--gray)',
             text: 'No projects assigned to your groups yet. Ask an administrator to add your group or deploy a project.'
           }))

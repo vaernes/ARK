@@ -292,6 +292,7 @@ services:
       # LLM Inference (Separate vLLM Server or 3rd-Party OpenAI-Compatible API)
       OPENAI_API_BASE_URL: "${LLM_API_BASE_URL:-http://vllm:8000/v1}"
       OPENAI_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
+      DEFAULT_MODELS: "${LLM_SERVED_NAME:-ark-llm}"
       # Image Generation (ARK Create / OpenAI-Compatible Images API)
       ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-true}"
       IMAGE_GENERATION_ENGINE: "openai"

@@ -4,9 +4,16 @@ set -euo pipefail
 # ==============================================================================
 # ARK Local Laptop Dev Stack (GPU-less, no docker-compose required)
 # Usage:
-#   ./scripts/dev-up.sh         # Start lightweight dev stack (no Tika/OpenWebUI)
-#   ./scripts/dev-up.sh --full  # Also start Apache Tika & Open WebUI (pulls images)
-#   ./scripts/dev-up.sh --down  # Stop and remove dev containers & network
+#   ./scripts/dev-up.sh                 # Start lightweight dev stack (no Tika/OpenWebUI)
+#   ./scripts/dev-up.sh --full          # Also start Apache Tika & Open WebUI (pulls images)
+#   ./scripts/dev-up.sh --no-mock-llm   # Skip mock vLLM container (use cloud/external LLM)
+#   ./scripts/dev-up.sh --down          # Stop and remove dev containers & network
+#
+# Cloud / External LLM Environment Overrides:
+#   LLM_PROVIDER=openai|anthropic|google|huggingface|custom
+#   LLM_API_KEY=sk-...
+#   LLM_API_BASE_URL=https://api.openai.com/v1   (auto-filled if LLM_PROVIDER is set)
+#   LLM_SERVED_NAME=gpt-4o                       (auto-filled if LLM_PROVIDER is set)
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,12 +52,70 @@ stop_stack() {
 }
 
 FULL_STACK=false
-if [[ "${1:-}" == "--down" ]]; then
-  stop_stack
-  exit 0
-elif [[ "${1:-}" == "--full" ]]; then
-  FULL_STACK=true
+MOCK_LLM=true
+for arg in "$@"; do
+  case "${arg}" in
+    --down)
+      stop_stack
+      exit 0
+      ;;
+    --full)
+      FULL_STACK=true
+      ;;
+    --no-mock-llm)
+      MOCK_LLM=false
+      ;;
+  esac
+done
+
+LLM_PROVIDER_VAL="${LLM_PROVIDER:-}"
+LLM_BASE_URL_VAL="${LLM_API_BASE_URL:-}"
+LLM_KEY_VAL="${LLM_API_KEY:-}"
+LLM_MODEL_VAL="${LLM_SERVED_NAME:-}"
+
+if [[ -n "${LLM_PROVIDER_VAL}" || -n "${LLM_BASE_URL_VAL}" ]]; then
+  MOCK_LLM=false
 fi
+
+if [[ "${MOCK_LLM}" == false ]]; then
+  LLM_BACKEND_TYPE_VAL="${LLM_BACKEND_TYPE:-third_party}"
+  case "${LLM_PROVIDER_VAL,,}" in
+    openai)
+      LLM_BASE_URL_VAL="${LLM_BASE_URL_VAL:-https://api.openai.com/v1}"
+      LLM_MODEL_VAL="${LLM_MODEL_VAL:-gpt-4o}"
+      ;;
+    anthropic|claude)
+      LLM_PROVIDER_VAL="anthropic"
+      LLM_BASE_URL_VAL="${LLM_BASE_URL_VAL:-https://api.anthropic.com/v1}"
+      LLM_MODEL_VAL="${LLM_MODEL_VAL:-claude-sonnet-4-20250514}"
+      ;;
+    google|gemini)
+      LLM_PROVIDER_VAL="google"
+      LLM_BASE_URL_VAL="${LLM_BASE_URL_VAL:-https://generativelanguage.googleapis.com/v1beta/openai}"
+      LLM_MODEL_VAL="${LLM_MODEL_VAL:-gemini-2.5-flash}"
+      ;;
+    huggingface|hf)
+      LLM_PROVIDER_VAL="huggingface"
+      LLM_BASE_URL_VAL="${LLM_BASE_URL_VAL:-https://router.huggingface.co/v1}"
+      LLM_MODEL_VAL="${LLM_MODEL_VAL:-Qwen/Qwen2.5-72B-Instruct}"
+      ;;
+    *)
+      LLM_PROVIDER_VAL="${LLM_PROVIDER_VAL:-custom}"
+      LLM_BASE_URL_VAL="${LLM_BASE_URL_VAL:-https://api.openai.com/v1}"
+      LLM_MODEL_VAL="${LLM_MODEL_VAL:-gpt-4o}"
+      ;;
+  esac
+else
+  LLM_BACKEND_TYPE_VAL="ark_llm"
+  LLM_PROVIDER_VAL="ark_llm"
+  LLM_BASE_URL_VAL="http://vllm:8000/v1"
+  LLM_KEY_VAL="${VLLM_KEY}"
+  LLM_MODEL_VAL="${LLM_MODEL_VAL:-ark-llm}"
+fi
+
+IMAGE_BASE_URL_VAL="${IMAGE_API_BASE_URL:-${LLM_BASE_URL_VAL}}"
+IMAGE_KEY_VAL="${IMAGE_API_KEY:-${LLM_KEY_VAL}}"
+IMAGE_MODEL_VAL="${IMAGE_SERVED_NAME:-ark-image}"
 
 # Clean any stale dev run first
 stop_stack >/dev/null 2>&1 || true
@@ -83,7 +148,7 @@ log "Creating networks '${NET_NAME}' and '${CONTROL_NET}'..."
 docker network create "${NET_NAME}" >/dev/null
 docker network create --internal "${CONTROL_NET}" >/dev/null
 
-log "Starting PostgreSQL, Qdrant, and Mock Inference (vLLM + TEI Embed + TEI Rerank)..."
+log "Starting PostgreSQL, Qdrant, and TEI (Embed + Rerank)..."
 docker run -d --name ark-dev-postgres --network "${NET_NAME}" --network-alias postgres \
   -e POSTGRES_USER=ark_webui \
   -e POSTGRES_PASSWORD="${PG_PASS}" \
@@ -97,9 +162,14 @@ docker run -d --name ark-dev-qdrant --network "${NET_NAME}" --network-alias qdra
   -v "${REPO_ROOT}/config/qdrant/config.yaml:/qdrant/config/production.yaml:ro" \
   qdrant/qdrant:v1.12.5 >/dev/null
 
-docker run -d --name ark-dev-vllm --network "${NET_NAME}" --network-alias vllm \
-  -v "${REPO_ROOT}/tests:/tests:ro" \
-  python:3.12-slim-bookworm python3 /tests/mock_inference.py 8000 >/dev/null
+if [[ "${MOCK_LLM}" == true ]]; then
+  log "Starting Mock vLLM server (http://vllm:8000)..."
+  docker run -d --name ark-dev-vllm --network "${NET_NAME}" --network-alias vllm \
+    -v "${REPO_ROOT}/tests:/tests:ro" \
+    python:3.12-slim-bookworm python3 /tests/mock_inference.py 8000 >/dev/null
+else
+  log "Skipping Mock vLLM container — using external/cloud LLM (${LLM_PROVIDER_VAL}: ${LLM_BASE_URL_VAL}, model=${LLM_MODEL_VAL})..."
+fi
 
 docker run -d --name ark-dev-tei-embed --network "${NET_NAME}" --network-alias tei-embed \
   -v "${REPO_ROOT}/tests:/tests:ro" \
@@ -183,9 +253,16 @@ docker run -d --name ark-dev-ark-admin --network "${NET_NAME}" --network-alias a
   -e POSTGRES_PASSWORD="${PG_PASS}" \
   -e QDRANT_URL="http://qdrant:6333" \
   -e QDRANT_API_KEY="${QDRANT_KEY}" \
-  -e VLLM_URL="http://vllm:8000" \
-  -e VLLM_API_KEY="${VLLM_KEY}" \
-  -e LLM_SERVED_NAME="ark-llm" \
+  -e LLM_BACKEND_TYPE="${LLM_BACKEND_TYPE_VAL}" \
+  -e LLM_PROVIDER="${LLM_PROVIDER_VAL}" \
+  -e LLM_API_BASE_URL="${LLM_BASE_URL_VAL}" \
+  -e LLM_API_KEY="${LLM_KEY_VAL}" \
+  -e VLLM_URL="${LLM_BASE_URL_VAL%/v1}" \
+  -e VLLM_API_KEY="${LLM_KEY_VAL}" \
+  -e LLM_SERVED_NAME="${LLM_MODEL_VAL}" \
+  -e IMAGE_API_BASE_URL="${IMAGE_BASE_URL_VAL}" \
+  -e IMAGE_API_KEY="${IMAGE_KEY_VAL}" \
+  -e IMAGE_SERVED_NAME="${IMAGE_MODEL_VAL}" \
   -e TEI_EMBED_URL="http://tei-embed:80" \
   -e TEI_RERANK_URL="http://tei-rerank:80" \
   -e TIKA_URL="http://tika:9998" \
@@ -233,13 +310,14 @@ if [[ "${FULL_STACK}" == true ]]; then
     -e ENABLE_OAUTH_GROUP_CREATION=true \
     -e OAUTH_GROUPS_CLAIM="groups" \
     -e OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true \
-    -e OPENAI_API_BASE_URL="http://vllm:8000/v1" \
-    -e OPENAI_API_KEY="${VLLM_KEY}" \
+    -e OPENAI_API_BASE_URL="${LLM_BASE_URL_VAL}" \
+    -e OPENAI_API_KEY="${LLM_KEY_VAL}" \
+    -e DEFAULT_MODELS="${LLM_MODEL_VAL}" \
     -e ENABLE_IMAGE_GENERATION=true \
     -e IMAGE_GENERATION_ENGINE=openai \
-    -e IMAGES_OPENAI_API_BASE_URL="http://vllm:8000/v1" \
-    -e IMAGES_OPENAI_API_KEY="${VLLM_KEY}" \
-    -e IMAGE_GENERATION_MODEL="ark-image" \
+    -e IMAGES_OPENAI_API_BASE_URL="${IMAGE_BASE_URL_VAL}" \
+    -e IMAGES_OPENAI_API_KEY="${IMAGE_KEY_VAL}" \
+    -e IMAGE_GENERATION_MODEL="${IMAGE_MODEL_VAL}" \
     -e IMAGE_SIZE="1024x1024" \
     -e VECTOR_DB=qdrant \
     -e QDRANT_URI="http://qdrant:6333" \
