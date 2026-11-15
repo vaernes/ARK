@@ -167,16 +167,64 @@ Keycloak boots with the `ark` realm pre-imported from [config/keycloak/ark-realm
 
 ## 8. Phase 7 — Backup Verification & Disaster Recovery
 
-The built-in backup and restore cover PostgreSQL and Qdrant, not the complete
-appliance. Plugin and ingest-script archives may be included in the bundle, but
-neither restore path extracts them. Independently back up and test recovery of
-`data/open-webui`, `data/caddy`, `data/audit`, `plugins`, `data/ingest-scripts`,
-site configuration, certificates, and model artifacts. Keep `.env`, private
-keys, and `ARK_SECRETS_KEY` in separately protected offline escrow; losing the
-original encryption key prevents recovery of encrypted connector credentials.
-The database dumps and snapshots are taken sequentially, so quiesce application
-writes and ingestion during a coordinated backup window. Schedule and monitor
-off-host backups according to your organization's recovery objectives.
+For a complete, consistent appliance backup, use the cold-backup tool below.
+The Admin Console's online backup remains limited to PostgreSQL and Qdrant:
+its database dumps and snapshots are sequential and do not provide a
+cross-service point-in-time guarantee.
+
+### Complete encrypted cold backup
+
+Create two distinct RSA recovery key pairs and one Ed25519 signing key. Keep
+the data and secret private keys in separate protected offline escrow; keep
+the signing private key on the appliance with owner-only permissions, and
+distribute the signing public key through a separately trusted channel:
+
+```bash
+umask 077
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /secure/data.key
+openssl pkey -in /secure/data.key -pubout -out /secure/data.pub
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /secure/secrets.key
+openssl pkey -in /secure/secrets.key -pubout -out /secure/secrets.pub
+openssl genpkey -algorithm ED25519 -out /secure/backup-signing.key
+openssl pkey -in /secure/backup-signing.key -pubout -out /secure/backup-signing.pub
+```
+
+Run a backup during an approved maintenance window:
+
+```bash
+./scripts/backup-appliance.sh --backup /mnt/secure-backups/ark-cold-001 \
+  --data-key /secure/data.pub --secrets-key /secure/secrets.pub \
+  --signing-key /secure/backup-signing.key
+```
+
+The tool stops the Compose services, saves their current images, archives model
+weights and persistent PostgreSQL/Qdrant/Open WebUI/audit/plugin/script data,
+and separately encrypts site configuration, `.env`, certificates, and Caddy
+CA state. Both archives use authenticated encryption and the manifest is
+signed. Previously running services are restarted even if backup fails.
+Provide enough space for the image archive and encrypted backup; set `TMPDIR`
+to a suitably protected filesystem if `/tmp` is too small.
+
+On a clean host with a trusted `ark-admin` image already loaded, verify or
+restore into a **new**, nonexistent directory:
+
+```bash
+./scripts/restore-appliance.sh --backup /mnt/secure-backups/ark-cold-001 \
+  --data-key /secure/data.key --secrets-key /secure/secrets.key \
+  --verify-key /secure/backup-signing.pub --verify-only --work-dir /mnt/secure-work
+./scripts/restore-appliance.sh --backup /mnt/secure-backups/ark-cold-001 \
+  --data-key /secure/data.key --secrets-key /secure/secrets.key \
+  --verify-key /secure/backup-signing.pub --target /srv/ark-restored
+zstd -d -c /srv/ark-restored/artifacts/ark-recovery-images.tar.zst | docker load
+cd /srv/ark-restored
+docker compose --profile local-llm up -d
+```
+
+Decryption uses temporary plaintext on the recovery filesystem; use encrypted
+storage and remove any abandoned temporary directory after an interrupted
+recovery. Restore private keys and the signing verification key independently
+of the backup. Losing `ARK_SECRETS_KEY` or the secret recovery key prevents
+recovery of encrypted connector credentials.
 
 Backups created from the Admin Console (`Back Up Databases & Vectors`) write a timestamped directory under `ARK_BACKUP_DIR` (`ark-backup-<UTC_TIMESTAMP>/`) containing:
 - `openwebui.sql.gz`, `keycloak.sql.gz`, and `ark_admin.sql.gz` (PostgreSQL dumps)

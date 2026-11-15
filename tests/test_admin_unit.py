@@ -403,6 +403,48 @@ class TestEnvironmentConfiguration(unittest.TestCase):
             self.assertEqual(webui["secret"], "client$secret")
 
 
+class TestSignedOfflineBundle(unittest.TestCase):
+    def test_signed_bundle_rejects_tampering_and_untrusted_keys(self) -> None:
+        import shutil
+        import subprocess
+
+        if not shutil.which("openssl"):
+            self.skipTest("OpenSSL is required for signed bundle verification")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            private = root / "private.pem"
+            public = root / "public.pem"
+            other_private = root / "other-private.pem"
+            other_public = root / "other-public.pem"
+            for key, pub in ((private, public), (other_private, other_public)):
+                subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)], check=True)
+                key.chmod(0o600)
+                subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)], check=True)
+            manifest = root / "ark-bundle.json"
+            manifest.write_text(json.dumps({"ark_version": "test-version"}), encoding="utf-8")
+            images = root / "images.tar.zst"
+            models = root / "models.tar.zst"
+            images.write_bytes(b"approved images")
+            models.write_bytes(b"approved models")
+            script = str(REPO_ROOT / "scripts" / "bundle_manifest.py")
+            artifacts = ["--artifact", f"images={images}", "--artifact", f"models={models}"]
+            subprocess.run(
+                ["python3", script, "sign", "--manifest", str(manifest), "--key", str(private), *artifacts],
+                check=True, capture_output=True,
+            )
+            verify = ["python3", script, "verify", "--manifest", str(manifest),
+                      "--key", str(public), "--version", "test-version", *artifacts]
+            subprocess.run(verify, check=True, capture_output=True)
+            bad_key = verify.copy()
+            bad_key[bad_key.index(str(public))] = str(other_public)
+            self.assertNotEqual(subprocess.run(bad_key, capture_output=True).returncode, 0)
+            images.write_bytes(b"tampered images")
+            self.assertNotEqual(subprocess.run(verify, capture_output=True).returncode, 0)
+            images.write_bytes(b"approved images")
+            manifest.write_text(manifest.read_text().replace("test-version", "evil-version"), encoding="utf-8")
+            self.assertNotEqual(subprocess.run(verify, capture_output=True).returncode, 0)
+
+
 class TestIntegrationRunnerIsolation(unittest.TestCase):
     def test_failed_concurrent_runs_only_clean_up_owned_resources(self) -> None:
         import subprocess

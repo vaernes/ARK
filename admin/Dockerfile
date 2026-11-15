@@ -1,4 +1,5 @@
-FROM python:3.12-slim-bookworm
+ARG PYTHON_BASE_IMAGE=python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4
+FROM ${PYTHON_BASE_IMAGE}
 
 ARG ARK_VERSION=2026.11.1
 ARG ARK_GIT_COMMIT=unknown
@@ -22,14 +23,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      curl \
-      ca-certificates \
-      zstd && \
+      curl=7.88.1-10+deb12u15 \
+      ca-certificates=20250419~deb12u2 \
+      zstd=1.5.4+dfsg2-5 && \
     install -d /usr/share/postgresql-common/pgdg && \
     curl --http1.1 --retry 3 --retry-all-errors -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc && \
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && \
-    apt-get install -y --no-install-recommends postgresql-client-18 && \
+    apt-get install -y --no-install-recommends postgresql-client-18=18.7-1.pgdg12+2 \
+      libpq5=18.7-1.pgdg12+2 postgresql-client-common=295.pgdg12+1 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

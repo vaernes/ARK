@@ -1,4 +1,5 @@
-FROM python:3.12-slim-bookworm
+ARG PYTHON_BASE_IMAGE=python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4
+FROM ${PYTHON_BASE_IMAGE}
 
 ARG ARK_VERSION=2026.11.1
 ARG ARK_GIT_COMMIT=unknown
@@ -18,7 +19,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ARK_VERSION=${ARK_VERSION}
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl zstd && \
+    apt-get install -y --no-install-recommends curl=7.88.1-10+deb12u15 zstd=1.5.4+dfsg2-5 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

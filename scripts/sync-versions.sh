@@ -49,6 +49,7 @@ for raw_line in versions_path.read_text(encoding="utf-8").splitlines():
     versions[key.strip()] = val.strip()
 
 required_keys = [
+    "PYTHON_BASE_IMAGE",
     "VLLM_IMAGE",
     "TEI_IMAGE",
     "QDRANT_IMAGE",
@@ -124,6 +125,13 @@ for rel in ("docker-compose.yml", "docker-compose.llm.yml"):
     for k, val in versions.items():
         if k.endswith("_IMAGE"):
             txt = re.sub(rf"\$\{{{re.escape(k)}:-[^}}]+\}}", f"${{{k}:-{val}}}", txt)
+    apply_update(p, txt)
+
+# Python build images are pinned independently of runtime product images.
+for rel in ("admin/Dockerfile", "llm-admin/Dockerfile"):
+    p = root / rel
+    txt = p.read_text(encoding="utf-8")
+    txt = re.sub(r"(?m)^ARG PYTHON_BASE_IMAGE=.*$", f"ARG PYTHON_BASE_IMAGE={versions['PYTHON_BASE_IMAGE']}", txt)
     apply_update(p, txt)
 
 # 3. scripts/bundle-offline.sh

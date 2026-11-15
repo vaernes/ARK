@@ -96,6 +96,7 @@ load_env() {
 
   load_ark_env "${source_env}" || err "Could not load environment configuration."
 
+  PYTHON_BASE_IMAGE="${PYTHON_BASE_IMAGE:-python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4}"
   VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}"
   VLLM_IMAGE_DIGEST="${VLLM_IMAGE_DIGEST:-sha256:91ee972ab751fb7180bc71c175865e36b091686600dca783d52b2511399810b3}"
   TEI_IMAGE="${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.9.4}"
@@ -224,6 +225,7 @@ main() {
       build_cmd=(docker buildx build --load)
     fi
     "${build_cmd[@]}" \
+      --build-arg "PYTHON_BASE_IMAGE=${PYTHON_BASE_IMAGE}" \
       --build-arg "ARK_VERSION=${ARK_VERSION}" \
       --build-arg "ARK_GIT_COMMIT=${git_commit}" \
       --build-arg "ARK_BUILD_DATE=${build_date}" \
@@ -231,6 +233,7 @@ main() {
 
     log "Building local ark-llm-admin image: ${ARK_LLM_ADMIN_IMAGE} (ARK v${ARK_VERSION})"
     "${build_cmd[@]}" \
+      --build-arg "PYTHON_BASE_IMAGE=${PYTHON_BASE_IMAGE}" \
       --build-arg "ARK_VERSION=${ARK_VERSION}" \
       --build-arg "ARK_GIT_COMMIT=${git_commit}" \
       --build-arg "ARK_BUILD_DATE=${build_date}" \
@@ -242,6 +245,14 @@ main() {
     : > "${ARTIFACTS_DIR}/ark-images.digests.txt"
     for img in "${images[@]}"; do
       docker image inspect --format '{{.Id}} {{json .RepoTags}} {{json .RepoDigests}}' "${img}" >> "${ARTIFACTS_DIR}/ark-images.digests.txt"
+    done
+    log "Recording built-image operating system and Python dependencies..."
+    : > "${ARTIFACTS_DIR}/ark-dependencies.txt"
+    for img in "${ARK_ADMIN_IMAGE}" "${ARK_LLM_ADMIN_IMAGE}"; do
+      printf 'IMAGE %s\n' "${img}" >> "${ARTIFACTS_DIR}/ark-dependencies.txt"
+      docker run --rm --network none "${img}" sh -c \
+        'dpkg-query -W; python3 -m pip freeze' \
+        >> "${ARTIFACTS_DIR}/ark-dependencies.txt"
     done
 
     log "Saving and compressing Docker images to ${images_archive} (zstd -T0)..."
@@ -299,7 +310,8 @@ PYEOF
   if [[ -n "${SIGNING_KEY}" ]]; then
     local -a sign_args=(sign --manifest "${bundle_manifest}" --key "${SIGNING_KEY}")
     if [[ "${SKIP_IMAGES}" == false ]]; then
-      sign_args+=(--artifact "images=${images_archive}" --artifact "image_provenance=${ARTIFACTS_DIR}/ark-images.digests.txt")
+      sign_args+=(--artifact "images=${images_archive}" --artifact "image_provenance=${ARTIFACTS_DIR}/ark-images.digests.txt"
+                  --artifact "dependencies=${ARTIFACTS_DIR}/ark-dependencies.txt")
     fi
     if [[ "${SKIP_MODELS}" == false && "${PACKAGE_MODELS}" == true ]]; then
       sign_args+=(--artifact "models=${ARTIFACTS_DIR}/ark-models.tar.zst")

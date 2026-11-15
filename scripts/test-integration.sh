@@ -71,17 +71,17 @@ cleanup() {
   fi
   log "Cleaning up test containers and temporary files..."
   local resource cleanup_failed=false
+  for resource in "${CREATED_CONTAINERS[@]}"; do
+    docker rm -f "${resource}" >/dev/null || { log "Could not remove test container ${resource}."; cleanup_failed=true; }
+  done
   if [[ -d "${TMP_ROOT}/backups" || -d "${TMP_ROOT}/audit" ]]; then
     docker run --rm --network none -v "${TMP_ROOT}:/work" python:3.12-slim-bookworm \
       python3 -c 'import os, shutil
-for name in ("backups", "audit"):
+for name in ("backups", "audit", "appliance", "recovery"):
     path = os.path.join("/work", name)
     if os.path.isdir(path):
         shutil.rmtree(path)' || { log "Could not remove container-owned test data."; cleanup_failed=true; }
   fi
-  for resource in "${CREATED_CONTAINERS[@]}"; do
-    docker rm -f "${resource}" >/dev/null || { log "Could not remove test container ${resource}."; cleanup_failed=true; }
-  done
   for resource in "${CREATED_NETWORKS[@]}"; do
     docker network rm "${resource}" >/dev/null || { log "Could not remove test network ${resource}."; cleanup_failed=true; }
   done
@@ -100,7 +100,8 @@ for name in ("backups", "audit"):
 trap cleanup EXIT
 
 main() {
-  mkdir -p "${TMP_ROOT}/backups" "${TMP_ROOT}/audit" "${TMP_ROOT}/keycloak" "${TMP_ROOT}/plugins" "${TMP_ROOT}/ingest-scripts"
+  mkdir -p "${TMP_ROOT}/backups" "${TMP_ROOT}/audit" "${TMP_ROOT}/keycloak" "${TMP_ROOT}/plugins" "${TMP_ROOT}/ingest-scripts" \
+    "${TMP_ROOT}/appliance/data/postgres" "${TMP_ROOT}/appliance/data/qdrant"
 
   ARK_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
   GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
@@ -153,6 +154,7 @@ main() {
     -e POSTGRES_USER=ark_webui \
     -e POSTGRES_PASSWORD="${PG_PASS}" \
     -e POSTGRES_DB=openwebui \
+    -v "${TMP_ROOT}/appliance/data/postgres:/var/lib/postgresql" \
     -v "${REPO_ROOT}/config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro" \
     "${POSTGRES_IMAGE}" >/dev/null
 
@@ -160,6 +162,7 @@ main() {
   run_test_container --name "${TEST_QDRANT}" --network "${NET_NAME}" --network-alias qdrant \
     -e QDRANT__TELEMETRY_DISABLED=true \
     -e QDRANT__SERVICE__API_KEY="${QDRANT_KEY}" \
+    -v "${TMP_ROOT}/appliance/data/qdrant:/qdrant/storage" \
     -v "${REPO_ROOT}/config/qdrant/config.yaml:/qdrant/config/production.yaml:ro" \
     "${QDRANT_IMAGE}" >/dev/null
 
@@ -1151,6 +1154,63 @@ assert 'auth.denied' in jsonl_events, jsonl_events
     test_admin_extensions.TestPluginDiscoveryAndEnvScrubbing -v \
     || fail "In-container unit tests failed"
   pass "In-container unit tests for ingest, pipelines, and plugins passed with zero skips."
+
+  log "Testing encrypted cold backup and clean PostgreSQL/Qdrant recovery..."
+  docker stop "${TEST_ADMIN}" "${TEST_POSTGRES}" "${TEST_QDRANT}" >/dev/null
+  mkdir -p "${TMP_ROOT}/appliance/artifacts/models" "${TMP_ROOT}/appliance/config" \
+    "${TMP_ROOT}/appliance/data/caddy" "${TMP_ROOT}/recovery"
+  cp "${REPO_ROOT}/VERSION" "${TMP_ROOT}/appliance/VERSION"
+  cp "${REPO_ROOT}/docker-compose.yml" "${TMP_ROOT}/appliance/docker-compose.yml"
+  printf 'ARK_SECRETS_KEY=test-escrow-key\n' > "${TMP_ROOT}/appliance/.env"
+  printf 'model fixture\n' > "${TMP_ROOT}/appliance/artifacts/models/model.txt"
+  printf 'tls escrow fixture\n' > "${TMP_ROOT}/appliance/data/caddy/key.txt"
+  for kind in data secrets; do
+    openssl genpkey -quiet -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "${TMP_ROOT}/recovery/${kind}.key"
+    openssl pkey -in "${TMP_ROOT}/recovery/${kind}.key" -pubout -out "${TMP_ROOT}/recovery/${kind}.pub" >/dev/null 2>&1
+  done
+  openssl genpkey -algorithm ED25519 -out "${TMP_ROOT}/recovery/signing.key"
+  chmod 600 "${TMP_ROOT}/recovery/signing.key"
+  openssl pkey -in "${TMP_ROOT}/recovery/signing.key" -pubout -out "${TMP_ROOT}/recovery/signing.pub" >/dev/null 2>&1
+  printf 'image archive fixture\n' > "${TMP_ROOT}/recovery/images.tar.zst"
+  docker run --rm --network none -v "${REPO_ROOT}/scripts:/scripts:ro" \
+    -v "${TMP_ROOT}/appliance:/appliance:ro" -v "${TMP_ROOT}/recovery:/recovery" \
+    "${TEST_IMAGE}" python3 /scripts/appliance_backup.py create \
+    --root /appliance --backup /recovery/backup --images /recovery/images.tar.zst \
+    --data-key /recovery/data.pub --secrets-key /recovery/secrets.pub --signing-key /recovery/signing.key \
+    --owner-uid "$(id -u)" --owner-gid "$(id -g)"
+  docker run --rm --network none -v "${REPO_ROOT}/scripts:/scripts:ro" -v "${TMP_ROOT}/recovery:/recovery" \
+    "${TEST_IMAGE}" python3 /scripts/appliance_backup.py restore \
+    --backup /recovery/backup --target /recovery/restored \
+    --data-key /recovery/data.key --secrets-key /recovery/secrets.key --verify-key /recovery/signing.pub \
+    --owner-uid "$(id -u)" --owner-gid "$(id -g)"
+  local restored_postgres="${RUN_ID}-restored-postgres" restored_qdrant="${RUN_ID}-restored-qdrant"
+  run_test_container --name "${restored_postgres}" --network "${NET_NAME}" --network-alias restored-postgres \
+    -e POSTGRES_USER=ark_webui -e POSTGRES_PASSWORD="${PG_PASS}" -e POSTGRES_DB=openwebui \
+    -v "${TMP_ROOT}/recovery/restored/data/postgres:/var/lib/postgresql" "${POSTGRES_IMAGE}"
+  run_test_container --name "${restored_qdrant}" --network "${NET_NAME}" --network-alias restored-qdrant \
+    -e QDRANT__TELEMETRY_DISABLED=true -e QDRANT__SERVICE__API_KEY="${QDRANT_KEY}" \
+    -v "${TMP_ROOT}/recovery/restored/data/qdrant:/qdrant/storage" "${QDRANT_IMAGE}"
+  for _ in $(seq 1 60); do
+    if docker exec "${restored_postgres}" pg_isready -U ark_webui -d ark_admin >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  docker exec "${restored_postgres}" psql -U ark_webui -d ark_admin -tAc \
+    "SELECT count(*) FROM projects WHERE slug = 'project-alpha'" | grep -q '^1$' \
+    || fail "Restored PostgreSQL did not contain the project."
+  for _ in $(seq 1 60); do
+    if docker exec "${TEST_VLLM}" python3 -c "
+import json, urllib.request
+r = urllib.request.Request('http://restored-qdrant:6333/collections/Project_Alpha', headers={'api-key':'${QDRANT_KEY}'})
+assert json.load(urllib.request.urlopen(r, timeout=2))['result']['points_count'] >= 1
+" >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  docker exec "${TEST_VLLM}" python3 -c "
+import json, urllib.request
+r = urllib.request.Request('http://restored-qdrant:6333/collections/Project_Alpha', headers={'api-key':'${QDRANT_KEY}'})
+assert json.load(urllib.request.urlopen(r, timeout=2))['result']['points_count'] >= 1
+" || fail "Restored Qdrant did not contain the project collection."
+  pass "Encrypted appliance state restored to new PostgreSQL and Qdrant containers."
 
   log "ALL INTEGRATION TESTS PASSED!"
 }

@@ -91,7 +91,7 @@ def main() -> int:
     try:
         for item in args.artifact:
             name, sep, path = item.partition("=")
-            if not sep or name not in {"images", "models", "image_provenance"} or not path or name in artifacts:
+            if not sep or name not in {"images", "models", "image_provenance", "dependencies"} or not path or name in artifacts:
                 raise ValueError(f"Invalid artifact argument: {item}")
             artifacts[name] = Path(path)
         if args.action == "sign":

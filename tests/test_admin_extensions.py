@@ -154,6 +154,76 @@ class TestBackupManifestExtraArchives(unittest.TestCase):
                 backup_utils.verify_backup_manifest(root)
 
 
+@unittest.skipUnless(importlib.util.find_spec("cryptography"), "backup encryption dependency not installed")
+class TestApplianceRecovery(unittest.TestCase):
+    def test_encrypted_cold_backup_restores_and_rejects_tampering(self):
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+
+        spec = importlib.util.spec_from_file_location("ark_appliance_backup", ROOT_DIR / "scripts" / "appliance_backup.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            for name in ("data/postgres", "data/qdrant", "artifacts/models", "data/caddy",
+                         "config/keycloak", "plugins", "data/ingest-scripts"):
+                (source / name).mkdir(parents=True)
+            for name, value in {
+                "VERSION": "2026.11.1\n", "docker-compose.yml": "services: {}\n",
+                ".env": "ARK_SECRETS_KEY=private-key\n", "data/postgres/record": "database",
+                "data/qdrant/record": "vectors", "artifacts/models/weights": "model",
+                "data/caddy/ca.key": "ca-private-key", "plugins/plugin.py": "plugin",
+                "data/ingest-scripts/script.py": "script",
+            }.items():
+                (source / name).write_text(value, encoding="utf-8")
+            images = root / "images.tar.zst"
+            images.write_bytes(b"docker-image-archive")
+            private_paths = []
+            public_paths = []
+            for label in ("data", "secrets"):
+                key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+                private = root / f"{label}-private.pem"
+                public = root / f"{label}-public.pem"
+                private.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                     serialization.NoEncryption()))
+                public.write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM,
+                                                                 serialization.PublicFormat.SubjectPublicKeyInfo))
+                private_paths.append(private)
+                public_paths.append(public)
+            signer = ed25519.Ed25519PrivateKey.generate()
+            signing_key = root / "signing.pem"
+            verify_key = root / "verify.pem"
+            signing_key.write_bytes(signer.private_bytes(serialization.Encoding.PEM,
+                                                        serialization.PrivateFormat.PKCS8,
+                                                        serialization.NoEncryption()))
+            signing_key.chmod(0o600)
+            verify_key.write_bytes(signer.public_key().public_bytes(serialization.Encoding.PEM,
+                                                                    serialization.PublicFormat.SubjectPublicKeyInfo))
+            backup = root / "backup"
+            module.create(source, backup, public_paths[0], public_paths[1], images, signing_key)
+            self.assertNotIn(b"private-key", (backup / "secrets.ark").read_bytes())
+            target = root / "restored"
+            module.recover(backup, private_paths[0], private_paths[1], verify_key, target)
+            self.assertEqual((target / "data/postgres/record").read_text(), "database")
+            self.assertEqual((target / "data/qdrant/record").read_text(), "vectors")
+            self.assertEqual((target / "plugins/plugin.py").read_text(), "plugin")
+            self.assertEqual((target / "data/ingest-scripts/script.py").read_text(), "script")
+            self.assertIn("ARK_SECRETS_KEY=private-key", (target / ".env").read_text())
+            self.assertEqual((target / "data/caddy/ca.key").read_text(), "ca-private-key")
+            self.assertEqual((target / "artifacts/ark-recovery-images.tar.zst").read_bytes(), images.read_bytes())
+
+            state = backup / "state.ark"
+            state.write_bytes(state.read_bytes() + b"tampered")
+            with self.assertRaises(ValueError):
+                module.recover(backup, private_paths[0], private_paths[1], verify_key, None)
+            (backup / "manifest.json").write_text("{}", encoding="utf-8")
+            with self.assertRaises(InvalidSignature):
+                module.recover(backup, private_paths[0], private_paths[1], verify_key, None)
+
+
 class TestUiAndLlmAdminSecurity(unittest.TestCase):
     def test_all_ui_and_theme_assets_are_airgapped_and_xss_safe(self):
         html_assets = [
