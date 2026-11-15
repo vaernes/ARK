@@ -20,3 +20,10 @@ All UI assets are bundled locally to maintain strict air-gap compliance (no exte
 | **Tech Cyan** | `#00E5FF` | RAG actions, data retrieval & AI features |
 | **Glint White** | `#E2E8F0` | High-contrast UI text |
 | **Armor Gray** | `#64748B` | Infrastructure & secondary labels |
+
+## Shared UI Layer & Accessibility
+
+The Control Plane, User Portal, Project Console and Create Studio share [`admin/static/ark-ui.css`](../admin/static/ark-ui.css) and [`admin/static/ark-ui.js`](../admin/static/ark-ui.js) (local files only). They provide the focus ring, confirm dialog, toast stack, ARIA tab keyboard support, busy-button handling, overflow menus and inline validation (`arkConfirm`/`confirmModal`, `arkToast`/`showToast`, `arkSwitchTab`, `arkMenu`, `arkFieldError`, plus the shared `el` DOM builder). Do not re-implement these per page.
+
+- **Armor Gray (`#64748B`)** is for decorative or secondary elements. For helper text and table headers on Steel Shield panels use the lighter `--ark-text-soft` (`#94A3B8`) for readable contrast.
+- Destructive actions must go through the confirm dialog, never the native `confirm()`.

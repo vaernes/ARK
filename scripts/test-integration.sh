@@ -869,7 +869,12 @@ H_OUTSIDER = {
 ui_html = requests.get('http://localhost:8090/create/', headers=H_ALICE)
 ui_html.raise_for_status()
 assert 'ARK CREATE STUDIO' in ui_html.text
-
+for _asset, _ctype in (('ark-ui.css', 'css'), ('ark-ui.js', 'javascript')):
+    for _prefix in ('portal', 'create'):
+        _r = requests.get(f'http://localhost:8090/{_prefix}/static/{_asset}', headers=H_ALICE, timeout=5)
+        _r.raise_for_status()
+        assert _ctype in _r.headers.get('content-type', ''), (_asset, _r.headers.get('content-type'))
+        assert 'http://' not in _r.text and 'https://' not in _r.text, f'external URL in {_asset}'
 presets = requests.get('http://localhost:8090/create/api/presets', headers=H_ALICE)
 presets.raise_for_status()
 preset_ids = {p['id'] for p in presets.json()['presets']}

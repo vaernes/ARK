@@ -506,87 +506,9 @@
       color: var(--cyan);
       border-color: var(--cyan);
     }
-
-    /* Toast Stack */
-    #toast-container {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      z-index: 9999;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-width: 380px;
-    }
-
-    .toast {
-      background: var(--shield);
-      border: 1px solid var(--border);
-      border-left: 4px solid var(--cyan);
-      color: var(--text);
-      padding: 10px 14px;
-      border-radius: 8px;
-      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-      font-size: 0.81rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 10px;
-    }
-
-    .toast.ok {
-      border-left-color: var(--ok);
-    }
-
-    .toast.err {
-      border-left-color: var(--err);
-    }
-
-    .toast.amber {
-      border-left-color: var(--amber);
-    }
-
-    /* In-Page Confirmation Modal */
-    .modal-backdrop {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(10, 14, 23, 0.78);
-      z-index: 10000;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-    }
-
-    .modal-backdrop.open {
-      display: flex;
-    }
-
-    .modal-card {
-      background: var(--shield);
-      border: 1px solid var(--border);
-      border-top: 3px solid var(--amber);
-      border-radius: 12px;
-      max-width: 440px;
-      width: 100%;
-      padding: 18px 20px;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
-    }
-
-    .modal-card h3 {
-      margin: 0 0 8px;
-      font-size: 0.98rem;
-      color: var(--text);
-    }
-
-    .modal-card p {
-      margin: 0 0 14px;
-      font-size: 0.84rem;
-      color: var(--muted);
-      line-height: 1.45;
-      white-space: pre-line;
-    }
   </style>
+  <link rel="stylesheet" href="/admin-console/static/ark-ui.css" />
+  <script src="/admin-console/static/ark-ui.js"></script>
 </head>
 
 <body>
@@ -602,11 +524,12 @@
       <div class="projects-pill">ARK <strong id="ark-version">...</strong></div>
       <div class="projects-pill">PROJECTS DEPLOYED <strong id="proj-count">0</strong></div>
       <div class="offline-banner">&#9888; Strict Air-Gap &bull; Offline Mode</div>
-      <a class="nav-link" href="/">Open WebUI</a>
-      <a class="nav-link" href="/create/">Create Studio</a>
+      <a class="nav-link" href="/">Open WebUI Chat</a>
       <a class="nav-link" href="/portal/">User Portal</a>
-      <a class="nav-link" href="/oauth2/sign_out" style="color:var(--muted);">Sign Out</a>
-      <button style="margin-top:0" onclick="refreshAll(true)">Refresh All</button>
+      <a class="nav-link" href="/create/">Create Studio</a>
+      <a class="nav-link" href="/admin-console/">Admin Console</a>
+      <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
+      <button type="button" class="secondary" style="margin-top:0" onclick="refreshAll(true)">Refresh</button>
     </div>
   </header>
 
@@ -614,7 +537,7 @@
     style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:14px; font-size:0.84rem;">
   </div>
 
-  <!-- 5-Tab Control Plane Navigation -->
+  <!-- 6-Tab Control Plane Navigation -->
   <nav class="tab-bar" role="tablist" aria-label="Control Plane Sections">
     <button type="button" id="tab-btn-overview" class="tab-btn active" role="tab" aria-selected="true"
       onclick="switchTab('overview')">
@@ -638,8 +561,13 @@
     </button>
     <button type="button" id="tab-btn-security" class="tab-btn" role="tab" aria-selected="false"
       onclick="switchTab('security')">
-      <span>Security, Backups &amp; Audit</span>
+      <span>Security &amp; Audit</span>
       <span id="tab-badge-security" class="tab-count">0</span>
+    </button>
+    <button type="button" id="tab-btn-backups" class="tab-btn" role="tab" aria-selected="false"
+      onclick="switchTab('backups')">
+      <span>Backups &amp; Recovery</span>
+      <span id="tab-badge-backups" class="tab-count">0</span>
     </button>
   </nav>
 
@@ -720,8 +648,8 @@
         </h2>
         <div class="row">
           <div>
-            <label for="proj-name">Project Name</label>
-            <input id="proj-name" placeholder="Project_Alpha" />
+            <label for="proj-name" class="required">Project Name</label>
+            <input id="proj-name" placeholder="Project_Alpha" required />
           </div>
           <div>
             <label for="proj-rag">Isolation Mode</label>
@@ -1299,11 +1227,11 @@
     </div>
   </section>
 
-  <!-- ==================== TAB 5: SECURITY, BACKUPS & AUDIT ==================== -->
+  <!-- ==================== TAB 5: SECURITY & AUDIT ==================== -->
   <section id="panel-security" class="tab-panel" role="tabpanel">
     <div class="grid">
       <!-- Audit Logs -->
-      <div class="card admin-accent">
+      <div class="card admin-accent" style="grid-column: 1 / -1;">
         <h2>
           <span>Security &amp; Audit Events (Local + SIEM)</span>
           <span style="font-size:0.74rem;color:var(--muted);text-transform:none;font-weight:500;">Click any row for IP &amp; payload details</span>
@@ -1344,7 +1272,12 @@
           <tbody></tbody>
         </table>
       </div>
+    </div>
+  </section>
 
+  <!-- ==================== TAB 6: BACKUPS & RECOVERY ==================== -->
+  <section id="panel-backups" class="tab-panel" role="tabpanel">
+    <div class="grid">
       <!-- Backup & Snapshot -->
       <div class="card admin-accent">
         <h2>Backup &amp; Project KB Snapshot Sync</h2>
@@ -1387,34 +1320,13 @@
     </div>
   </section>
 
-  <!-- Toast Stack -->
-  <div id="toast-container" aria-live="polite"></div>
-
-  <!-- Air-Gapped Confirmation Modal -->
-  <div id="ark-modal-backdrop" class="modal-backdrop" role="dialog" aria-modal="true">
-    <div class="modal-card">
-      <h3 id="ark-modal-title">Confirm Action</h3>
-      <p id="ark-modal-message"></p>
-      <div id="ark-modal-extra" style="display:none;margin-bottom:12px;">
-        <label style="display:inline-flex;align-items:center;gap:8px;color:var(--text);font-weight:500;cursor:pointer;">
-          <input id="ark-modal-checkbox" type="checkbox" style="width:auto;" />
-          <span id="ark-modal-checkbox-label"></span>
-        </label>
-      </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;">
-        <button type="button" id="ark-modal-cancel" class="secondary sm" style="padding:7px 14px;">Cancel</button>
-        <button type="button" id="ark-modal-confirm" class="amber sm" style="padding:7px 14px;">Confirm</button>
-      </div>
-    </div>
-  </div>
-
   <footer id="ark-footer"
     style="margin-top:26px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
     ARK Control Plane &bull; Apache-2.0 License
   </footer>
 
   <script>
-    const VALID_TABS = ['overview', 'projects', 'rag', 'models', 'security'];
+    const VALID_TABS = ['overview', 'projects', 'rag', 'models', 'security', 'backups'];
     let activeTab = 'overview';
     let loadedProjects = [];
     let loadedPlugins = [];
@@ -1441,43 +1353,6 @@
       '  overlap: 200',
     ].join('\n');
 
-    function el(tag, attrs = {}, children = []) {
-      const node = document.createElement(tag);
-      for (const [k, v] of Object.entries(attrs)) {
-        if (k === 'className') node.className = v;
-        else if (k === 'style') node.setAttribute('style', v);
-        else if (k === 'text') node.textContent = v;
-        else if (k === 'colSpan') node.colSpan = v;
-        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
-        else node.setAttribute(k, v);
-      }
-      for (const child of Array.isArray(children) ? children : [children]) {
-        if (child === null || child === undefined) continue;
-        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
-      }
-      return node;
-    }
-
-    function showToast(msg, kind = 'ok') {
-      if (!msg) return;
-      const container = document.getElementById('toast-container');
-      if (!container) return;
-      const toast = el('div', { className: `toast ${kind}` }, [
-        el('span', { text: msg }),
-        el('button', {
-          type: 'button',
-          className: 'secondary sm',
-          style: 'padding:2px 6px;font-size:0.7rem;',
-          text: '\u00d7',
-          onClick: () => toast.remove()
-        })
-      ]);
-      container.appendChild(toast);
-      setTimeout(() => {
-        if (toast.parentNode) toast.remove();
-      }, 4500);
-    }
-
     const showError = (msg) => {
       const elNode = document.getElementById('ui-alert');
       elNode.textContent = msg;
@@ -1498,54 +1373,7 @@
     function switchTab(tabId, updateHash = true) {
       if (!VALID_TABS.includes(tabId)) tabId = 'overview';
       activeTab = tabId;
-      for (const id of VALID_TABS) {
-        const btn = document.getElementById(`tab-btn-${id}`);
-        const panel = document.getElementById(`panel-${id}`);
-        const isCurrent = id === tabId;
-        if (btn) {
-          btn.classList.toggle('active', isCurrent);
-          btn.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
-        }
-        if (panel) {
-          panel.classList.toggle('active', isCurrent);
-        }
-      }
-      if (updateHash && window.history && window.history.replaceState) {
-        window.history.replaceState(null, '', `#${tabId}`);
-      }
-    }
-
-    function confirmModal({ title = 'Confirm Action', message = '', confirmText = 'Confirm', danger = false, checkboxLabel = '' }) {
-      return new Promise((resolve) => {
-        const backdrop = document.getElementById('ark-modal-backdrop');
-        document.getElementById('ark-modal-title').textContent = title;
-        document.getElementById('ark-modal-message').textContent = message;
-        const extraWrap = document.getElementById('ark-modal-extra');
-        const checkbox = document.getElementById('ark-modal-checkbox');
-        if (checkboxLabel) {
-          document.getElementById('ark-modal-checkbox-label').textContent = checkboxLabel;
-          checkbox.checked = false;
-          extraWrap.style.display = 'block';
-        } else {
-          extraWrap.style.display = 'none';
-          checkbox.checked = false;
-        }
-        const confirmBtn = document.getElementById('ark-modal-confirm');
-        const cancelBtn = document.getElementById('ark-modal-cancel');
-        confirmBtn.textContent = confirmText;
-        confirmBtn.className = `${danger ? 'danger' : 'amber'} sm`;
-        confirmBtn.style.padding = '7px 14px';
-        backdrop.classList.add('open');
-
-        const cleanup = (result) => {
-          backdrop.classList.remove('open');
-          confirmBtn.onclick = null;
-          cancelBtn.onclick = null;
-          resolve(result);
-        };
-        confirmBtn.onclick = () => cleanup({ confirmed: true, checked: checkbox.checked });
-        cancelBtn.onclick = () => cleanup({ confirmed: false, checked: false });
-      });
+      arkSwitchTab(VALID_TABS, tabId, updateHash);
     }
 
     function setInputIfIdle(id, val) {
@@ -1621,7 +1449,7 @@
               el('td', {}, modeBadge(p)),
               el('td', {}, el('code', { text: p.effective_llm_model || '-' })),
               el('td', { text: String(p.member_count ?? 0) }),
-              el('td', { style: 'display:flex;gap:4px;flex-wrap:wrap;' }, [
+              el('td', { style: 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;' }, [
                 el('a', {
                   href: `/admin-console/projects/${encodeURIComponent(p.slug)}`,
                   style: 'text-decoration:none;background:var(--cyan);color:var(--void);padding:4px 8px;border-radius:6px;font-size:0.74rem;font-weight:700;',
@@ -1632,21 +1460,11 @@
                   style: 'text-decoration:none;background:var(--void);border:1px solid rgba(0,229,255,0.45);color:var(--cyan);padding:4px 7px;border-radius:6px;font-size:0.74rem;font-weight:700;',
                   text: 'Chat'
                 }),
-                el('button', {
-                  className: 'secondary sm',
-                  text: 'Access',
-                  onClick: () => focusProjectAccess(p.slug)
-                }),
-                ...(p.rag_enabled ? [el('button', {
-                  className: 'secondary sm',
-                  text: 'Ingest',
-                  onClick: () => focusProjectIngest(p.slug)
-                })] : []),
-                el('button', {
-                  className: 'secondary sm',
-                  text: 'Audit',
-                  onClick: () => focusProjectAudit(p.slug)
-                })
+                arkMenu('More', [
+                  { text: 'Access', onClick: () => focusProjectAccess(p.slug) },
+                  ...(p.rag_enabled ? [{ text: 'Ingest', onClick: () => focusProjectIngest(p.slug) }] : []),
+                  { text: 'Audit', onClick: () => focusProjectAudit(p.slug) }
+                ])
               ])
             ])
           )
@@ -1666,7 +1484,7 @@
             el('td', {}, el('code', { text: p.effective_llm_model || '-' })),
             el('td', { text: String(p.member_count ?? 0) }),
             el('td', {}, el('code', { text: `/projects/${p.slug}/v1` })),
-            el('td', { style: 'display:flex;gap:4px;flex-wrap:wrap;' }, [
+            el('td', { style: 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;' }, [
               el('a', {
                 href: `/admin-console/projects/${encodeURIComponent(p.slug)}`,
                 style: 'text-decoration:none;background:var(--cyan);color:var(--void);padding:4px 8px;border-radius:6px;font-size:0.74rem;font-weight:700;',
@@ -1682,34 +1500,15 @@
                 text: 'Access',
                 onClick: () => focusProjectAccess(p.slug)
               }),
-              el('button', {
-                className: 'secondary sm',
-                text: 'Keys',
-                onClick: () => focusProjectKeys(p.slug)
-              }),
-              ...(p.rag_enabled ? [
-                el('button', {
-                  className: 'secondary sm',
-                  text: 'RAG',
-                  onClick: () => openProjectConfigDrawer(p.slug, 'rag')
-                }),
-                el('button', {
-                  className: 'secondary sm',
-                  text: 'Ingest',
-                  onClick: () => focusProjectIngest(p.slug)
-                })
-              ] : []),
-              el('button', {
-                className: 'secondary sm',
-                text: 'LLM',
-                onClick: () => openProjectConfigDrawer(p.slug, 'llm')
-              }),
-              el('button', {
-                className: 'danger',
-                style: 'padding:4px 7px;font-size:0.74rem;',
-                text: 'Delete',
-                onClick: () => deleteProject(p.slug)
-              })
+              arkMenu('More', [
+                { text: 'API keys', onClick: () => focusProjectKeys(p.slug) },
+                ...(p.rag_enabled ? [
+                  { text: 'RAG sources', onClick: () => openProjectConfigDrawer(p.slug, 'rag') },
+                  { text: 'Ingest', onClick: () => focusProjectIngest(p.slug) }
+                ] : []),
+                { text: 'LLM settings', onClick: () => openProjectConfigDrawer(p.slug, 'llm') },
+                { text: 'Delete project', danger: true, onClick: () => deleteProject(p.slug) }
+              ])
             ])
           ])
         )
@@ -1780,6 +1579,7 @@
         ? list.map(b => el('option', { value: b.name, text: `${b.name} (${(b.databases || []).length} DBs, ${(b.qdrant_snapshots || []).length} Qdrant)` }))
         : [el('option', { value: '', text: 'No backup bundles found' })];
       document.getElementById('restore-backup-select').replaceChildren(...backupOpts);
+      document.getElementById('tab-badge-backups').textContent = String(list.length);
     }
 
     function renderIngestSection(pluginMeta, sources, jobs) {
@@ -2003,10 +1803,12 @@
                     ...(p.api_key_set ? [document.createTextNode(' '), el('span', { className: 'badge ok', text: 'key' })] : [])
                   ]),
                   el('td', { style: 'white-space:nowrap;' }, [
-                    ...(!p.is_default ? [el('button', { className: 'sm', style: 'margin-right:4px;', text: 'Default', onClick: () => setDefaultModelProfile(p.id) })] : []),
-                    el('button', { className: 'secondary sm', style: 'margin-right:4px;', text: 'Test', onClick: () => testSavedModelProfile(p.id) }),
+                    el('button', { className: 'sm', style: 'margin-right:4px;', text: 'Test', onClick: () => testSavedModelProfile(p.id) }),
                     el('button', { className: 'secondary sm', style: 'margin-right:4px;', text: 'Edit', onClick: () => editModelProfile(p) }),
-                    el('button', { className: 'danger', text: 'Del', onClick: () => deleteModelProfile(p.id, p.name) })
+                    arkMenu('More', [
+                      ...(!p.is_default ? [{ text: 'Set as default', onClick: () => setDefaultModelProfile(p.id) }] : []),
+                      { text: 'Delete profile', danger: true, onClick: () => deleteModelProfile(p.id, p.name) }
+                    ])
                   ])
                 ])
               )
@@ -2198,7 +2000,7 @@
 
     async function createProject() {
       const nameVal = document.getElementById('proj-name').value.trim();
-      if (!nameVal) return showError('Enter a project name first.');
+      if (!nameVal) return arkFieldError('proj-name', 'Enter a project name first.');
       const rawExtra = document.getElementById('proj-extra-rag').value || '';
       const extraRagProjects = rawExtra
         .split(',')
@@ -3052,7 +2854,13 @@
     }
 
     async function deleteModelProfile(id, name) {
-      if (!confirm(`Delete model profile '${name}'?`)) return;
+      const { confirmed } = await confirmModal({
+        title: 'Delete model profile?',
+        message: `Model profile '${name}' will be permanently removed.`,
+        confirmText: 'Delete profile',
+        danger: true
+      });
+      if (!confirmed) return;
       const res = await api(`/model-profiles/${id}`, { method: 'DELETE' });
       showModelOps(res);
       showToast(`Deleted model profile '${name}'.`, 'ok');

@@ -410,6 +410,8 @@
       font-size: 0.7rem;
     }
   </style>
+  <link rel="stylesheet" href="/create/static/ark-ui.css" />
+  <script src="/create/static/ark-ui.js"></script>
 </head>
 
 <body>
@@ -426,6 +428,7 @@
       <div class="pill">User: <strong id="me-user">...</strong></div>
       <a class="nav-link" href="/">Open WebUI Chat</a>
       <a class="nav-link" href="/portal/">User Portal</a>
+      <a class="nav-link" href="/create/">Create Studio</a>
       <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
       <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
     </div>
@@ -558,22 +561,6 @@
       showError('');
       return r.json();
     });
-
-    function el(tag, attrs = {}, children = []) {
-      const node = document.createElement(tag);
-      for (const [k, v] of Object.entries(attrs)) {
-        if (k === 'className') node.className = v;
-        else if (k === 'style') node.setAttribute('style', v);
-        else if (k === 'text') node.textContent = v;
-        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
-        else node.setAttribute(k, v);
-      }
-      for (const child of Array.isArray(children) ? children : [children]) {
-        if (child === null || child === undefined) continue;
-        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
-      }
-      return node;
-    }
 
     function renderInspirations() {
       const row = document.getElementById('inspiration-chips');
@@ -775,6 +762,13 @@
 
     async function deleteActiveCreation() {
       if (!activeCreation || !activeCreation.id) return;
+      const { confirmed } = await arkConfirm({
+        title: 'Delete this creation?',
+        message: 'The generated image will be permanently removed from your gallery.',
+        confirmText: 'Delete',
+        danger: true
+      });
+      if (!confirmed) return;
       await api(`/creations/${activeCreation.id}`, { method: 'DELETE' });
       activeCreation = null;
       await refreshCreations(true);

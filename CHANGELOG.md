@@ -8,6 +8,18 @@ using `YYYY.MM.PATCH` (for example, `2026.11.0`).
 
 ## [Unreleased]
 
+### Changed
+- **UI/UX pass across Admin Console, User Portal, Project Console and Create Studio (no visual rebrand):**
+  - Added shared local assets `admin/static/ark-ui.css` and `admin/static/ark-ui.js` (served from the existing `/admin-console/static`, `/portal/static` and `/create/static` mounts; no external resources) providing a visible `:focus-visible` ring, an accessible confirm dialog (focus move/trap/restore, `Esc` and backdrop close), keyboard-operable ARIA tabs (arrow keys, `aria-controls`) and KPI cards, busy-state protection against double submits, inline field validation, higher-contrast helper text, a sticky error banner, and small-screen/reduced-motion rules.
+  - User Portal: revoking an API key now asks for confirmation, a newly issued key shows a dedicated "shown once" box with a **Copy** button and toast, and API errors show the server's `detail` message.
+  - Replaced the native `confirm()` for model-profile deletion and added a confirmation for deleting a Create Studio creation.
+  - Unified header navigation order and labels across pages (Open WebUI Chat, User Portal, Create Studio, Admin Console, Sign Out) with the current page highlighted.
+  - Removed the duplicated toast, confirm-dialog, tab-switching and DOM-builder code from the Admin Console and Project Console in favour of the shared `ark-ui.js` helpers (`showToast`, `confirmModal`, `arkSwitchTab`, `el`), and added them to the User Portal and Create Studio.
+  - Split the Admin Console "Security, Backups & Audit" tab into **Security & Audit** and **Backups & Recovery** (new `#backups` deep link and badge showing the number of backup bundles).
+  - Dense table action cells (projects, model profiles) now keep the primary actions visible and move the rest, including destructive ones, into an accessible **More** overflow menu (`arkMenu`).
+  - Fixed horizontal overflow of the User Portal on narrow screens and refreshed the Control Plane, User Portal and Create Studio screenshots in `docs/images/`.
+  - CI air-gap check now also scans `create.html`, `project.html`, `ark-ui.css` and `ark-ui.js` for external URLs.
+
 ### Added
 - **ARK Create Studio (`/create/`) & Image Generation Support:**
   - Added **ARK Create Studio** (`/create/`) protected by Keycloak SSO (`oauth2-proxy` `forward_auth` + `X-Ark-Proxy-Secret`), featuring visual style presets (`photorealistic`, `illustration`, `isometric_diagram`, `icon`, `slide_graphic`, `blueprint`, `none`), aspect ratio/size controls (`1024x1024`, `1344x768`, `768x1344`), AI prompt enhancement via the ARK LLM (`POST /create/api/enhance-prompt`), and a per-user PostgreSQL-backed creation gallery (`/create/api/creations`).

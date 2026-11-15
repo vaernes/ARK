@@ -28,6 +28,10 @@ jobs:
           for asset_path in (
               "admin/static/index.html",
               "admin/static/portal.html",
+              "admin/static/create.html",
+              "admin/static/project.html",
+              "admin/static/ark-ui.css",
+              "admin/static/ark-ui.js",
               "llm-admin/static/index.html",
               "config/open-webui/custom.css",
           ):

@@ -111,7 +111,7 @@
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
       gap: 20px;
     }
 
@@ -121,6 +121,8 @@
       border-radius: 12px;
       padding: 18px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      min-width: 0;
+      overflow-x: auto;
     }
 
     .card.cyan-accent {
@@ -253,6 +255,8 @@
       color: var(--text);
     }
   </style>
+  <link rel="stylesheet" href="/portal/static/ark-ui.css" />
+  <script src="/portal/static/ark-ui.js"></script>
 </head>
 
 <body>
@@ -269,6 +273,7 @@
       <div class="pill">User: <strong id="me-user">...</strong></div>
       <div class="pill">Groups: <strong id="me-groups">-</strong></div>
       <a class="nav-link" href="/">Open WebUI Chat</a>
+      <a class="nav-link" href="/portal/">User Portal</a>
       <a class="nav-link" href="/create/">Create Studio</a>
       <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
       <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
@@ -325,7 +330,13 @@
         Read-only (<code>viewer</code>) members can issue <code>chat</code> keys only.
       </div>
       <button class="amber" onclick="createKey()">Generate API Key</button>
-      <pre id="key-output" style="display:none"></pre>
+      <div id="key-output-box" class="secret-box" style="display:none;">
+        <div class="secret-head">
+          <span>Save this key now &mdash; shown only once</span>
+          <button type="button" class="secondary sm" onclick="copyKeyOutput()">Copy</button>
+        </div>
+        <pre id="key-output"></pre>
+      </div>
 
       <h2 style="margin-top:22px;">My Active API Keys</h2>
       <table id="key-table">
@@ -359,28 +370,17 @@
     const api = (path, opts = {}) => fetch('/portal/api' + path, opts).then(async r => {
       if (!r.ok) {
         const text = await r.text();
-        showError('API Error: ' + text);
-        throw new Error(text);
+        let detail = text;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed.detail === 'string') detail = parsed.detail;
+        } catch (_) { /* keep raw text */ }
+        showError(detail);
+        throw new Error(detail);
       }
       showError('');
       return r.json();
     });
-
-    function el(tag, attrs = {}, children = []) {
-      const node = document.createElement(tag);
-      for (const [k, v] of Object.entries(attrs)) {
-        if (k === 'className') node.className = v;
-        else if (k === 'style') node.setAttribute('style', v);
-        else if (k === 'text') node.textContent = v;
-        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
-        else node.setAttribute(k, v);
-      }
-      for (const child of Array.isArray(children) ? children : [children]) {
-        if (child === null || child === undefined) continue;
-        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
-      }
-      return node;
-    }
 
     let portalProjects = [];
 
@@ -498,7 +498,7 @@
 
     async function createKey() {
       const proj = document.getElementById('key-proj').value;
-      if (!proj) return showError('No accessible project selected.');
+      if (!proj) return arkFieldError('key-proj', 'No accessible project selected.');
       const scopes = [];
       if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
       if (document.getElementById('key-scope-images').checked) scopes.push('images');
@@ -515,13 +515,43 @@
         })
       });
       const out = document.getElementById('key-output');
-      out.style.display = 'block';
-      out.textContent = 'SAVE THIS KEY NOW (shown once):\n' + res.api_key + '\nScopes: ' + (res.scopes || []).join(', ') + '\n\nBase URL: ' + window.location.origin + '/projects/' + res.project_slug + '/v1';
+      document.getElementById('key-output-box').style.display = 'block';
+      out.textContent = res.api_key + '\nScopes: ' + (res.scopes || []).join(', ') + '\n\nBase URL: ' + window.location.origin + '/projects/' + res.project_slug + '/v1';
+      showError('');
+      arkToast('API key created. Copy it now; it will not be shown again.', 'ok');
       refresh();
     }
 
+    async function copyKeyOutput() {
+      const text = document.getElementById('key-output').textContent;
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        arkToast('Copied API key details to clipboard.', 'ok');
+      } catch (_) {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById('key-output'));
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        arkToast('Clipboard unavailable; key selected, press Ctrl+C to copy.', 'amber');
+      }
+    }
+
     async function revokeKey(id) {
-      await api(`/keys/${id}`, { method: 'DELETE' });
+      const { confirmed } = await arkConfirm({
+        title: 'Revoke API key?',
+        message: 'Tools using this key (IDEs, Office add-ins, scripts) will stop working immediately. This cannot be undone.',
+        confirmText: 'Revoke key',
+        danger: true
+      });
+      if (!confirmed) return;
+      try {
+        await api(`/keys/${id}`, { method: 'DELETE' });
+        arkToast('API key revoked.', 'ok');
+      } catch (_) {
+        // api() has already surfaced the error
+      }
       refresh();
     }
 

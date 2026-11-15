@@ -504,84 +504,6 @@
       border-color: var(--cyan);
     }
 
-    #toast-container {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      z-index: 9999;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-width: 380px;
-    }
-
-    .toast {
-      background: var(--shield);
-      border: 1px solid var(--border);
-      border-left: 4px solid var(--cyan);
-      color: var(--text);
-      padding: 10px 14px;
-      border-radius: 8px;
-      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-      font-size: 0.81rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 10px;
-    }
-
-    .toast.ok {
-      border-left-color: var(--ok);
-    }
-
-    .toast.err {
-      border-left-color: var(--err);
-    }
-
-    .toast.amber {
-      border-left-color: var(--amber);
-    }
-
-    .modal-backdrop {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(10, 14, 23, 0.78);
-      z-index: 10000;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-    }
-
-    .modal-backdrop.open {
-      display: flex;
-    }
-
-    .modal-card {
-      background: var(--shield);
-      border: 1px solid var(--border);
-      border-top: 3px solid var(--amber);
-      border-radius: 12px;
-      max-width: 440px;
-      width: 100%;
-      padding: 18px 20px;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
-    }
-
-    .modal-card h3 {
-      margin: 0 0 8px;
-      font-size: 0.98rem;
-      color: var(--text);
-    }
-
-    .modal-card p {
-      margin: 0 0 14px;
-      font-size: 0.84rem;
-      color: var(--muted);
-      line-height: 1.45;
-      white-space: pre-line;
-    }
-
     /* Per-Project Isolated Chat WebUI */
     .chat-shell {
       display: flex;
@@ -743,6 +665,8 @@
       line-height: 1.45;
     }
   </style>
+  <link rel="stylesheet" href="/portal/static/ark-ui.css" />
+  <script src="/portal/static/ark-ui.js"></script>
 </head>
 
 <body>
@@ -763,12 +687,13 @@
         <span>Project:</span>
         <select id="project-switcher" onchange="switchProjectConsole(this.value)"></select>
       </div>
-      <a id="back-admin-link" class="nav-link" href="/admin-console/" style="display:none;">&larr; Control Plane</a>
-      <a class="nav-link" href="/portal/">&larr; User Portal</a>
       <a id="top-chat-link" class="nav-link cyan-cta" href="#chat" onclick="switchTab('chat'); return false;">Project Chat &rarr;</a>
+      <a class="nav-link" href="/">Open WebUI Chat</a>
+      <a class="nav-link" href="/portal/">User Portal</a>
       <a class="nav-link" href="/create/">Create Studio</a>
-      <a class="nav-link" href="/oauth2/sign_out" style="color:var(--muted);">Sign Out</a>
-      <button type="button" style="margin-top:0;" onclick="refreshConsole(true)">Refresh</button>
+      <a id="back-admin-link" class="nav-link" href="/admin-console/" style="display:none;">Admin Console</a>
+      <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
+      <button type="button" class="secondary" style="margin-top:0;" onclick="refreshConsole(true)">Refresh</button>
     </div>
   </header>
 
@@ -1316,25 +1241,6 @@
     </div>
   </section>
 
-  <div id="toast-container" aria-live="polite"></div>
-
-  <div id="ark-modal-backdrop" class="modal-backdrop" role="dialog" aria-modal="true">
-    <div class="modal-card">
-      <h3 id="ark-modal-title">Confirm Action</h3>
-      <p id="ark-modal-message"></p>
-      <div id="ark-modal-extra" style="display:none;margin-bottom:12px;">
-        <label style="display:inline-flex;align-items:center;gap:8px;color:var(--text);font-weight:500;cursor:pointer;">
-          <input id="ark-modal-checkbox" type="checkbox" style="width:auto;" />
-          <span id="ark-modal-checkbox-label"></span>
-        </label>
-      </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;">
-        <button type="button" id="ark-modal-cancel" class="secondary sm" style="padding:7px 14px;">Cancel</button>
-        <button type="button" id="ark-modal-confirm" class="amber sm" style="padding:7px 14px;">Confirm</button>
-      </div>
-    </div>
-  </div>
-
   <footer id="ark-footer"
     style="margin-top:26px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
     ARK Project Console &bull; Apache-2.0 License
@@ -1379,42 +1285,6 @@
       '  overlap: 200',
     ].join('\n');
 
-    function el(tag, attrs = {}, children = []) {
-      const node = document.createElement(tag);
-      for (const [k, v] of Object.entries(attrs)) {
-        if (k === 'className') node.className = v;
-        else if (k === 'style') node.setAttribute('style', v);
-        else if (k === 'text') node.textContent = v;
-        else if (k === 'colSpan') node.colSpan = v;
-        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
-        else node.setAttribute(k, v);
-      }
-      for (const child of Array.isArray(children) ? children : [children]) {
-        if (child === null || child === undefined) continue;
-        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
-      }
-      return node;
-    }
-
-    function showToast(msg, kind = 'ok') {
-      if (!msg) return;
-      const container = document.getElementById('toast-container');
-      const toast = el('div', { className: `toast ${kind}` }, [
-        el('span', { text: msg }),
-        el('button', {
-          type: 'button',
-          className: 'secondary sm',
-          style: 'padding:2px 6px;font-size:0.7rem;',
-          text: '\u00d7',
-          onClick: () => toast.remove()
-        })
-      ]);
-      container.appendChild(toast);
-      setTimeout(() => {
-        if (toast.parentNode) toast.remove();
-      }, 4500);
-    }
-
     const showError = (msg) => {
       const elNode = document.getElementById('ui-alert');
       elNode.textContent = msg;
@@ -1435,58 +1305,13 @@
     function switchTab(tabId, updateHash = true) {
       if (!VALID_TABS.includes(tabId)) tabId = 'overview';
       activeTab = tabId;
-      for (const id of VALID_TABS) {
-        const btn = document.getElementById(`tab-btn-${id}`);
-        const panel = document.getElementById(`panel-${id}`);
-        const isCurrent = id === tabId;
-        if (btn) {
-          btn.classList.toggle('active', isCurrent);
-          btn.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
-        }
-        if (panel) panel.classList.toggle('active', isCurrent);
-      }
-      if (updateHash && window.history && window.history.replaceState) {
-        window.history.replaceState(null, '', `#${tabId}`);
-      }
+      arkSwitchTab(VALID_TABS, tabId, updateHash);
     }
 
     function switchProjectConsole(targetSlug) {
       if (!targetSlug || targetSlug === projectSlug) return;
       const suffix = activeTab === 'chat' ? '/chat' : (window.location.hash || '');
       window.location.href = `${consolePrefix}/projects/${encodeURIComponent(targetSlug)}${suffix}`;
-    }
-
-    function confirmModal({ title = 'Confirm Action', message = '', confirmText = 'Confirm', danger = false, checkboxLabel = '' }) {
-      return new Promise((resolve) => {
-        const backdrop = document.getElementById('ark-modal-backdrop');
-        document.getElementById('ark-modal-title').textContent = title;
-        document.getElementById('ark-modal-message').textContent = message;
-        const extraWrap = document.getElementById('ark-modal-extra');
-        const checkbox = document.getElementById('ark-modal-checkbox');
-        if (checkboxLabel) {
-          document.getElementById('ark-modal-checkbox-label').textContent = checkboxLabel;
-          checkbox.checked = false;
-          extraWrap.style.display = 'block';
-        } else {
-          extraWrap.style.display = 'none';
-          checkbox.checked = false;
-        }
-        const confirmBtn = document.getElementById('ark-modal-confirm');
-        const cancelBtn = document.getElementById('ark-modal-cancel');
-        confirmBtn.textContent = confirmText;
-        confirmBtn.className = `${danger ? 'danger' : 'amber'} sm`;
-        confirmBtn.style.padding = '7px 14px';
-        backdrop.classList.add('open');
-
-        const cleanup = (result) => {
-          backdrop.classList.remove('open');
-          confirmBtn.onclick = null;
-          cancelBtn.onclick = null;
-          resolve(result);
-        };
-        confirmBtn.onclick = () => cleanup({ confirmed: true, checked: checkbox.checked });
-        cancelBtn.onclick = () => cleanup({ confirmed: false, checked: false });
-      });
     }
 
     function setInputIfIdle(id, val) {
