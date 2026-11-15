@@ -195,8 +195,10 @@ class TestUiAndLlmAdminSecurity(unittest.TestCase):
         self.assertIn("refreshAuditOnly()", admin_html)
         self.assertIn("refreshAuditOnly()", project_html)
         self.assertIn('id="project-config-drawer"', admin_html)
-        self.assertIn('id="ark-modal-backdrop"', admin_html)
-        self.assertIn('id="ark-modal-backdrop"', project_html)
+        shared_ui = (ROOT_DIR / "admin" / "static" / "ark-ui.js").read_text(encoding="utf-8")
+        self.assertIn('/admin-console/static/ark-ui.js', admin_html)
+        self.assertIn('/portal/static/ark-ui.js', project_html)
+        self.assertIn("backdrop.id = 'ark-modal-backdrop';", shared_ui)
         self.assertNotRegex(admin_html, r"\b(?:prompt|alert|confirm)\s*\(")
         self.assertNotRegex(project_html, r"\b(?:prompt|alert|confirm)\s*\(")
 
