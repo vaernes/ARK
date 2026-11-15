@@ -228,115 +228,7 @@ services:
       - ark-net
 
   # ----------------------------------------------------------------------------
-  # 7. Open WebUI: Multi-Tenant RAG Orchestrator, UI & RBAC
-  # ----------------------------------------------------------------------------
-  open-webui:
-    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.13.3}
-    container_name: ark-open-webui
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      tika:
-        condition: service_healthy
-      tei-embed:
-        condition: service_healthy
-      tei-rerank:
-        condition: service_healthy
-    environment:
-      # Hardened Air-Gap & Telemetry
-      OFFLINE_MODE: "true"
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      DO_NOT_TRACK: "1"
-      ANONYMIZED_TELEMETRY: "false"
-      SCARF_NO_ANALYTICS: "true"
-      ENABLE_VERSION_UPDATE_CHECK: "false"
-      ENABLE_COMMUNITY_SHARING: "false"
-      ENABLE_OLLAMA_API: "false"
-      # Database & Auth
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-ark_webui}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-openwebui}"
-      WEBUI_NAME: "ARK — Air-Gapped Retrieval & Knowledge"
-      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY}"
-      WEBUI_URL: "${WEBUI_URL:-https://ark.local}"
-      ENABLE_SIGNUP: "${ENABLE_SIGNUP:-false}"
-      ENABLE_LOGIN_FORM: "${ENABLE_LOGIN_FORM:-false}"
-      DEFAULT_USER_ROLE: "${DEFAULT_USER_ROLE:-user}"
-      # Keycloak OIDC SSO (Primary Enterprise Login)
-      ENABLE_OAUTH_SIGNUP: "true"
-      OAUTH_PROVIDER_NAME: "Corporate SSO"
-      OPENID_PROVIDER_URL: "http://keycloak:8080/auth/realms/ark/.well-known/openid-configuration"
-      OAUTH_CLIENT_ID: "open-webui"
-      OAUTH_CLIENT_SECRET: "${OIDC_OPENWEBUI_CLIENT_SECRET}"
-      OAUTH_SCOPES: "openid email profile groups"
-      ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
-      ENABLE_OAUTH_GROUP_CREATION: "true"
-      OAUTH_GROUPS_CLAIM: "groups"
-      OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
-      # Active Directory (LDAPS)
-      ENABLE_LDAP: "${ENABLE_LDAP:-false}"
-      LDAP_SERVER_LABEL: "${LDAP_SERVER_LABEL:-Corporate Active Directory}"
-      LDAP_SERVER_HOST: "${LDAP_SERVER_HOST:-}"
-      LDAP_SERVER_PORT: "${LDAP_SERVER_PORT:-636}"
-      LDAP_USE_TLS: "${LDAP_USE_TLS:-true}"
-      LDAP_VALIDATE_CERT: "${LDAP_VALIDATE_CERT:-true}"
-      LDAP_CA_CERT_FILE: "${LDAP_CA_CERT_FILE:-/certs/ad-ca.crt}"
-      LDAP_ATTRIBUTE_FOR_MAIL: "${LDAP_ATTRIBUTE_FOR_MAIL:-mail}"
-      LDAP_ATTRIBUTE_FOR_USERNAME: "${LDAP_ATTRIBUTE_FOR_USERNAME:-sAMAccountName}"
-      LDAP_SEARCH_BASE: "${LDAP_SEARCH_BASE:-}"
-      LDAP_SEARCH_FILTERS: "${LDAP_SEARCH_FILTERS:-}"
-      LDAP_APP_DN: "${LDAP_APP_DN:-}"
-      LDAP_APP_PASSWORD: "${LDAP_APP_PASSWORD:-}"
-      # LLM Inference (Routed through ark-admin internal Model Registry gateway)
-      OPENAI_API_BASE_URL: "http://ark-admin:8090/internal/webui/v1"
-      OPENAI_API_KEY: "${ARK_PROXY_AUTH_SECRET:-ark-internal-webui}"
-      DEFAULT_MODELS: "${LLM_SERVED_NAME:-ark-llm}"
-      # Image Generation (ARK Create / OpenAI-Compatible Images API)
-      ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-false}"
-      IMAGE_GENERATION_ENGINE: "openai"
-      IMAGES_OPENAI_API_BASE_URL: "${IMAGE_API_BASE_URL:-${LLM_API_BASE_URL:-http://vllm:8000/v1}}"
-      IMAGES_OPENAI_API_KEY: "${IMAGE_API_KEY:-${LLM_API_KEY:-${VLLM_API_KEY}}}"
-      IMAGE_GENERATION_MODEL: "${IMAGE_SERVED_NAME:-ark-image}"
-      IMAGE_SIZE: "${IMAGE_DEFAULT_SIZE:-1024x1024}"
-      # Vector DB (Qdrant)
-      VECTOR_DB: "qdrant"
-      QDRANT_URI: "http://qdrant:6333"
-      QDRANT_API_KEY: "${QDRANT_API_KEY}"
-      # RAG Embeddings & Reranking (TEI)
-      RAG_EMBEDDING_ENGINE: "openai"
-      RAG_EMBEDDING_OPENAI_API_BASE_URL: "http://tei-embed:80/v1"
-      RAG_EMBEDDING_OPENAI_API_KEY: "local-tei"
-      RAG_EMBEDDING_MODEL: "${EMBED_MODEL_ID:-BAAI/bge-m3}"
-      ENABLE_RAG_HYBRID_SEARCH: "true"
-      RAG_RERANKING_ENGINE: "${RAG_RERANKING_ENGINE:-external}"
-      RAG_EXTERNAL_RERANKER_URL: "${RAG_EXTERNAL_RERANKER_URL:-http://tei-rerank:80/rerank}"
-      RAG_RERANKING_MODEL: "${RERANK_MODEL_ID:-BAAI/bge-reranker-v2-m3}"
-      # Document Extraction (Apache Tika)
-      CONTENT_EXTRACTION_ENGINE: "tika"
-      TIKA_SERVER_URL: "http://tika:9998"
-    volumes:
-      - ./data/open-webui:/app/backend/data
-      - ./artifacts/models:/models:ro
-      - ./certs:/certs:ro
-      - ./admin/static/ark-logo.svg:/app/backend/open_webui/static/favicon.svg:ro
-      - ./config/open-webui/custom.css:/app/backend/open_webui/static/custom.css:ro
-    command:
-      - bash
-      - -c
-      - 'grep -q "/static/custom.css" /app/build/index.html || sed -i "s|</head>|<link rel=\"stylesheet\" href=\"/static/custom.css\" /></head>|" /app/build/index.html; exec bash start.sh'
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
-      interval: 20s
-      timeout: 5s
-      retries: 10
-      start_period: 45s
-    networks:
-      - ark-net
-
-  # ----------------------------------------------------------------------------
-  # 8. Keycloak: Enterprise Identity Broker (AD/LDAPS, Kerberos, SAML 2.0)
+  # 7. Keycloak: Enterprise Identity Broker (AD/LDAPS, Kerberos, SAML 2.0)
   # ----------------------------------------------------------------------------
   keycloak:
     image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.2}
@@ -478,8 +370,6 @@ services:
       ARK_SHARES_DIR: "/shares"
       ARK_ALLOWED_INGEST_PATHS: "/shares"
       TIKA_URL: "http://tika:9998"
-      OPENWEBUI_INTERNAL_URL: "http://open-webui:8080"
-      OPENWEBUI_API_KEY: "${OPENWEBUI_API_KEY:-}"
       KEYCLOAK_INTERNAL_URL: "http://keycloak:8080/auth"
       EMBED_VECTOR_SIZE: "${EMBED_VECTOR_SIZE:-1024}"
       ARK_BACKUP_DIR: "/backups"
@@ -517,8 +407,6 @@ services:
     container_name: ark-caddy
     restart: unless-stopped
     depends_on:
-      open-webui:
-        condition: service_healthy
       keycloak:
         condition: service_healthy
       oauth2-proxy:

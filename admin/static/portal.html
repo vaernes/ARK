@@ -272,7 +272,6 @@
       <div class="pill">ARK <strong id="ark-version">...</strong></div>
       <div class="pill">User: <strong id="me-user">...</strong></div>
       <div class="pill">Groups: <strong id="me-groups">-</strong></div>
-      <a class="nav-link" href="/">Open WebUI Chat</a>
       <a class="nav-link" href="/portal/">User Portal</a>
       <a class="nav-link" href="/create/">Create Studio</a>
       <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
@@ -288,10 +287,8 @@
     <div class="card cyan-accent">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <h2 style="margin:0;">My Accessible Projects</h2>
-        <a id="default-webui-link" class="nav-link" href="/"
-          style="border-color:rgba(0,229,255,0.45);color:var(--cyan);font-size:0.78rem;padding:5px 10px;">Default WebUI Chat &rarr;</a>
       </div>
-      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Open each project's dedicated <strong>Project Console</strong> to manage documents, API keys, and settings, or click <strong>Open Chat</strong> to launch its assistant in Open WebUI.</p>
+      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Open each project's dedicated <strong>Project Console</strong> to manage documents, API keys, and settings, or click <strong>Open Chat</strong> to launch its project workspace.</p>
       <table id="proj-table">
         <thead>
           <tr>
@@ -410,15 +407,6 @@
       document.getElementById('me-groups').textContent = me.groups.length ? me.groups.join(', ') : 'none';
       if (me.is_admin) {
         document.getElementById('admin-link').style.display = 'inline-block';
-      }
-      if (me.default_webui_url) {
-        const defLink = document.getElementById('default-webui-link');
-        if (defLink) {
-          defLink.href = me.default_webui_url;
-          defLink.textContent = me.default_llm_model
-            ? `Default WebUI (${me.default_llm_model}) \u2192`
-            : 'Default WebUI Chat \u2192';
-        }
       }
 
       const origin = window.location.origin;

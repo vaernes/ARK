@@ -118,16 +118,17 @@
 
 	# 5. Block unauthenticated/unaudited raw vLLM /v1 and internal gateway bypass
 	handle /v1/* {
-		respond "Direct /v1 access is disabled. Use /projects/<slug>/v1/ or Open WebUI /api/chat/completions." 403
+		respond "Direct /v1 access is disabled. Use /projects/<slug>/v1/ or /portal/projects/<slug>/chat." 403
 	}
 	handle /internal/* {
 		respond "Internal service endpoints are not externally accessible." 403
 	}
 
-	# 6. RAG UI & Orchestrator -> Open WebUI (Keycloak OIDC SSO + WebSockets)
+	# 6. No default root WebUI: redirect / -> /portal (all workspaces are project-scoped)
+	handle / {
+		redir / /portal 302
+	}
 	handle {
-		reverse_proxy open-webui:8080 {
-			flush_interval -1
-		}
+		respond "Not found. Access ARK projects via /portal or /admin-console." 404
 	}
 }

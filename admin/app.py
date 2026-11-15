@@ -1049,7 +1049,6 @@ def portal_me(request: Request) -> dict[str, Any]:
         "groups": groups,
         "is_admin": "ark-admins" in groups,
         "default_llm_model": default_llm,
-        "default_webui_url": f"/?model={quote(default_llm, safe='')}",
     }
 
 
@@ -1089,7 +1088,6 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
                 "effective_llm_model": raw_llm or default_llm,
                 "webui_url": f"/portal/projects/{quote(r[0], safe='')}/chat",
                 "chat_url": f"/portal/projects/{quote(r[0], safe='')}/chat",
-                "open_webui_url": f"/?model={quote(r[3], safe='')}",
                 "user_role": role,
                 "created_at": r[7].isoformat(),
             }
@@ -1606,7 +1604,6 @@ def health_dashboard() -> dict[str, Any]:
         "tei_rerank": f"{TEI_RERANK_URL}/health",
         "qdrant": f"{QDRANT_URL}/readyz",
         "tika": f"{TIKA_URL}/tika",
-        "open_webui": f"{OPENWEBUI_URL}/health",
         "keycloak": f"{KEYCLOAK_URL.rstrip('/')}/realms/ark/.well-known/openid-configuration",
     }
     results: dict[str, str] = {}
@@ -1790,7 +1787,6 @@ def list_projects() -> list[dict[str, Any]]:
             "effective_llm_model": r[8].strip() if r[8] and r[8].strip() else default_llm,
             "webui_url": f"/admin-console/projects/{quote(r[0], safe='')}/chat",
             "chat_url": f"/admin-console/projects/{quote(r[0], safe='')}/chat",
-            "open_webui_url": f"/?model={quote(r[4], safe='')}",
             "created_at": r[9].isoformat(),
             "member_count": int(r[10]),
         }
@@ -4544,7 +4540,6 @@ def _require_project_role(
         "effective_llm_model": raw_llm or default_llm,
         "webui_url": f"{chat_prefix}/projects/{quote(row[0], safe='')}/chat",
         "chat_url": f"{chat_prefix}/projects/{quote(row[0], safe='')}/chat",
-        "open_webui_url": f"/?model={quote(row[4], safe='')}",
         "created_at": row[9].isoformat(),
         "member_count": int(row[10] or 0),
         "user_role": role,

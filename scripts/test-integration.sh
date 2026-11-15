@@ -366,12 +366,18 @@ assert h.json()['services'].get('llm_backend') == 'healthy', h.json()
 "
   pass "Admin SSO forward_auth, peer bypass block (403), ark-admins RBAC, and version endpoints verified."
 
-  # 3. Test raw /v1 bypass blocking
-  log "3/8 Testing raw /v1/* bypass block..."
-  local raw_code
+  # 3. Test raw /v1 bypass blocking and root / -> /portal redirect
+  log "3/8 Testing raw /v1/* bypass block and root / -> /portal redirect..."
+  local raw_code root_code root_loc unknown_code
   raw_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/v1/chat/completions")
   [[ "${raw_code}" == "403" ]] || fail "Expected 403 for raw /v1/*, got ${raw_code}"
-  pass "Raw /v1/* bypass blocked (HTTP 403)."
+  root_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/")
+  [[ "${root_code}" == "302" ]] || fail "Expected 302 redirect on /, got ${root_code}"
+  root_loc=$(curl -ksI "https://localhost:${TEST_HTTPS_PORT}/" | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
+  [[ "${root_loc}" == "/portal" ]] || fail "Expected / to redirect to /portal, got '${root_loc}'"
+  unknown_code=$(curl -ks -o /dev/null -w "%{http_code}" "https://localhost:${TEST_HTTPS_PORT}/nonexistent-root-path")
+  [[ "${unknown_code}" == "404" ]] || fail "Expected 404 for unknown root path, got ${unknown_code}"
+  pass "Raw /v1/* bypass blocked (HTTP 403) and root / redirects to /portal (HTTP 302)."
 
   # 4. Create RAG projects + Clean project via ark-admin
   log "4/8 Provisioning RAG projects (Project_Alpha, Shared_KB) and Clean project (Clean_Sandbox)..."
