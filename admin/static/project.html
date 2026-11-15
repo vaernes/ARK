@@ -688,8 +688,8 @@
         <select id="project-switcher" onchange="switchProjectConsole(this.value)"></select>
       </div>
       <a id="top-chat-link" class="nav-link cyan-cta" href="#chat" onclick="switchTab('chat'); return false;">Project Chat &rarr;</a>
+      <a id="top-create-link" class="nav-link" href="#">Create Studio</a>
       <a class="nav-link" href="/portal/">User Portal</a>
-      <a class="nav-link" href="/create/">Create Studio</a>
       <a id="back-admin-link" class="nav-link" href="/admin-console/" style="display:none;">Admin Console</a>
       <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
       <button type="button" class="secondary" style="margin-top:0;" onclick="refreshConsole(true)">Refresh</button>
@@ -1475,6 +1475,10 @@
       const chatUrl = proj.chat_url || proj.webui_url || `${consolePrefix}/projects/${encodeURIComponent(proj.slug)}/chat`;
       document.getElementById('top-chat-link').href = chatUrl;
       document.getElementById('card-chat-link').href = chatUrl;
+      const createLink = document.getElementById('top-create-link');
+      if (createLink) {
+        createLink.href = `${consolePrefix}/projects/${encodeURIComponent(proj.slug)}/create`;
+      }
 
       const verLabel = `v${ver.version || ''}`;
       document.getElementById('ark-footer').textContent = `${ver.product || 'ARK'} ${verLabel} \u2022 Project Console (${proj.slug}) \u2022 ${ver.air_gap_mode ? 'Offline mode' : 'Connected mode: cloud access enabled'}`;

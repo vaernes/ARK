@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ARK Create — AI Image &amp; Visual Studio</title>
-  <link rel="icon" type="image/svg+xml" href="/create/static/ark-logo.svg" />
+  <link rel="icon" type="image/svg+xml" href="/portal/static/ark-logo.svg" />
   <style>
     :root {
       --void: #0A0E17;
@@ -410,24 +410,25 @@
       font-size: 0.7rem;
     }
   </style>
-  <link rel="stylesheet" href="/create/static/ark-ui.css" />
-  <script src="/create/static/ark-ui.js"></script>
+  <link rel="stylesheet" href="/portal/static/ark-ui.css" />
+  <script src="/portal/static/ark-ui.js"></script>
 </head>
 
 <body>
   <header class="topbar">
     <div class="brand">
-      <img src="/create/static/ark-logo.svg" alt="ARK Shield Logo" />
+      <img src="/portal/static/ark-logo.svg" alt="ARK Shield Logo" />
       <div>
         <h1>ARK CREATE STUDIO</h1>
-        <small>Air-Gapped AI Image &amp; Visual Asset Generator</small>
+        <small id="create-project-subtitle">Project Visual Asset Studio</small>
       </div>
     </div>
     <div class="nav-strip">
       <div class="pill">ARK <strong id="ark-version">...</strong></div>
+      <div class="pill">Project: <strong id="me-project">...</strong></div>
       <div class="pill">User: <strong id="me-user">...</strong></div>
+      <a class="nav-link" id="project-console-link" href="/portal/">Project Console</a>
       <a class="nav-link" href="/portal/">User Portal</a>
-      <a class="nav-link" href="/create/">Create Studio</a>
       <a class="nav-link" id="admin-link" href="/admin-console/" style="display:none;">Admin Console</a>
       <a class="nav-link" href="/oauth2/sign_out">Sign Out</a>
     </div>
@@ -469,8 +470,8 @@
           <select id="create-size"></select>
         </div>
         <div>
-          <label for="create-project">Project Tag (Optional)</label>
-          <select id="create-project"></select>
+          <label for="create-project">Project Scope</label>
+          <input id="create-project" type="text" readonly value="..." />
         </div>
       </div>
 
@@ -552,7 +553,12 @@
       elNode.style.display = msg ? 'block' : 'none';
     };
 
-    const api = (path, opts = {}) => fetch('/create/api' + path, opts).then(async r => {
+    const pathMatch = window.location.pathname.match(/^\/(admin-console|portal)\/projects\/([^/]+)\/create/);
+    const consolePrefix = pathMatch ? '/' + pathMatch[1] : '/portal';
+    const projectSlug = pathMatch ? decodeURIComponent(pathMatch[2]) : '';
+    const apiBase = `${consolePrefix}/api/projects/${encodeURIComponent(projectSlug)}/create`;
+
+    const api = (path, opts = {}) => fetch(apiBase + path, opts).then(async r => {
       if (!r.ok) {
         const text = await r.text();
         showError('Create API Error: ' + text);
@@ -714,7 +720,6 @@
       showStatus('Generating image with the configured backend...');
 
       try {
-        const projVal = document.getElementById('create-project').value;
         const created = await api('/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -722,7 +727,7 @@
             prompt,
             style_preset: selectedPreset,
             size: document.getElementById('create-size').value || '1024x1024',
-            project_slug: projVal || null
+            project_slug: projectSlug
           })
         });
         showStatus('');
@@ -756,8 +761,6 @@
       if (activeCreation.size && Array.from(sizeSel.options).some(o => o.value === activeCreation.size)) {
         sizeSel.value = activeCreation.size;
       }
-      const projSel = document.getElementById('create-project');
-      projSel.value = activeCreation.project_slug || '';
       showStatus('Loaded prompt and preset into composer.');
     }
 
@@ -785,12 +788,20 @@
     }
 
     async function initStudio() {
+      if (!projectSlug) {
+        showError('Missing project slug in URL. Open Create Studio from a project console.');
+        return;
+      }
+      document.getElementById('me-project').textContent = projectSlug;
+      document.getElementById('create-project').value = projectSlug;
+      document.getElementById('create-project-subtitle').textContent = `Project Visual Asset Studio • ${projectSlug}`;
+      document.getElementById('project-console-link').href = `${consolePrefix}/projects/${encodeURIComponent(projectSlug)}`;
+
       renderInspirations();
-      const [ver, me, presetMeta, projects, creations] = await Promise.all([
+      const [ver, me, presetMeta, creations] = await Promise.all([
         api('/version'),
         api('/me'),
         api('/presets'),
-        api('/projects'),
         api('/creations?limit=24')
       ]);
 
@@ -818,12 +829,6 @@
       const sizeSel = document.getElementById('create-size');
       sizeSel.replaceChildren(
         ...(presetMeta.sizes || []).map(s => el('option', { value: s.size, text: s.label }))
-      );
-
-      const projSel = document.getElementById('create-project');
-      projSel.replaceChildren(
-        el('option', { value: '', text: 'Personal (No project tag)' }),
-        ...(projects || []).map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
       );
 
       loadedCreations = creations || [];

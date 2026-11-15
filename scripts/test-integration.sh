@@ -355,9 +355,8 @@ v_portal = requests.get('http://localhost:8090/portal/api/version', headers=H_US
 v_portal.raise_for_status()
 assert v_portal.json()['version'] == '${ARK_VERSION}', v_portal.json()
 
-v_create = requests.get('http://localhost:8090/create/api/version', headers=H_USER, timeout=5)
-v_create.raise_for_status()
-assert v_create.json()['version'] == '${ARK_VERSION}', v_create.json()
+v_create_redir = requests.get('http://localhost:8090/create/', headers=H_USER, allow_redirects=False, timeout=5)
+assert v_create_redir.status_code == 302 and v_create_redir.headers.get('location') == '/portal/', (v_create_redir.status_code, v_create_redir.headers.get('location'))
 
 h = requests.get('http://localhost:8090/admin-console/api/health', headers=H_ADMIN, timeout=10)
 h.raise_for_status()
@@ -952,21 +951,23 @@ H_OUTSIDER = {
     'X-Forwarded-Groups': 'users',
 }
 
-ui_html = requests.get('http://localhost:8090/create/', headers=H_ALICE)
+ui_html = requests.get('http://localhost:8090/portal/projects/project-alpha/create/', headers=H_ALICE)
 ui_html.raise_for_status()
 assert 'ARK CREATE STUDIO' in ui_html.text
 for _asset, _ctype in (('ark-ui.css', 'css'), ('ark-ui.js', 'javascript')):
-    for _prefix in ('portal', 'create'):
-        _r = requests.get(f'http://localhost:8090/{_prefix}/static/{_asset}', headers=H_ALICE, timeout=5)
-        _r.raise_for_status()
-        assert _ctype in _r.headers.get('content-type', ''), (_asset, _r.headers.get('content-type'))
-        assert 'http://' not in _r.text and 'https://' not in _r.text, f'external URL in {_asset}'
-presets = requests.get('http://localhost:8090/create/api/presets', headers=H_ALICE)
+    _r = requests.get(f'http://localhost:8090/portal/static/{_asset}', headers=H_ALICE, timeout=5)
+    _r.raise_for_status()
+    assert _ctype in _r.headers.get('content-type', ''), (_asset, _r.headers.get('content-type'))
+    assert 'http://' not in _r.text and 'https://' not in _r.text, f'external URL in {_asset}'
+v_create = requests.get('http://localhost:8090/portal/api/projects/project-alpha/create/version', headers=H_ALICE, timeout=5)
+v_create.raise_for_status()
+assert v_create.json()['version'] == '${ARK_VERSION}', v_create.json()
+presets = requests.get('http://localhost:8090/portal/api/projects/project-alpha/create/presets', headers=H_ALICE)
 presets.raise_for_status()
 preset_ids = {p['id'] for p in presets.json()['presets']}
 assert {'photorealistic', 'isometric_diagram', 'icon', 'slide_graphic'}.issubset(preset_ids), preset_ids
 
-enh = requests.post('http://localhost:8090/create/api/enhance-prompt', headers=H_ALICE, json={
+enh = requests.post('http://localhost:8090/portal/api/projects/project-alpha/create/enhance-prompt', headers=H_ALICE, json={
     'prompt': 'Secure air-gapped data vault',
     'style_preset': 'isometric_diagram',
     'size': '1024x1024',
@@ -974,44 +975,47 @@ enh = requests.post('http://localhost:8090/create/api/enhance-prompt', headers=H
 enh.raise_for_status()
 assert len(enh.json()['enhanced_prompt']) > 10, enh.json()
 
-# Outsider cannot tag creation with project-alpha (403)
-denied_proj = requests.post('http://localhost:8090/create/api/generate', headers=H_OUTSIDER, json={
+# Outsider cannot generate in project-alpha (403)
+denied_proj = requests.post('http://localhost:8090/portal/api/projects/project-alpha/create/generate', headers=H_OUTSIDER, json={
     'prompt': 'Unauthorized project tag test',
     'style_preset': 'icon',
     'size': '1024x1024',
-    'project_slug': 'project-alpha',
 })
 assert denied_proj.status_code == 403, denied_proj.status_code
 
-gen = requests.post('http://localhost:8090/create/api/generate', headers=H_ALICE, json={
+gen = requests.post('http://localhost:8090/portal/api/projects/project-alpha/create/generate', headers=H_ALICE, json={
     'prompt': 'Secure air-gapped data vault',
     'style_preset': 'isometric_diagram',
     'size': '1344x768',
-    'project_slug': 'project-alpha',
 })
 gen.raise_for_status()
 gen_item = gen.json()
 cid = gen_item['id']
+assert gen_item['project_slug'] == 'project-alpha', gen_item
 assert gen_item['style_preset'] == 'isometric_diagram', gen_item
 assert gen_item['size'] == '1344x768', gen_item
 assert base64.b64decode(gen_item['image_b64']).startswith(b'\x89PNG\r\n\x1a\n')
 
-gallery = requests.get('http://localhost:8090/create/api/creations', headers=H_ALICE)
+gallery = requests.get('http://localhost:8090/portal/api/projects/project-alpha/create/creations', headers=H_ALICE)
 gallery.raise_for_status()
 assert any(c['id'] == cid for c in gallery.json()), gallery.json()
 
-# Outsider cannot see or download or delete Alice's creation
-outsider_gallery = requests.get('http://localhost:8090/create/api/creations', headers=H_OUTSIDER)
-outsider_gallery.raise_for_status()
-assert all(c['id'] != cid for c in outsider_gallery.json()), outsider_gallery.json()
-assert requests.get(f'http://localhost:8090/create/api/creations/{cid}/image', headers=H_OUTSIDER).status_code == 403
-assert requests.delete(f'http://localhost:8090/create/api/creations/{cid}', headers=H_OUTSIDER).status_code == 403
+# Creations are isolated per project (shared-kb cannot see project-alpha's creation)
+shared_gallery = requests.get('http://localhost:8090/admin-console/api/projects/shared-kb/create/creations', headers=H)
+shared_gallery.raise_for_status()
+assert all(c['id'] != cid for c in shared_gallery.json()), shared_gallery.json()
+assert requests.get(f'http://localhost:8090/admin-console/api/projects/shared-kb/create/creations/{cid}/image', headers=H).status_code == 404
 
-img_bin = requests.get(f'http://localhost:8090/create/api/creations/{cid}/image', headers=H_ALICE)
+# Outsider cannot see or download or delete Alice's creation
+assert requests.get('http://localhost:8090/portal/api/projects/project-alpha/create/creations', headers=H_OUTSIDER).status_code == 403
+assert requests.get(f'http://localhost:8090/portal/api/projects/project-alpha/create/creations/{cid}/image', headers=H_OUTSIDER).status_code == 403
+assert requests.delete(f'http://localhost:8090/portal/api/projects/project-alpha/create/creations/{cid}', headers=H_OUTSIDER).status_code == 403
+
+img_bin = requests.get(f'http://localhost:8090/portal/api/projects/project-alpha/create/creations/{cid}/image', headers=H_ALICE)
 img_bin.raise_for_status()
 assert img_bin.content.startswith(b'\x89PNG\r\n\x1a\n')
 
-del_res = requests.delete(f'http://localhost:8090/create/api/creations/{cid}', headers=H_ALICE)
+del_res = requests.delete(f'http://localhost:8090/portal/api/projects/project-alpha/create/creations/{cid}', headers=H_ALICE)
 del_res.raise_for_status()
 assert del_res.json()['status'] == 'deleted'
 

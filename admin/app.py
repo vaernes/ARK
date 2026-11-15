@@ -37,7 +37,7 @@ import threading
 import psycopg
 import requests
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
@@ -1200,30 +1200,39 @@ def _validate_image_size(raw_size: str) -> str:
     return cleaned
 
 
-@app.get("/create/", response_class=HTMLResponse)
-@app.get("/create", response_class=HTMLResponse)
-def create_studio_ui() -> HTMLResponse:
+@app.get("/create/", response_class=RedirectResponse)
+@app.get("/create", response_class=RedirectResponse)
+def create_studio_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/portal/", status_code=302)
+
+
+@app.get("/admin-console/projects/{slug}/create", response_class=HTMLResponse)
+@app.get("/admin-console/projects/{slug}/create/", response_class=HTMLResponse)
+@app.get("/portal/projects/{slug}/create", response_class=HTMLResponse)
+@app.get("/portal/projects/{slug}/create/", response_class=HTMLResponse)
+def project_create_studio_ui(slug: str) -> HTMLResponse:
     html_path = APP_DIR / "static" / "create.html"
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
-@app.get("/create/api/me")
-def create_me(request: Request) -> dict[str, Any]:
+@app.get("/admin-console/api/projects/{slug}/create/me")
+@app.get("/portal/api/projects/{slug}/create/me")
+def create_me(slug: str, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
     return portal_me(request)
 
 
-@app.get("/create/api/version")
-def create_version() -> dict[str, Any]:
+@app.get("/admin-console/api/projects/{slug}/create/version")
+@app.get("/portal/api/projects/{slug}/create/version")
+def create_version(slug: str, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
     return get_version_info()
 
 
-@app.get("/create/api/projects")
-def create_projects(request: Request) -> list[dict[str, Any]]:
-    return portal_projects(request)
-
-
-@app.get("/create/api/presets")
-def create_presets() -> dict[str, Any]:
+@app.get("/admin-console/api/projects/{slug}/create/presets")
+@app.get("/portal/api/projects/{slug}/create/presets")
+def create_presets(slug: str, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
     default_model = get_image_backend_settings()["default_model"] if IMAGE_GENERATION_ENABLED else IMAGE_SERVED_NAME
     return {
         "presets": list(CREATE_STYLE_PRESETS.values()),
@@ -1233,9 +1242,10 @@ def create_presets() -> dict[str, Any]:
     }
 
 
-@app.post("/create/api/enhance-prompt")
-async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> dict[str, Any]:
-    actor = get_actor(request)
+@app.post("/admin-console/api/projects/{slug}/create/enhance-prompt")
+@app.post("/portal/api/projects/{slug}/create/enhance-prompt")
+async def create_enhance_prompt(slug: str, req: EnhancePromptRequest, request: Request) -> dict[str, Any]:
+    actor, _, _ = _require_project_role(request, slug, {"admin", "editor", "member"})
     preset_id, _ = apply_create_style_preset(req.prompt, req.style_preset)
     preset_meta = CREATE_STYLE_PRESETS[preset_id]
     size = _validate_image_size(req.size)
@@ -1274,6 +1284,7 @@ async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> 
         audit.record(
             "create.enhance_prompt",
             actor=actor,
+            project_slug=slug,
             status="upstream_unreachable",
             details={"style_preset": preset_id, "model": target_model, "error": str(exc)},
         )
@@ -1283,6 +1294,7 @@ async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> 
         audit.record(
             "create.enhance_prompt",
             actor=actor,
+            project_slug=slug,
             status=f"http_{resp.status_code}",
             details={"style_preset": preset_id, "model": target_model},
         )
@@ -1302,6 +1314,7 @@ async def create_enhance_prompt(req: EnhancePromptRequest, request: Request) -> 
     audit.record(
         "create.enhance_prompt",
         actor=actor,
+        project_slug=slug,
         details={"style_preset": preset_id, "size": size, "model": target_model},
     )
     return {
@@ -1401,30 +1414,14 @@ def _invoke_upstream_image_generation(
     return target_model, resp.json()
 
 
-@app.post("/create/api/generate")
-async def create_generate_image(req: CreateImageRequest, request: Request) -> dict[str, Any]:
-    actor = get_actor(request)
+@app.post("/admin-console/api/projects/{slug}/create/generate")
+@app.post("/portal/api/projects/{slug}/create/generate")
+async def create_generate_image(slug: str, req: CreateImageRequest, request: Request) -> dict[str, Any]:
+    actor, _, _ = _require_project_role(request, slug, {"admin", "editor", "member"})
     owner_norm = actor.strip().lower()
-    groups = get_user_groups(request)
-    identities = get_user_identities(request) or {owner_norm}
-    member_roles = _get_user_project_roles(identities)
-
-    project_slug = (req.project_slug or "").strip() or None
-    if project_slug:
-        with psycopg.connect(DB_DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT group_name FROM projects WHERE slug = %s", (project_slug,))
-                proj = cur.fetchone()
-        role = resolve_user_project_role(groups, project_slug, proj[0], member_roles) if proj else None
-        if not proj or role is None:
-            audit.record(
-                "create.generate",
-                actor=actor,
-                project_slug=project_slug,
-                status="denied",
-                details={"reason": "project_access_denied"},
-            )
-            raise HTTPException(status_code=403, detail="You do not have access to the selected project.")
+    project_slug = slug
+    api_prefix = "/admin-console" if request.url.path.startswith("/admin-console") else "/portal"
+    img_url_base = f"{api_prefix}/api/projects/{quote(project_slug, safe='')}/create/creations"
 
     size = _validate_image_size(req.size)
     preset_id, styled_prompt = apply_create_style_preset(req.prompt, req.style_preset)
@@ -1504,27 +1501,30 @@ async def create_generate_image(req: CreateImageRequest, request: Request) -> di
         "model": target_model,
         "mime_type": "image/png",
         "image_b64": b64_json,
-        "image_url": f"/create/api/creations/{creation_id}/image",
+        "image_url": f"{img_url_base}/{creation_id}/image",
         "created_at": created_at.isoformat(),
     }
 
 
-@app.get("/create/api/creations")
-def create_list_creations(request: Request, limit: int = 24) -> list[dict[str, Any]]:
-    actor = get_actor(request)
+@app.get("/admin-console/api/projects/{slug}/create/creations")
+@app.get("/portal/api/projects/{slug}/create/creations")
+def create_list_creations(slug: str, request: Request, limit: int = 24) -> list[dict[str, Any]]:
+    actor, _, _ = _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
     identities = get_user_identities(request) or {actor.strip().lower()}
     clamped_limit = max(1, min(limit, 100))
+    api_prefix = "/admin-console" if request.url.path.startswith("/admin-console") else "/portal"
+    img_url_base = f"{api_prefix}/api/projects/{quote(slug, safe='')}/create/creations"
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, owner, project_slug, prompt, enhanced_prompt, style_preset, size, model, mime_type, image_b64, created_at
                 FROM image_creations
-                WHERE LOWER(owner) = ANY(%s)
+                WHERE project_slug = %s AND LOWER(owner) = ANY(%s)
                 ORDER BY id DESC
                 LIMIT %s
                 """,
-                (sorted(identities), clamped_limit),
+                (slug, sorted(identities), clamped_limit),
             )
             rows = cur.fetchall()
     return [
@@ -1539,23 +1539,24 @@ def create_list_creations(request: Request, limit: int = 24) -> list[dict[str, A
             "model": r[7],
             "mime_type": r[8],
             "image_b64": r[9],
-            "image_url": f"/create/api/creations/{r[0]}/image",
+            "image_url": f"{img_url_base}/{r[0]}/image",
             "created_at": r[10].isoformat(),
         }
         for r in rows
     ]
 
 
-@app.get("/create/api/creations/{creation_id}/image")
-def create_get_creation_image(creation_id: int, request: Request) -> Response:
-    actor = get_actor(request)
+@app.get("/admin-console/api/projects/{slug}/create/creations/{creation_id}/image")
+@app.get("/portal/api/projects/{slug}/create/creations/{creation_id}/image")
+def create_get_creation_image(slug: str, creation_id: int, request: Request) -> Response:
+    actor, _, _ = _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
     groups = get_user_groups(request)
     identities = get_user_identities(request) or {actor.strip().lower()}
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT owner, mime_type, image_b64 FROM image_creations WHERE id = %s",
-                (creation_id,),
+                "SELECT owner, mime_type, image_b64 FROM image_creations WHERE id = %s AND project_slug = %s",
+                (creation_id, slug),
             )
             row = cur.fetchone()
     if not row:
@@ -1576,20 +1577,24 @@ def create_get_creation_image(creation_id: int, request: Request) -> Response:
     )
 
 
-@app.delete("/create/api/creations/{creation_id}")
-def create_delete_creation(creation_id: int, request: Request) -> dict[str, Any]:
-    actor = get_actor(request)
+@app.delete("/admin-console/api/projects/{slug}/create/creations/{creation_id}")
+@app.delete("/portal/api/projects/{slug}/create/creations/{creation_id}")
+def create_delete_creation(slug: str, creation_id: int, request: Request) -> dict[str, Any]:
+    actor, _, _ = _require_project_role(request, slug, {"admin", "editor", "member"})
     groups = get_user_groups(request)
     identities = get_user_identities(request) or {actor.strip().lower()}
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT owner, project_slug FROM image_creations WHERE id = %s", (creation_id,))
+            cur.execute(
+                "SELECT owner, project_slug FROM image_creations WHERE id = %s AND project_slug = %s",
+                (creation_id, slug),
+            )
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Creation not found.")
             if (row[0] or "").strip().lower() not in identities and "ark-admins" not in groups:
                 raise HTTPException(status_code=403, detail="Forbidden: you can only delete your own creations.")
-            cur.execute("DELETE FROM image_creations WHERE id = %s", (creation_id,))
+            cur.execute("DELETE FROM image_creations WHERE id = %s AND project_slug = %s", (creation_id, slug))
         conn.commit()
     audit.record("create.delete", actor=actor, project_slug=row[1], details={"creation_id": creation_id})
     return {"status": "deleted", "id": creation_id}
