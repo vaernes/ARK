@@ -271,7 +271,12 @@ class TestBackupUtils(unittest.TestCase):
 
 class TestUiXssSafety(unittest.TestCase):
     def test_no_innerhtml_interpolation_in_admin_or_portal_html(self) -> None:
-        for rel_path in ("admin/static/index.html", "admin/static/portal.html", "admin/static/create.html"):
+        for rel_path in (
+            "admin/static/index.html",
+            "admin/static/portal.html",
+            "admin/static/project.html",
+            "admin/static/create.html",
+        ):
             content = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
             self.assertNotIn("innerHTML", content, f"{rel_path} must use safe DOM APIs instead of innerHTML")
             external_urls = re.findall(r'(?:src|href)=["\']https?://[^"\']+', content, re.I)

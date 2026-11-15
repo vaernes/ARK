@@ -439,21 +439,45 @@ projs.raise_for_status()
 assert all(p['slug'] != 'project-alpha' for p in projs.json()), projs.json()
 denied = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key'}, timeout=5)
 assert denied.status_code == 403, denied.status_code
+denied_console = requests.get('http://localhost:8090/portal/api/projects/project-alpha/console', headers=H_BOB, timeout=5)
+assert denied_console.status_code == 403, denied_console.status_code
 
-# Grant viewer role: bob sees user_role='viewer', cannot issue ingest key (403), can issue chat key (200)
+# Grant viewer role: bob sees user_role='viewer', can view project console, cannot mutate settings or issue ingest key (403), can issue chat key (200)
 grant_v = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, json={'user_identifier': 'bob@ark.local', 'role': 'viewer'}, timeout=5)
 grant_v.raise_for_status()
 projs_v = requests.get('http://localhost:8090/portal/api/projects', headers=H_BOB, timeout=5)
 projs_v.raise_for_status()
 alpha_entry = [p for p in projs_v.json() if p['slug'] == 'project-alpha'][0]
 assert alpha_entry.get('user_role') == 'viewer', alpha_entry
+bob_console_v = requests.get('http://localhost:8090/portal/api/projects/project-alpha/console', headers=H_BOB, timeout=5)
+bob_console_v.raise_for_status()
+assert bob_console_v.json()['me']['user_role'] == 'viewer', bob_console_v.json()
+denied_model_v = requests.patch('http://localhost:8090/portal/api/projects/project-alpha/model', headers=H_BOB, json={'llm_model': 'unauth-llm'}, timeout=5)
+assert denied_model_v.status_code == 403, denied_model_v.status_code
 denied_ingest = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-ingest', 'scopes': ['ingest']}, timeout=5)
 assert denied_ingest.status_code == 403, denied_ingest.status_code
 chat_ok = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-viewer-chat', 'scopes': ['chat']}, timeout=5)
 chat_ok.raise_for_status()
 bob_viewer_api_key = chat_ok.json()['api_key']
 
-# Upgrade bob to member role
+# Upgrade bob to editor role -> can update prompt via project console, but cannot link unauthorized RAG project (shared-kb)
+grant_ed = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, json={'user_identifier': 'bob@ark.local', 'role': 'editor'}, timeout=5)
+grant_ed.raise_for_status()
+upd_prompt = requests.patch('http://localhost:8090/portal/api/projects/project-alpha/prompt', headers=H_BOB, json={'system_prompt': 'Custom editor instructions.'}, timeout=5)
+upd_prompt.raise_for_status()
+unauth_rag_link = requests.patch('http://localhost:8090/portal/api/projects/project-alpha/rag-projects', headers=H_BOB, json={'extra_rag_projects': ['shared-kb']}, timeout=5)
+assert unauth_rag_link.status_code == 403, unauth_rag_link.status_code
+requests.patch('http://localhost:8090/admin-console/api/projects/project-alpha/prompt', headers=H_ADMIN, json={'system_prompt': ''}, timeout=5).raise_for_status()
+
+# Admin & Portal Project Console HTML routes return 200
+html_admin_pc = requests.get('http://localhost:8090/admin-console/projects/project-alpha', headers=H_ADMIN, timeout=5)
+html_admin_pc.raise_for_status()
+assert 'PROJECT CONSOLE' in html_admin_pc.text
+html_portal_pc = requests.get('http://localhost:8090/portal/projects/project-alpha', headers=H_BOB, timeout=5)
+html_portal_pc.raise_for_status()
+assert 'PROJECT CONSOLE' in html_portal_pc.text
+
+# Upgrade/set bob to member role
 grant = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, json={'user_identifier': 'bob@ark.local', 'role': 'member'}, timeout=5)
 grant.raise_for_status()
 assert grant.json()['user_identifier'] == 'bob@ark.local', grant.json()

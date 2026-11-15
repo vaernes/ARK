@@ -155,6 +155,7 @@ class TestUiAndLlmAdminSecurity(unittest.TestCase):
         html_assets = [
             ROOT_DIR / "admin" / "static" / "index.html",
             ROOT_DIR / "admin" / "static" / "portal.html",
+            ROOT_DIR / "admin" / "static" / "project.html",
             LLM_ADMIN_DIR / "static" / "index.html",
         ]
         for path in html_assets:
@@ -175,17 +176,27 @@ class TestUiAndLlmAdminSecurity(unittest.TestCase):
 
         admin_html = (ROOT_DIR / "admin" / "static" / "index.html").read_text(encoding="utf-8")
         portal_html = (ROOT_DIR / "admin" / "static" / "portal.html").read_text(encoding="utf-8")
+        project_html = (ROOT_DIR / "admin" / "static" / "project.html").read_text(encoding="utf-8")
         self.assertIn("/oauth2/sign_out", admin_html)
         self.assertIn("/oauth2/sign_out", portal_html)
+        self.assertIn("/oauth2/sign_out", project_html)
         self.assertIn("key-scope-hint", portal_html)
+        self.assertIn("key-scope-hint", project_html)
         for tab_id in ("overview", "projects", "rag", "models", "security"):
             self.assertIn(f'id="tab-btn-{tab_id}"', admin_html)
             self.assertIn(f'id="panel-{tab_id}"', admin_html)
+        for tab_id in ("overview", "access", "rag", "audit"):
+            self.assertIn(f'id="tab-btn-{tab_id}"', project_html)
+            self.assertIn(f'id="panel-{tab_id}"', project_html)
         self.assertIn('onclick="exportProjectSnapshot()"', admin_html)
+        self.assertIn('onclick="exportProjectSnapshot()"', project_html)
         self.assertIn("refreshAuditOnly()", admin_html)
+        self.assertIn("refreshAuditOnly()", project_html)
         self.assertIn('id="project-config-drawer"', admin_html)
         self.assertIn('id="ark-modal-backdrop"', admin_html)
+        self.assertIn('id="ark-modal-backdrop"', project_html)
         self.assertNotRegex(admin_html, r"\b(?:prompt|alert|confirm)\s*\(")
+        self.assertNotRegex(project_html, r"\b(?:prompt|alert|confirm)\s*\(")
 
     def test_llm_admin_protects_status_and_exposes_healthz(self):
         app_py = (LLM_ADMIN_DIR / "app.py").read_text(encoding="utf-8")

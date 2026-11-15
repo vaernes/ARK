@@ -1,0 +1,2114 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARK — Project Console</title>
+  <link rel="icon" type="image/svg+xml" href="/portal/static/ark-logo.svg" />
+  <style>
+    :root {
+      --void: #0A0E17;
+      --shield: #1E293B;
+      --shield-alt: #141C2B;
+      --border: #2E3D52;
+      --amber: #F55A00;
+      --amber-soft: rgba(245, 90, 0, 0.16);
+      --cyan: #00E5FF;
+      --cyan-soft: rgba(0, 229, 255, 0.14);
+      --text: #E2E8F0;
+      --gray: #64748B;
+      --muted: #94A3B8;
+      --ok: #22C55E;
+      --err: #EF4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      background: var(--void);
+      color: var(--text);
+      padding: 20px 24px 48px;
+      min-height: 100vh;
+    }
+
+    .topbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 20px;
+      margin-bottom: 14px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand img {
+      width: 44px;
+      height: 48px;
+    }
+
+    .brand-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.28rem;
+      letter-spacing: 0.06em;
+      color: var(--text);
+    }
+
+    .brand small {
+      display: block;
+      color: var(--gray);
+      font-size: 0.76rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    .status-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .switcher-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--void);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .switcher-wrap select {
+      width: auto;
+      min-width: 150px;
+      border: none;
+      background: transparent;
+      color: var(--cyan);
+      font-weight: 700;
+      padding: 3px 4px;
+      font-size: 0.8rem;
+    }
+
+    a.nav-link {
+      text-decoration: none;
+      background: var(--void);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 12px;
+      border-radius: 7px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+
+    a.nav-link:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    a.nav-link.cyan-cta {
+      border-color: rgba(0, 229, 255, 0.45);
+      color: var(--cyan);
+    }
+
+    /* Tab Bar */
+    .tab-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      background: var(--shield-alt);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px;
+      margin-bottom: 18px;
+    }
+
+    .tab-btn {
+      margin: 0;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 9px 14px;
+      font-size: 0.83rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .tab-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .tab-btn.active {
+      background: var(--shield);
+      color: var(--cyan);
+      border-color: rgba(0, 229, 255, 0.4);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    }
+
+    .tab-count {
+      background: var(--void);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+
+    .tab-btn.active .tab-count {
+      border-color: rgba(0, 229, 255, 0.45);
+      color: var(--cyan);
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .kpi-card {
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--cyan);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .kpi-card.amber {
+      border-left-color: var(--amber);
+    }
+
+    .kpi-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--gray);
+      font-weight: 700;
+    }
+
+    .kpi-value {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: var(--text);
+      margin: 4px 0 2px;
+    }
+
+    .kpi-sub {
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 20px;
+      align-items: start;
+    }
+
+    @media (max-width: 920px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+
+    .card {
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      min-width: 0;
+      overflow-x: auto;
+    }
+
+    .card.admin-accent {
+      border-top: 3px solid var(--amber);
+    }
+
+    .card.rag-accent {
+      border-top: 3px solid var(--cyan);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 0.96rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .card.admin-accent h2 {
+      color: var(--amber);
+    }
+
+    .card.rag-accent h2 {
+      color: var(--cyan);
+    }
+
+    .section-sub {
+      margin: -4px 0 12px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    label {
+      display: block;
+      font-size: 0.78rem;
+      color: var(--gray);
+      margin: 10px 0 4px;
+      font-weight: 600;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 9px 11px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--void);
+      color: var(--text);
+      font-size: 0.86rem;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--cyan);
+    }
+
+    button {
+      margin-top: 12px;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 7px;
+      background: var(--cyan);
+      color: var(--void);
+      font-weight: 700;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: opacity 0.15s ease, border-color 0.15s ease;
+    }
+
+    button:hover {
+      opacity: 0.9;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.amber {
+      background: var(--amber);
+      color: #fff;
+    }
+
+    button.secondary {
+      background: var(--void);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    button.secondary:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    button.danger {
+      background: var(--err);
+      color: #fff;
+      padding: 4px 9px;
+      margin: 0;
+      font-size: 0.74rem;
+    }
+
+    button.sm {
+      margin: 0;
+      padding: 4px 9px;
+      font-size: 0.74rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 0.8rem;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 7px 6px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    th {
+      color: var(--gray);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.71rem;
+      letter-spacing: 0.05em;
+    }
+
+    code {
+      background: var(--void);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--cyan);
+      font-size: 0.78rem;
+      word-break: break-word;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .ok {
+      background: rgba(34, 197, 94, 0.18);
+      color: var(--ok);
+    }
+
+    .err {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--err);
+    }
+
+    .rag {
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+    }
+
+    .clean {
+      background: var(--amber-soft);
+      color: #FFB38A;
+      border: 1px solid rgba(245, 90, 0, 0.4);
+    }
+
+    pre {
+      background: var(--void);
+      border: 1px solid var(--border);
+      padding: 10px;
+      border-radius: 7px;
+      overflow-x: auto;
+      font-size: 0.76rem;
+      color: var(--text);
+      margin: 8px 0 0;
+    }
+
+    .drawer-box {
+      display: none;
+      margin: 12px 0;
+      padding: 14px;
+      border: 1px solid rgba(0, 229, 255, 0.4);
+      border-radius: 9px;
+      background: var(--shield-alt);
+    }
+
+    .output-box {
+      display: none;
+      margin-top: 10px;
+      background: var(--void);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .output-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .chip-toggle {
+      margin: 0;
+      padding: 3px 9px;
+      font-size: 0.73rem;
+      border-radius: 999px;
+      background: var(--void);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      font-weight: 600;
+    }
+
+    .chip-toggle.selected {
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      border-color: var(--cyan);
+    }
+
+    #toast-container {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: 380px;
+    }
+
+    .toast {
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--cyan);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+      font-size: 0.81rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .toast.ok {
+      border-left-color: var(--ok);
+    }
+
+    .toast.err {
+      border-left-color: var(--err);
+    }
+
+    .toast.amber {
+      border-left-color: var(--amber);
+    }
+
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 14, 23, 0.78);
+      z-index: 10000;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-card {
+      background: var(--shield);
+      border: 1px solid var(--border);
+      border-top: 3px solid var(--amber);
+      border-radius: 12px;
+      max-width: 440px;
+      width: 100%;
+      padding: 18px 20px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
+    }
+
+    .modal-card h3 {
+      margin: 0 0 8px;
+      font-size: 0.98rem;
+      color: var(--text);
+    }
+
+    .modal-card p {
+      margin: 0 0 14px;
+      font-size: 0.84rem;
+      color: var(--muted);
+      line-height: 1.45;
+      white-space: pre-line;
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/portal/static/ark-logo.svg" alt="ARK Shield Logo" />
+      <div>
+        <div class="brand-title-row">
+          <h1 id="proj-title">PROJECT CONSOLE</h1>
+          <span id="proj-mode-badge" class="badge rag">...</span>
+          <span id="proj-role-badge" class="badge clean">...</span>
+        </div>
+        <small id="proj-subtitle">Dedicated Project Workspace &bull; Strict Air-Gap</small>
+      </div>
+    </div>
+    <div class="status-strip">
+      <div class="switcher-wrap">
+        <span>Project:</span>
+        <select id="project-switcher" onchange="switchProjectConsole(this.value)"></select>
+      </div>
+      <a id="back-admin-link" class="nav-link" href="/admin-console/" style="display:none;">&larr; Control Plane</a>
+      <a class="nav-link" href="/portal/">&larr; User Portal</a>
+      <a id="top-chat-link" class="nav-link cyan-cta" href="/">Open Chat &rarr;</a>
+      <a class="nav-link" href="/create/">Create Studio</a>
+      <a class="nav-link" href="/oauth2/sign_out" style="color:var(--muted);">Sign Out</a>
+      <button type="button" style="margin-top:0;" onclick="refreshConsole(true)">Refresh</button>
+    </div>
+  </header>
+
+  <div id="ui-alert"
+    style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:14px; font-size:0.84rem;">
+  </div>
+
+  <!-- 4-Tab Project Console Navigation -->
+  <nav class="tab-bar" role="tablist" aria-label="Project Console Sections">
+    <button type="button" id="tab-btn-overview" class="tab-btn active" role="tab" aria-selected="true"
+      onclick="switchTab('overview')">
+      <span>Overview &amp; Settings</span>
+    </button>
+    <button type="button" id="tab-btn-access" class="tab-btn" role="tab" aria-selected="false"
+      onclick="switchTab('access')">
+      <span>Access &amp; API Keys</span>
+      <span id="tab-badge-access" class="tab-count">0</span>
+    </button>
+    <button type="button" id="tab-btn-rag" class="tab-btn" role="tab" aria-selected="false"
+      onclick="switchTab('rag')">
+      <span>RAG &amp; Knowledge Base</span>
+      <span id="tab-badge-rag" class="tab-count">0</span>
+    </button>
+    <button type="button" id="tab-btn-audit" class="tab-btn" role="tab" aria-selected="false"
+      onclick="switchTab('audit')">
+      <span>Snapshots &amp; Audit</span>
+      <span id="tab-badge-audit" class="tab-count">0</span>
+    </button>
+  </nav>
+
+  <!-- ==================== TAB 1: OVERVIEW & SETTINGS ==================== -->
+  <section id="panel-overview" class="tab-panel active" role="tabpanel">
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Isolation &amp; Knowledge Base</div>
+        <div class="kpi-value" id="kpi-mode-val">...</div>
+        <div class="kpi-sub" id="kpi-mode-sub">...</div>
+      </div>
+      <div class="kpi-card amber">
+        <div class="kpi-label">Effective LLM Model</div>
+        <div class="kpi-value" id="kpi-model-val">...</div>
+        <div class="kpi-sub" id="kpi-model-sub">OpenAI Assistant ID: ...</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">RAG Documents &amp; Sources</div>
+        <div class="kpi-value" id="kpi-docs-val">0 Docs</div>
+        <div class="kpi-sub" id="kpi-docs-sub">0 Ingest Sources</div>
+      </div>
+      <div class="kpi-card amber">
+        <div class="kpi-label">Team &amp; Active Keys</div>
+        <div class="kpi-value" id="kpi-access-val">0 Members</div>
+        <div class="kpi-sub" id="kpi-access-sub">0 Active Keys</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <!-- Left: Endpoint & Quick-Start Integration -->
+      <div class="card rag-accent">
+        <h2>
+          <span>Project Gateway &amp; IDE Quick-Start</span>
+          <a id="card-chat-link" class="nav-link cyan-cta" href="/" style="padding:4px 10px;font-size:0.75rem;">Launch WebUI Chat &rarr;</a>
+        </h2>
+        <p class="section-sub">Connect Continue, Cline, Office add-ins, or scripts to this project's isolated OpenAI-compatible gateway.</p>
+
+        <label>OpenAI API Base URL</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="endpoint-base-url" readonly />
+          <button type="button" class="secondary sm" style="padding:8px 12px;white-space:nowrap;" onclick="copyInputVal('endpoint-base-url', 'OpenAI Base URL')">Copy URL</button>
+        </div>
+
+        <div class="row">
+          <div>
+            <label>Open WebUI Assistant Model ID</label>
+            <input id="endpoint-model-id" readonly />
+          </div>
+          <div>
+            <label>SSO / RBAC Group</label>
+            <input id="endpoint-group-name" readonly />
+          </div>
+        </div>
+
+        <label for="snippet-kind">Client Configuration Snippet</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="snippet-kind" onchange="renderQuickStartSnippet()" style="flex:1;">
+            <option value="curl">cURL Chat Completion</option>
+            <option value="python">Python OpenAI SDK</option>
+            <option value="continue">VS Code Continue (config.json)</option>
+          </select>
+          <button type="button" class="secondary sm" style="padding:8px 12px;white-space:nowrap;" onclick="copyTextFromPre('snippet-output', 'Quick-start snippet')">Copy Snippet</button>
+        </div>
+        <pre id="snippet-output"></pre>
+      </div>
+
+      <!-- Right: Project Configuration -->
+      <div class="card admin-accent">
+        <h2>
+          <span>Project Configuration</span>
+          <span id="settings-perm-badge" class="badge clean">...</span>
+        </h2>
+        <p class="section-sub">Configure this project's LLM model override, linked RAG collections, and custom system instructions.</p>
+
+        <label for="cfg-llm-model">LLM Model Override (leave blank to use appliance default)</label>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="cfg-llm-model" placeholder="e.g. ark-llm" style="flex:1;" />
+          <button type="button" id="btn-save-llm" class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveProjectModel()">Save Model</button>
+        </div>
+
+        <div id="cfg-rag-links-wrap" style="margin-top:12px;">
+          <label for="cfg-rag-links">Linked External RAG Project Slugs (comma-separated)</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="cfg-rag-links" placeholder="e.g. shared-kb, security-policies" style="flex:1;" />
+            <button type="button" id="btn-save-rag-links" class="amber" style="margin-top:0;white-space:nowrap;" onclick="saveProjectRagLinks()">Save Linked KBs</button>
+          </div>
+          <div id="cfg-rag-chips" class="chip-list"></div>
+        </div>
+
+        <label for="cfg-system-prompt" style="margin-top:12px;">Project System Prompt (blank = auto-generated default)</label>
+        <textarea id="cfg-system-prompt" rows="4" placeholder="Custom instructions for this project's assistant..."></textarea>
+        <button type="button" id="btn-save-prompt" class="amber" onclick="saveProjectPrompt()">Save System Prompt</button>
+
+        <div id="danger-zone-wrap" style="display:none;margin-top:18px;padding-top:14px;border-top:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+            <div>
+              <strong style="font-size:0.82rem;color:var(--err);">Danger Zone (Admin Only)</strong>
+              <div style="font-size:0.76rem;color:var(--muted);">Delete this project, its Qdrant collection, and all scoped API keys.</div>
+            </div>
+            <button type="button" class="danger" style="padding:7px 12px;font-size:0.78rem;" onclick="deleteCurrentProject()">Delete Project</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 2: ACCESS & API KEYS ==================== -->
+  <section id="panel-access" class="tab-panel" role="tabpanel">
+    <div class="grid">
+      <!-- Left: Project Scoped API Keys -->
+      <div class="card admin-accent">
+        <h2>Project API Keys (<code>ark_proj_*</code>)</h2>
+        <p class="section-sub">Issue bearer keys pre-bound to this project's <code>/projects/<span class="slug-inline"></span>/v1</code> endpoint.</p>
+        <div class="row">
+          <div>
+            <label for="key-label">Key Label</label>
+            <input id="key-label" placeholder="VS Code Continue / Word Add-in / CI" />
+          </div>
+          <div>
+            <label for="key-rpm">Rate Limit (RPM)</label>
+            <input id="key-rpm" type="number" value="60" min="1" max="6000" />
+          </div>
+        </div>
+        <label>Key Scopes</label>
+        <div style="display:flex;gap:14px;align-items:center;margin:4px 0 8px;font-size:0.84rem;">
+          <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+            <input id="key-scope-chat" type="checkbox" checked style="width:auto;" /> chat
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+            <input id="key-scope-images" type="checkbox" style="width:auto;" /> images
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:6px;margin:0;color:var(--text);font-weight:500;">
+            <input id="key-scope-ingest" type="checkbox" style="width:auto;" /> ingest
+          </label>
+        </div>
+        <div id="key-scope-hint" style="display:none;font-size:0.78rem;color:var(--gray);margin-bottom:8px;">
+          Read-only (<code>viewer</code>) members can issue <code>chat</code> keys only.
+        </div>
+        <button type="button" class="amber" onclick="createKey()">Issue Project Key</button>
+
+        <div id="key-output-wrap" class="output-box">
+          <div class="output-header">
+            <span>Issued API Key (shown once)</span>
+            <div style="display:flex;gap:6px;">
+              <button type="button" class="secondary sm" onclick="copyTextFromPre('key-output', 'API key')">Copy</button>
+              <button type="button" class="secondary sm" onclick="hideOutputBox('key-output-wrap', 'key-output')">Dismiss</button>
+            </div>
+          </div>
+          <pre id="key-output" style="display:none"></pre>
+        </div>
+
+        <table id="key-table">
+          <thead>
+            <tr>
+              <th>Label</th>
+              <th>Owner</th>
+              <th>Scopes</th>
+              <th>Prefix</th>
+              <th>RPM</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- Right: Project Members & RBAC -->
+      <div class="card rag-accent">
+        <h2>Project Team &amp; RBAC Access</h2>
+        <p class="section-sub">
+          Users in SSO group <code id="rbac-group-code">-</code> or <code>ark-admins</code> have automatic access.
+          Admins and Project Editors can grant explicit per-user roles below.
+        </p>
+
+        <div id="grant-member-form">
+          <div class="row">
+            <div>
+              <label for="access-user">User Email or Username</label>
+              <input id="access-user" list="known-users-list" placeholder="alice@corp.internal or jdoe" />
+              <datalist id="known-users-list"></datalist>
+            </div>
+            <div>
+              <label for="access-role">Role</label>
+              <select id="access-role">
+                <option value="member">member (chat + images + ingest)</option>
+                <option value="editor">editor (manage project, docs &amp; members)</option>
+                <option value="viewer">viewer (read-only chat)</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" onclick="grantMember()">Grant Project Access</button>
+        </div>
+
+        <div id="access-status" style="margin-top:8px;font-size:0.8rem;color:var(--muted);"></div>
+        <table id="access-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Granted By</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 3: RAG & KNOWLEDGE BASE ==================== -->
+  <section id="panel-rag" class="tab-panel" role="tabpanel">
+    <div id="clean-project-notice" class="card admin-accent" style="display:none;">
+      <h2>Clean Project Mode (Zero-RAG Isolation)</h2>
+      <p class="section-sub" style="margin:0;">
+        This project was deployed as a <strong>Clean (No-RAG)</strong> workspace. It does not attach a Qdrant vector collection and routes prompts directly to the configured LLM without external document retrieval.
+      </p>
+    </div>
+
+    <div id="rag-workspace-grid" class="grid">
+      <!-- Left: Direct Upload & Indexed Documents Inspector -->
+      <div class="card rag-accent">
+        <h2>
+          <span>Direct File Upload &amp; Indexed Documents</span>
+          <code id="rag-collection-badge">-</code>
+        </h2>
+        <p class="section-sub">Upload PDFs, Office documents, Markdown, or text files directly into this project's isolated Qdrant collection.</p>
+
+        <div id="direct-upload-form">
+          <div class="row">
+            <div>
+              <label for="direct-upload-file">Select Document</label>
+              <input id="direct-upload-file" type="file" />
+            </div>
+            <div>
+              <label for="direct-chunk-strategy">Chunking Strategy</label>
+              <select id="direct-chunk-strategy">
+                <option value="chars">Chars (1200/200)</option>
+                <option value="markdown">Markdown Headings</option>
+                <option value="lines">Line Blocks</option>
+                <option value="none">Whole Doc</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" onclick="uploadProjectFile()">Upload &amp; Index Document</button>
+        </div>
+
+        <hr style="border-color: var(--border); margin: 16px 0;" />
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <strong style="font-size:0.84rem;color:var(--text);">Indexed Documents (<span id="doc-count-label">0</span>)</strong>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="secondary sm" onclick="refreshRagOnly()">Refresh Docs</button>
+            <button type="button" id="btn-reset-cache" class="secondary sm" onclick="resetProjectIndex(false)">Reset Cache</button>
+            <button type="button" id="btn-reset-vectors" class="danger" onclick="resetProjectIndex(true)">Reset Cache + Vectors</button>
+          </div>
+        </div>
+        <table id="indexed-docs-table">
+          <thead>
+            <tr>
+              <th>Doc ID</th>
+              <th>Filename</th>
+              <th>Chunks</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- Right: Automated Ingest Sources & Recent Sync Jobs -->
+      <div class="card rag-accent">
+        <h2>
+          <span>Automated Ingest Sources &amp; Jobs</span>
+          <button type="button" class="secondary sm" onclick="refreshRagOnly()">Refresh Jobs</button>
+        </h2>
+
+        <div id="create-source-form">
+          <div class="row">
+            <div>
+              <label for="ingest-kind">Source Mode</label>
+              <select id="ingest-kind" onchange="renderIngestMode()">
+                <option value="plugin">Connector Plugin</option>
+                <option value="pipeline_yaml">ARK Pipeline (YAML)</option>
+                <option value="script">Custom Python Script (/ingest-scripts)</option>
+              </select>
+            </div>
+            <div>
+              <label for="conn-name">Source Name</label>
+              <input id="conn-name" placeholder="Engineering Docs / Wiki Sync" />
+            </div>
+          </div>
+
+          <div id="ingest-plugin-wrap">
+            <label for="conn-type">Plugin</label>
+            <select id="conn-type" onchange="renderPluginFields()"></select>
+            <div id="plugin-dynamic-fields"></div>
+          </div>
+
+          <div id="ingest-pipeline-wrap" style="display:none;">
+            <label for="pipeline-yaml">ARK Pipeline Spec (<code>ark-ingest/v1</code> YAML)</label>
+            <textarea id="pipeline-yaml" rows="7" style="font-family:monospace;font-size:0.78rem;"></textarea>
+          </div>
+
+          <div id="ingest-script-wrap" style="display:none;">
+            <label for="ingest-script-select">Script File (<code>/ingest-scripts/*.py</code>)</label>
+            <select id="ingest-script-select"></select>
+            <label for="script-config">Script Config JSON</label>
+            <textarea id="script-config" rows="2" style="font-family:monospace;font-size:0.78rem;">{}</textarea>
+          </div>
+
+          <div class="row">
+            <div>
+              <label for="ingest-sync-mode">Sync Mode</label>
+              <select id="ingest-sync-mode">
+                <option value="incremental">Incremental</option>
+                <option value="full_mirror">Full Mirror (Prune)</option>
+              </select>
+            </div>
+            <div>
+              <label for="ingest-chunk-strategy">Chunking</label>
+              <select id="ingest-chunk-strategy">
+                <option value="chars">Chars (1200/200)</option>
+                <option value="markdown">Markdown Headings</option>
+                <option value="lines">Line Blocks</option>
+                <option value="none">Whole Doc</option>
+              </select>
+            </div>
+            <div>
+              <label for="ingest-schedule">Schedule</label>
+              <select id="ingest-schedule">
+                <option value="">Manual</option>
+                <option value="@15m">Every 15m</option>
+                <option value="@hourly">Hourly</option>
+                <option value="@daily">Daily</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" onclick="createIngestSource()">Add Ingest Source</button>
+            <button type="button" class="amber" onclick="dryRunIngestSource()">Dry Run (Preview 5)</button>
+          </div>
+        </div>
+
+        <div id="ingest-output-wrap" class="output-box">
+          <div class="output-header">
+            <span>Ingestion / Dry-Run / Job Output</span>
+            <div style="display:flex;gap:6px;">
+              <button type="button" class="secondary sm" onclick="copyTextFromPre('ingest-preview-output', 'Ingest output')">Copy</button>
+              <button type="button" class="secondary sm" onclick="hideOutputBox('ingest-output-wrap', 'ingest-preview-output')">Clear</button>
+            </div>
+          </div>
+          <pre id="ingest-preview-output" style="display:none"></pre>
+        </div>
+
+        <table id="conn-table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Schedule</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <div id="edit-source-box" class="drawer-box">
+          <strong style="font-size:0.85rem;color:var(--cyan);">Edit Ingest Source <span id="edit-source-title"></span></strong>
+          <input id="edit-source-id" type="hidden" />
+          <label for="edit-source-name">Source Name</label>
+          <input id="edit-source-name" />
+          <div class="row">
+            <div>
+              <label for="edit-source-sync-mode">Sync Mode</label>
+              <select id="edit-source-sync-mode">
+                <option value="incremental">incremental</option>
+                <option value="full_mirror">full_mirror</option>
+              </select>
+            </div>
+            <div>
+              <label for="edit-source-schedule">Schedule</label>
+              <input id="edit-source-schedule" placeholder="@hourly or */30 * * * *" />
+            </div>
+          </div>
+          <label for="edit-source-enabled">Enabled</label>
+          <select id="edit-source-enabled">
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+          <div id="edit-source-pipeline-wrap" style="display:none;">
+            <label for="edit-source-pipeline">Pipeline YAML</label>
+            <textarea id="edit-source-pipeline" rows="6" style="font-family:monospace;font-size:0.78rem;"></textarea>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;">
+            <button type="button" class="amber sm" style="padding:7px 14px;" onclick="saveSourceEdit()">Save Source</button>
+            <button type="button" class="secondary sm" style="padding:7px 14px;" onclick="cancelSourceEdit()">Cancel</button>
+          </div>
+        </div>
+
+        <hr style="border-color: var(--border); margin: 16px 0;" />
+        <label style="margin:0;">Recent Project Ingest Jobs</label>
+        <table id="ingest-jobs-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Trigger</th>
+              <th>Status</th>
+              <th>Summary</th>
+              <th>Logs</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 4: SNAPSHOTS & AUDIT ==================== -->
+  <section id="panel-audit" class="tab-panel" role="tabpanel">
+    <div class="grid">
+      <!-- Left: Project Audit Trail -->
+      <div class="card admin-accent">
+        <h2>
+          <span>Project Security &amp; Audit Events</span>
+          <span style="font-size:0.74rem;color:var(--muted);text-transform:none;font-weight:500;">Scoped to <code class="slug-inline"></code></span>
+        </h2>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+          <input id="audit-event-filter" placeholder="Filter event (e.g. api.chat_completion)" style="flex:1;min-width:180px;"
+            onkeydown="if(event.key==='Enter')refreshAuditOnly()" />
+          <select id="audit-limit" onchange="refreshAuditOnly()" style="width:auto;min-width:95px;">
+            <option value="25" selected>25 rows</option>
+            <option value="100">100 rows</option>
+            <option value="250">250 rows</option>
+          </select>
+          <button type="button" style="margin-top:0;" onclick="refreshAuditOnly()">Apply</button>
+          <button type="button" class="amber" style="margin-top:0;" onclick="exportAuditJson()">Export JSON</button>
+        </div>
+        <table id="audit-table">
+          <thead>
+            <tr>
+              <th>Timestamp (UTC)</th>
+              <th>Event</th>
+              <th>Actor</th>
+              <th>Status</th>
+              <th>Inspect</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- Right: Project Qdrant Snapshot Sync -->
+      <div id="snapshot-card" class="card rag-accent">
+        <h2>Project Qdrant KB Snapshot Sync</h2>
+        <p class="section-sub">Export, download, or recover an offline Qdrant vector snapshot (<code>.snapshot</code>) for this project's knowledge base.</p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;">
+          <button type="button" id="btn-export-snap" style="margin-top:0;" onclick="exportProjectSnapshot()">Export Project Snapshot</button>
+          <a id="download-proj-snap" class="nav-link cyan-cta" href="#">Download .snapshot</a>
+        </div>
+        <label for="snap-file">Upload &amp; Recover Project .snapshot</label>
+        <input id="snap-file" type="file" accept=".snapshot" />
+        <button type="button" id="btn-upload-snap" onclick="uploadSnapshot()">Upload &amp; Recover Snapshot</button>
+
+        <div id="ops-output-wrap" class="output-box">
+          <div class="output-header">
+            <span>Snapshot Operation Output</span>
+            <div style="display:flex;gap:6px;">
+              <button type="button" class="secondary sm" onclick="copyTextFromPre('ops-output', 'Snapshot output')">Copy</button>
+              <button type="button" class="secondary sm" onclick="hideOutputBox('ops-output-wrap', 'ops-output')">Dismiss</button>
+            </div>
+          </div>
+          <pre id="ops-output" style="display:none"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast-container" aria-live="polite"></div>
+
+  <div id="ark-modal-backdrop" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h3 id="ark-modal-title">Confirm Action</h3>
+      <p id="ark-modal-message"></p>
+      <div id="ark-modal-extra" style="display:none;margin-bottom:12px;">
+        <label style="display:inline-flex;align-items:center;gap:8px;color:var(--text);font-weight:500;cursor:pointer;">
+          <input id="ark-modal-checkbox" type="checkbox" style="width:auto;" />
+          <span id="ark-modal-checkbox-label"></span>
+        </label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button type="button" id="ark-modal-cancel" class="secondary sm" style="padding:7px 14px;">Cancel</button>
+        <button type="button" id="ark-modal-confirm" class="amber sm" style="padding:7px 14px;">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <footer id="ark-footer"
+    style="margin-top:26px;text-align:center;color:var(--gray);font-size:0.78rem;letter-spacing:0.04em;">
+    ARK Project Console &bull; Apache-2.0 License
+  </footer>
+
+  <script>
+    const VALID_TABS = ['overview', 'access', 'rag', 'audit'];
+    let activeTab = 'overview';
+
+    const pathMatch = window.location.pathname.match(/^\/(admin-console|portal)\/projects\/([^/]+)/);
+    const consolePrefix = pathMatch ? `/${pathMatch[1]}` : '/portal';
+    const apiBase = `${consolePrefix}/api`;
+    const projectSlug = pathMatch ? decodeURIComponent(pathMatch[2]) : '';
+
+    let currentProject = null;
+    let currentUserRole = 'viewer';
+    let accessibleProjects = [];
+    let loadedPlugins = [];
+    let loadedSources = [];
+    let loadedAudits = [];
+    let expandedAuditIds = new Set();
+
+    const DEFAULT_PIPELINE_YAML = [
+      'apiVersion: ark-ingest/v1',
+      'name: sample-http-sync',
+      'sync_mode: incremental',
+      'source:',
+      '  type: http_json',
+      '  url: "http://internal-service.local/api/docs"',
+      'transform:',
+      '  doc_id: "doc/{{ item.id }}"',
+      '  filename: "{{ item.title | slugify }}.md"',
+      '  template: |',
+      '    # {{ item.title }}',
+      '    {{ item.body }}',
+      'chunking:',
+      '  strategy: markdown',
+      '  chunk_size: 1200',
+      '  overlap: 200',
+    ].join('\n');
+
+    function el(tag, attrs = {}, children = []) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'className') node.className = v;
+        else if (k === 'style') node.setAttribute('style', v);
+        else if (k === 'text') node.textContent = v;
+        else if (k === 'colSpan') node.colSpan = v;
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2).toLowerCase(), v);
+        else node.setAttribute(k, v);
+      }
+      for (const child of Array.isArray(children) ? children : [children]) {
+        if (child === null || child === undefined) continue;
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+      }
+      return node;
+    }
+
+    function showToast(msg, kind = 'ok') {
+      if (!msg) return;
+      const container = document.getElementById('toast-container');
+      const toast = el('div', { className: `toast ${kind}` }, [
+        el('span', { text: msg }),
+        el('button', {
+          type: 'button',
+          className: 'secondary sm',
+          style: 'padding:2px 6px;font-size:0.7rem;',
+          text: '\u00d7',
+          onClick: () => toast.remove()
+        })
+      ]);
+      container.appendChild(toast);
+      setTimeout(() => {
+        if (toast.parentNode) toast.remove();
+      }, 4500);
+    }
+
+    const showError = (msg) => {
+      const elNode = document.getElementById('ui-alert');
+      elNode.textContent = msg;
+      elNode.style.display = msg ? 'block' : 'none';
+      if (msg) showToast(msg, 'err');
+    };
+
+    const api = (path, opts = {}) => fetch(`${apiBase}/projects/${encodeURIComponent(projectSlug)}${path}`, opts).then(async r => {
+      if (!r.ok) {
+        const text = await r.text();
+        showError('API Error: ' + text);
+        throw new Error(text);
+      }
+      showError('');
+      return r.json();
+    });
+
+    function switchTab(tabId, updateHash = true) {
+      if (!VALID_TABS.includes(tabId)) tabId = 'overview';
+      activeTab = tabId;
+      for (const id of VALID_TABS) {
+        const btn = document.getElementById(`tab-btn-${id}`);
+        const panel = document.getElementById(`panel-${id}`);
+        const isCurrent = id === tabId;
+        if (btn) {
+          btn.classList.toggle('active', isCurrent);
+          btn.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
+        }
+        if (panel) panel.classList.toggle('active', isCurrent);
+      }
+      if (updateHash && window.history && window.history.replaceState) {
+        window.history.replaceState(null, '', `#${tabId}`);
+      }
+    }
+
+    function switchProjectConsole(targetSlug) {
+      if (!targetSlug || targetSlug === projectSlug) return;
+      window.location.href = `${consolePrefix}/projects/${encodeURIComponent(targetSlug)}${window.location.hash || ''}`;
+    }
+
+    function confirmModal({ title = 'Confirm Action', message = '', confirmText = 'Confirm', danger = false, checkboxLabel = '' }) {
+      return new Promise((resolve) => {
+        const backdrop = document.getElementById('ark-modal-backdrop');
+        document.getElementById('ark-modal-title').textContent = title;
+        document.getElementById('ark-modal-message').textContent = message;
+        const extraWrap = document.getElementById('ark-modal-extra');
+        const checkbox = document.getElementById('ark-modal-checkbox');
+        if (checkboxLabel) {
+          document.getElementById('ark-modal-checkbox-label').textContent = checkboxLabel;
+          checkbox.checked = false;
+          extraWrap.style.display = 'block';
+        } else {
+          extraWrap.style.display = 'none';
+          checkbox.checked = false;
+        }
+        const confirmBtn = document.getElementById('ark-modal-confirm');
+        const cancelBtn = document.getElementById('ark-modal-cancel');
+        confirmBtn.textContent = confirmText;
+        confirmBtn.className = `${danger ? 'danger' : 'amber'} sm`;
+        confirmBtn.style.padding = '7px 14px';
+        backdrop.classList.add('open');
+
+        const cleanup = (result) => {
+          backdrop.classList.remove('open');
+          confirmBtn.onclick = null;
+          cancelBtn.onclick = null;
+          resolve(result);
+        };
+        confirmBtn.onclick = () => cleanup({ confirmed: true, checked: checkbox.checked });
+        cancelBtn.onclick = () => cleanup({ confirmed: false, checked: false });
+      });
+    }
+
+    function setInputIfIdle(id, val) {
+      const node = document.getElementById(id);
+      if (node && document.activeElement !== node) node.value = val;
+    }
+
+    function hideOutputBox(wrapId, preId) {
+      const wrap = document.getElementById(wrapId);
+      const pre = document.getElementById(preId);
+      if (wrap) wrap.style.display = 'none';
+      if (pre) pre.style.display = 'none';
+    }
+
+    async function copyInputVal(id, label) {
+      const val = document.getElementById(id).value;
+      if (val && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(val);
+        showToast(`Copied ${label} to clipboard.`, 'ok');
+      }
+    }
+
+    async function copyTextFromPre(preId, label) {
+      const pre = document.getElementById(preId);
+      const text = pre ? pre.textContent : '';
+      if (text && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast(`Copied ${label} to clipboard.`, 'ok');
+      }
+    }
+
+    function renderQuickStartSnippet() {
+      if (!currentProject) return;
+      const kind = document.getElementById('snippet-kind').value;
+      const baseUrl = `${window.location.origin}/projects/${currentProject.slug}/v1`;
+      const modelId = currentProject.model_id || `${currentProject.slug}-assistant`;
+      let snippet = '';
+      if (kind === 'curl') {
+        snippet = [
+          `curl -k "${baseUrl}/chat/completions" \\`,
+          `  -H "Authorization: Bearer ark_proj_YOUR_KEY" \\`,
+          `  -H "Content-Type: application/json" \\`,
+          `  -d '{"model": "${modelId}", "messages": [{"role": "user", "content": "Summarize our project docs"}]}'`
+        ].join('\n');
+      } else if (kind === 'python') {
+        snippet = [
+          'from openai import OpenAI',
+          '',
+          'client = OpenAI(',
+          `    base_url="${baseUrl}",`,
+          '    api_key="ark_proj_YOUR_KEY",',
+          ')',
+          'resp = client.chat.completions.create(',
+          `    model="${modelId}",`,
+          '    messages=[{"role": "user", "content": "Hello from ARK!"}],',
+          ')',
+          'print(resp.choices[0].message.content)'
+        ].join('\n');
+      } else {
+        snippet = JSON.stringify({
+          models: [{
+            title: `${currentProject.name} (ARK)`,
+            provider: 'openai',
+            model: modelId,
+            apiBase: baseUrl,
+            apiKey: 'ark_proj_YOUR_KEY'
+          }]
+        }, null, 2);
+      }
+      document.getElementById('snippet-output').textContent = snippet;
+    }
+
+    function renderRagLinkChips() {
+      if (!currentProject || !currentProject.rag_enabled) return;
+      const ragInput = document.getElementById('cfg-rag-links');
+      const selected = new Set((ragInput.value || '').split(',').map(s => s.trim()).filter(Boolean));
+      const canEdit = currentUserRole === 'admin' || currentUserRole === 'editor';
+      const otherRag = accessibleProjects.filter(p => p.rag_enabled && p.slug !== currentProject.slug);
+      const wrap = document.getElementById('cfg-rag-chips');
+      wrap.replaceChildren(
+        ...otherRag.map(p =>
+          el('button', {
+            type: 'button',
+            className: `chip-toggle ${selected.has(p.slug) ? 'selected' : ''}`,
+            text: `${selected.has(p.slug) ? '\u2713 ' : '+ '}${p.slug}`,
+            onClick: () => {
+              if (!canEdit) return;
+              if (selected.has(p.slug)) selected.delete(p.slug);
+              else selected.add(p.slug);
+              ragInput.value = Array.from(selected).join(', ');
+              renderRagLinkChips();
+            }
+          })
+        )
+      );
+    }
+
+    function renderRolePermissions() {
+      const canEditSettings = currentUserRole === 'admin' || currentUserRole === 'editor';
+      const canIngestDocs = currentUserRole === 'admin' || currentUserRole === 'editor' || currentUserRole === 'member';
+      const isViewer = currentUserRole === 'viewer';
+
+      document.getElementById('settings-perm-badge').textContent = canEditSettings ? 'Editable' : 'Read-Only';
+      document.getElementById('settings-perm-badge').className = `badge ${canEditSettings ? 'ok' : 'clean'}`;
+
+      for (const id of ['cfg-llm-model', 'cfg-rag-links', 'cfg-system-prompt', 'btn-save-llm', 'btn-save-rag-links', 'btn-save-prompt']) {
+        const node = document.getElementById(id);
+        if (node) node.disabled = !canEditSettings;
+      }
+
+      document.getElementById('danger-zone-wrap').style.display = currentUserRole === 'admin' ? 'block' : 'none';
+      document.getElementById('grant-member-form').style.display = canEditSettings ? 'block' : 'none';
+      document.getElementById('create-source-form').style.display = canEditSettings ? 'block' : 'none';
+      document.getElementById('direct-upload-form').style.display = canIngestDocs ? 'block' : 'none';
+      document.getElementById('btn-reset-cache').style.display = canEditSettings ? 'inline-block' : 'none';
+      document.getElementById('btn-reset-vectors').style.display = canEditSettings ? 'inline-block' : 'none';
+      document.getElementById('snapshot-card').style.display = (canEditSettings && currentProject && currentProject.rag_enabled) ? 'block' : 'none';
+
+      const ingestScopeBox = document.getElementById('key-scope-ingest');
+      const scopeHint = document.getElementById('key-scope-hint');
+      if (isViewer) {
+        ingestScopeBox.checked = false;
+        ingestScopeBox.disabled = true;
+        scopeHint.style.display = 'block';
+      } else {
+        ingestScopeBox.disabled = false;
+        scopeHint.style.display = 'none';
+      }
+    }
+
+    function renderConsoleBundle(bundle) {
+      const ver = bundle.version || {};
+      const me = bundle.me || {};
+      const proj = bundle.project;
+      currentProject = proj;
+      currentUserRole = me.user_role || proj.user_role || 'viewer';
+      accessibleProjects = bundle.accessible_projects || [];
+
+      document.title = `ARK — ${proj.name} (${proj.slug}) Project Console`;
+      document.getElementById('proj-title').textContent = proj.name.toUpperCase();
+      document.getElementById('proj-subtitle').textContent = `Project Console (${proj.slug}) \u2022 Signed in as ${me.user}`;
+      document.querySelectorAll('.slug-inline').forEach(n => { n.textContent = proj.slug; });
+
+      const modeBadge = document.getElementById('proj-mode-badge');
+      modeBadge.className = `badge ${proj.rag_enabled ? 'rag' : 'clean'}`;
+      modeBadge.textContent = proj.rag_enabled ? 'RAG-Enabled' : 'Clean Mode';
+
+      const roleBadge = document.getElementById('proj-role-badge');
+      roleBadge.className = `badge ${currentUserRole === 'admin' ? 'amber' : 'ok'}`;
+      roleBadge.textContent = `Role: ${currentUserRole}`;
+
+      if (me.is_admin || consolePrefix === '/admin-console') {
+        document.getElementById('back-admin-link').style.display = 'inline-block';
+      }
+
+      const switcher = document.getElementById('project-switcher');
+      switcher.replaceChildren(
+        ...accessibleProjects.map(p => el('option', { value: p.slug, text: `${p.name} (${p.slug})` }))
+      );
+      switcher.value = proj.slug;
+
+      const chatUrl = proj.webui_url || `/?model=${encodeURIComponent(proj.model_id)}`;
+      document.getElementById('top-chat-link').href = chatUrl;
+      document.getElementById('card-chat-link').href = chatUrl;
+
+      const verLabel = `v${ver.version || ''}`;
+      document.getElementById('ark-footer').textContent = `${ver.product || 'ARK'} ${verLabel} \u2022 Project Console (${proj.slug}) \u2022 Strict Air-Gap Mode`;
+
+      // Overview KPIs & inputs
+      document.getElementById('kpi-mode-val').textContent = proj.rag_enabled ? 'RAG Isolated KB' : 'Clean (No-RAG)';
+      document.getElementById('kpi-mode-sub').textContent = proj.rag_enabled
+        ? `Collection: ${proj.collection_name}${(proj.extra_rag_projects && proj.extra_rag_projects.length) ? ' (+' + proj.extra_rag_projects.join(', ') + ')' : ''}`
+        : 'Direct LLM routing without vector retrieval';
+      document.getElementById('kpi-model-val').textContent = proj.effective_llm_model || '-';
+      document.getElementById('kpi-model-sub').textContent = `Assistant ID: ${proj.model_id}`;
+
+      document.getElementById('endpoint-base-url').value = `${window.location.origin}/projects/${proj.slug}/v1`;
+      document.getElementById('endpoint-model-id').value = proj.model_id;
+      document.getElementById('endpoint-group-name').value = proj.group_name;
+      renderQuickStartSnippet();
+
+      setInputIfIdle('cfg-llm-model', proj.llm_model || '');
+      setInputIfIdle('cfg-rag-links', (proj.extra_rag_projects || []).join(', '));
+      setInputIfIdle('cfg-system-prompt', proj.system_prompt || '');
+      document.getElementById('cfg-rag-links-wrap').style.display = proj.rag_enabled ? 'block' : 'none';
+      renderRagLinkChips();
+
+      document.getElementById('rbac-group-code').textContent = proj.group_name;
+      document.getElementById('known-users-list').replaceChildren(
+        ...(bundle.known_users || []).map(u => el('option', { value: u.identifier, text: u.source }))
+      );
+
+      renderMembersAndKeys(bundle.members || [], bundle.keys || []);
+      renderRagSection(bundle.plugins, bundle.ingest_sources || [], bundle.ingest_jobs || [], bundle.documents || []);
+      renderAuditSection(bundle.audits || []);
+      renderRolePermissions();
+
+      const snapLink = document.getElementById('download-proj-snap');
+      snapLink.href = `${apiBase}/projects/${encodeURIComponent(proj.slug)}/snapshot/download`;
+    }
+
+    function renderMembersAndKeys(members, keys) {
+      const canEditMembers = currentUserRole === 'admin' || currentUserRole === 'editor';
+      document.getElementById('tab-badge-access').textContent = `${members.length}M / ${keys.length}K`;
+      document.getElementById('kpi-access-val').textContent = `${members.length} Member(s)`;
+      document.getElementById('kpi-access-sub').textContent = `${keys.length} Active API Key(s)`;
+
+      const keyBody = document.querySelector('#key-table tbody');
+      if (keys.length) {
+        keyBody.replaceChildren(
+          ...keys.map(k =>
+            el('tr', {}, [
+              el('td', { text: k.label }),
+              el('td', {}, el('code', { text: k.owner || 'admin' })),
+              el('td', {}, el('code', { text: (k.scopes || ['chat']).join(', ') })),
+              el('td', {}, el('code', { text: `${k.key_prefix}...` })),
+              el('td', { text: String(k.rate_limit_rpm) }),
+              el('td', {}, el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeKey(k.id) }))
+            ])
+          )
+        );
+      } else {
+        keyBody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 6, style: 'color:var(--muted)', text: 'No active API keys issued for this project yet.' }))
+        );
+      }
+
+      const memBody = document.querySelector('#access-table tbody');
+      if (members.length) {
+        memBody.replaceChildren(
+          ...members.map(m =>
+            el('tr', {}, [
+              el('td', {}, el('code', { text: m.user_identifier })),
+              el('td', { text: m.role }),
+              el('td', { text: m.granted_by }),
+              el('td', {}, canEditMembers
+                ? el('button', { className: 'danger', text: 'Revoke', onClick: () => revokeMember(m.user_identifier) })
+                : el('span', { style: 'color:var(--gray)', text: '-' }))
+            ])
+          )
+        );
+      } else {
+        memBody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 4, style: 'color:var(--muted)', text: 'No explicit per-user grants yet (SSO group members still have access).' }))
+        );
+      }
+    }
+
+    function renderRagSection(pluginMeta, sources, jobs, docs) {
+      loadedSources = sources || [];
+      const isRag = Boolean(currentProject && currentProject.rag_enabled);
+      document.getElementById('clean-project-notice').style.display = isRag ? 'none' : 'block';
+      document.getElementById('rag-workspace-grid').style.display = isRag ? 'grid' : 'none';
+      document.getElementById('tab-badge-rag').textContent = isRag ? `${docs.length} docs` : 'Clean';
+      document.getElementById('kpi-docs-val').textContent = isRag ? `${docs.length} Docs` : 'Clean Mode';
+      document.getElementById('kpi-docs-sub').textContent = isRag ? `${loadedSources.length} Ingest Source(s)` : 'No RAG collection';
+
+      if (!isRag) return;
+
+      document.getElementById('rag-collection-badge').textContent = `Qdrant: ${currentProject.collection_name}`;
+      document.getElementById('doc-count-label').textContent = String(docs.length);
+
+      if (pluginMeta && (pluginMeta.plugins || []).length) {
+        loadedPlugins = pluginMeta.plugins || [];
+        const connTypeSel = document.getElementById('conn-type');
+        const prevPlugin = connTypeSel.value;
+        connTypeSel.replaceChildren(
+          ...loadedPlugins.map(p => el('option', { value: p.id, text: `${p.name} (${p.id})` }))
+        );
+        if (prevPlugin && loadedPlugins.some(p => p.id === prevPlugin)) connTypeSel.value = prevPlugin;
+        renderPluginFields();
+
+        const scriptSel = document.getElementById('ingest-script-select');
+        const scripts = pluginMeta.scripts || [];
+        scriptSel.replaceChildren(
+          ...(scripts.length
+            ? scripts.map(s => el('option', { value: s, text: s }))
+            : [el('option', { value: '', text: 'No .py scripts in /ingest-scripts' })])
+        );
+      }
+
+      const pipeEl = document.getElementById('pipeline-yaml');
+      if (pipeEl && !pipeEl.value.trim()) pipeEl.value = DEFAULT_PIPELINE_YAML;
+
+      const canEditSources = currentUserRole === 'admin' || currentUserRole === 'editor';
+      const canSync = canEditSources || currentUserRole === 'member';
+
+      const docsBody = document.querySelector('#indexed-docs-table tbody');
+      if (docs.length) {
+        docsBody.replaceChildren(
+          ...docs.map(d =>
+            el('tr', {}, [
+              el('td', {}, el('code', { text: d.doc_id })),
+              el('td', { text: d.filename || '-' }),
+              el('td', { text: String(d.chunk_count ?? 0) }),
+              el('td', {}, canSync
+                ? el('button', { className: 'danger', text: 'Delete', onClick: () => deleteIndexedDoc(d.doc_id, d.source_key) })
+                : el('span', { style: 'color:var(--gray)', text: '-' }))
+            ])
+          )
+        );
+      } else {
+        docsBody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 4, style: 'color:var(--muted)', text: 'No indexed documents in this project yet.' }))
+        );
+      }
+
+      const connBody = document.querySelector('#conn-table tbody');
+      if (loadedSources.length) {
+        connBody.replaceChildren(
+          ...loadedSources.map(s =>
+            el('tr', {}, [
+              el('td', { text: `${s.name} (${s.plugin_id || s.source_kind})` }),
+              el('td', {}, el('code', { text: s.schedule_cron || 'manual' })),
+              el('td', { text: (s.enabled === false ? 'disabled / ' : '') + (s.last_status || 'pending') }),
+              el('td', { style: 'white-space:nowrap;' }, [
+                ...(canEditSources ? [el('button', { className: 'secondary sm', style: 'margin-right:4px;', text: 'Edit', onClick: () => editSource(s.id) })] : []),
+                ...(canSync ? [el('button', { className: 'sm', style: 'margin-right:4px;', text: 'Sync', onClick: () => syncSource(s.id) })] : []),
+                ...(canEditSources ? [el('button', { className: 'danger', text: 'Del', onClick: () => deleteSource(s.id) })] : [])
+              ])
+            ])
+          )
+        );
+      } else {
+        connBody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 4, style: 'color:var(--muted)', text: 'No automated ingest sources configured for this project.' }))
+        );
+      }
+
+      const jobsBody = document.querySelector('#ingest-jobs-table tbody');
+      if (jobs.length) {
+        jobsBody.replaceChildren(
+          ...jobs.map(j => {
+            const st = j.stats || {};
+            const summary = st.docs_seen !== undefined
+              ? `${st.docs_upserted || 0} up, ${st.docs_skipped || 0} skip, ${st.docs_deleted || 0} del`
+              : (j.log_excerpt || '-').slice(0, 40);
+            return el('tr', {}, [
+              el('td', { text: String(j.id) }),
+              el('td', { text: j.trigger_type }),
+              el('td', {}, el('span', { className: `badge ${j.status === 'succeeded' ? 'ok' : (j.status === 'failed' ? 'err' : 'rag')}`, text: j.status })),
+              el('td', { text: summary }),
+              el('td', {}, el('button', { className: 'secondary sm', text: 'Logs', onClick: () => showJobLog(j) }))
+            ]);
+          })
+        );
+      } else {
+        jobsBody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 5, style: 'color:var(--muted)', text: 'No ingest jobs recorded for this project yet.' }))
+        );
+      }
+    }
+
+    function formatAuditTimestamp(iso) {
+      if (!iso) return '-';
+      return iso.replace('T', ' ').slice(0, 19);
+    }
+
+    function toggleAuditDetails(auditId) {
+      if (expandedAuditIds.has(auditId)) expandedAuditIds.delete(auditId);
+      else expandedAuditIds.add(auditId);
+      renderAuditSection(loadedAudits);
+    }
+
+    function renderAuditSection(audits) {
+      loadedAudits = audits || [];
+      document.getElementById('tab-badge-audit').textContent = String(loadedAudits.length);
+      const tbody = document.querySelector('#audit-table tbody');
+      if (!loadedAudits.length) {
+        tbody.replaceChildren(
+          el('tr', {}, el('td', { colSpan: 5, style: 'color:var(--muted)', text: 'No audit events found for this project.' }))
+        );
+        return;
+      }
+
+      const rows = [];
+      loadedAudits.forEach((a, idx) => {
+        const rowId = a.id !== undefined ? a.id : idx;
+        const isExpanded = expandedAuditIds.has(rowId);
+        rows.push(
+          el('tr', { style: 'cursor:pointer;', onClick: () => toggleAuditDetails(rowId) }, [
+            el('td', {}, el('code', { text: formatAuditTimestamp(a.created_at) })),
+            el('td', { text: a.event_type }),
+            el('td', { text: a.actor }),
+            el('td', {}, el('span', { className: `badge ${a.status === 'success' ? 'ok' : 'err'}`, text: a.status })),
+            el('td', {}, el('button', {
+              type: 'button',
+              className: 'secondary sm',
+              text: isExpanded ? 'Hide' : 'Details',
+              onClick: (ev) => {
+                ev.stopPropagation();
+                toggleAuditDetails(rowId);
+              }
+            }))
+          ])
+        );
+        if (isExpanded) {
+          rows.push(
+            el('tr', {}, [
+              el('td', { colSpan: 5, style: 'background:var(--shield-alt);padding:10px 12px;' }, [
+                el('pre', { style: 'margin:0;', text: JSON.stringify(a, null, 2) })
+              ])
+            ])
+          );
+        }
+      });
+      tbody.replaceChildren(...rows);
+    }
+
+    async function refreshConsole(notify = false) {
+      if (!projectSlug) return showError('Missing project slug in URL.');
+      const bundle = await api('/console');
+      renderConsoleBundle(bundle);
+      if (notify) showToast(`Refreshed '${projectSlug}' console.`, 'ok');
+    }
+
+    async function refreshRagOnly() {
+      const [sources, jobs, docsResp] = await Promise.all([
+        api('/ingest-sources'),
+        api('/ingest-jobs?limit=15'),
+        api('/ingest/documents?limit=200')
+      ]);
+      renderRagSection(null, sources, jobs, docsResp.documents || []);
+    }
+
+    async function refreshAuditOnly() {
+      const params = new URLSearchParams();
+      params.set('limit', document.getElementById('audit-limit').value || '25');
+      const evt = document.getElementById('audit-event-filter').value.trim();
+      if (evt) params.set('event_type', evt);
+      const audits = await api('/audit?' + params.toString());
+      renderAuditSection(audits);
+    }
+
+    async function saveProjectModel() {
+      const llm = document.getElementById('cfg-llm-model').value.trim();
+      await api('/model', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ llm_model: llm })
+      });
+      showToast('Updated project LLM model override.', 'ok');
+      await refreshConsole();
+    }
+
+    async function saveProjectRagLinks() {
+      const links = (document.getElementById('cfg-rag-links').value || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      await api('/rag-projects', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extra_rag_projects: links })
+      });
+      showToast('Updated linked external RAG knowledge bases.', 'ok');
+      await refreshConsole();
+    }
+
+    async function saveProjectPrompt() {
+      const prompt = document.getElementById('cfg-system-prompt').value;
+      await api('/prompt', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ system_prompt: prompt })
+      });
+      showToast('Saved project system prompt.', 'ok');
+      await refreshConsole();
+    }
+
+    async function deleteCurrentProject() {
+      const { confirmed } = await confirmModal({
+        title: `Delete Project '${projectSlug}'`,
+        message: `Permanently delete project '${projectSlug}', its Qdrant collection, and all scoped API keys?`,
+        confirmText: 'Delete Project',
+        danger: true
+      });
+      if (!confirmed) return;
+      await fetch(`/admin-console/api/projects/${encodeURIComponent(projectSlug)}`, { method: 'DELETE' });
+      window.location.href = '/admin-console/#projects';
+    }
+
+    async function createKey() {
+      const scopes = [];
+      if (document.getElementById('key-scope-chat').checked) scopes.push('chat');
+      if (document.getElementById('key-scope-images').checked) scopes.push('images');
+      const ingestEl = document.getElementById('key-scope-ingest');
+      if (!ingestEl.disabled && ingestEl.checked) scopes.push('ingest');
+
+      const res = await api('/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_slug: projectSlug,
+          label: document.getElementById('key-label').value || 'project-key',
+          rate_limit_rpm: parseInt(document.getElementById('key-rpm').value, 10) || 60,
+          scopes: scopes.length ? scopes : ['chat']
+        })
+      });
+      const wrap = document.getElementById('key-output-wrap');
+      const out = document.getElementById('key-output');
+      wrap.style.display = 'block';
+      out.style.display = 'block';
+      out.textContent = `SAVE THIS KEY NOW (shown once):\n${res.api_key}\nScopes: ${(res.scopes || []).join(', ')}\nBase URL: ${window.location.origin}/projects/${projectSlug}/v1`;
+      showToast('Generated project API key.', 'ok');
+      await refreshConsole();
+    }
+
+    async function revokeKey(keyId) {
+      const { confirmed } = await confirmModal({
+        title: 'Revoke API Key',
+        message: `Revoke API key #${keyId}?`,
+        confirmText: 'Revoke Key',
+        danger: true
+      });
+      if (!confirmed) return;
+      await api(`/keys/${keyId}`, { method: 'DELETE' });
+      showToast(`Revoked API key #${keyId}.`, 'amber');
+      await refreshConsole();
+    }
+
+    async function grantMember() {
+      const user = document.getElementById('access-user').value.trim();
+      const role = document.getElementById('access-role').value;
+      if (!user) return showError('Enter a username or email to grant access.');
+      const res = await api('/members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_identifier: user, role })
+      });
+      document.getElementById('access-user').value = '';
+      const msg = `Granted ${res.role} access to ${res.user_identifier} (WebUI sync: ${res.webui_sync}).`;
+      document.getElementById('access-status').textContent = msg;
+      showToast(msg, 'ok');
+      await refreshConsole();
+    }
+
+    async function revokeMember(userIdentifier) {
+      const { confirmed } = await confirmModal({
+        title: 'Revoke Member Access',
+        message: `Revoke '${userIdentifier}' from '${projectSlug}' and invalidate their project API keys?`,
+        confirmText: 'Revoke Access',
+        danger: true
+      });
+      if (!confirmed) return;
+      const res = await api(`/members/${encodeURIComponent(userIdentifier)}`, { method: 'DELETE' });
+      const msg = `Revoked ${userIdentifier} (revoked keys: ${res.revoked_keys ?? 0}).`;
+      document.getElementById('access-status').textContent = msg;
+      showToast(msg, 'amber');
+      await refreshConsole();
+    }
+
+    function renderIngestMode() {
+      const kind = document.getElementById('ingest-kind').value;
+      document.getElementById('ingest-plugin-wrap').style.display = kind === 'plugin' ? 'block' : 'none';
+      document.getElementById('ingest-pipeline-wrap').style.display = kind === 'pipeline_yaml' ? 'block' : 'none';
+      document.getElementById('ingest-script-wrap').style.display = kind === 'script' ? 'block' : 'none';
+    }
+
+    function renderPluginFields() {
+      const pid = document.getElementById('conn-type').value;
+      const plugin = loadedPlugins.find(p => p.id === pid);
+      const container = document.getElementById('plugin-dynamic-fields');
+      if (!plugin) {
+        container.replaceChildren();
+        return;
+      }
+      const props = (plugin.config_schema && plugin.config_schema.properties) || {};
+      const secrets = new Set(plugin.secret_fields || []);
+      const nodes = [];
+      for (const [key, spec] of Object.entries(props)) {
+        nodes.push(el('label', { text: spec.title || key }));
+        if (spec.type === 'boolean') {
+          const sel = el('select', { 'data-plugin-field': key }, [
+            el('option', { value: 'true', text: 'true' }),
+            el('option', { value: 'false', text: 'false' })
+          ]);
+          sel.value = spec.default === false ? 'false' : 'true';
+          nodes.push(sel);
+        } else {
+          const inpType = (secrets.has(key) || spec.format === 'password') ? 'password' : (spec.type === 'integer' ? 'number' : 'text');
+          nodes.push(el('input', {
+            type: inpType,
+            'data-plugin-field': key,
+            'data-field-type': spec.type || 'string',
+            placeholder: spec.description || '',
+            value: spec.default !== undefined ? String(spec.default) : ''
+          }));
+        }
+      }
+      container.replaceChildren(...nodes);
+    }
+
+    function collectPluginConfig() {
+      const cfg = {};
+      document.querySelectorAll('#plugin-dynamic-fields [data-plugin-field]').forEach(node => {
+        const key = node.getAttribute('data-plugin-field');
+        const ftype = node.getAttribute('data-field-type');
+        if (node.tagName === 'SELECT') cfg[key] = node.value === 'true';
+        else if (ftype === 'integer') cfg[key] = parseInt(node.value || '0', 10);
+        else cfg[key] = node.value;
+      });
+      return cfg;
+    }
+
+    function buildIngestPayload() {
+      const kind = document.getElementById('ingest-kind').value;
+      const chunkStrategy = document.getElementById('ingest-chunk-strategy').value;
+      return {
+        project_slug: projectSlug,
+        name: document.getElementById('conn-name').value || 'Ingest Source',
+        source_kind: kind,
+        plugin_id: kind === 'plugin' ? document.getElementById('conn-type').value : '',
+        config: kind === 'plugin' ? collectPluginConfig() : (kind === 'script' ? JSON.parse(document.getElementById('script-config').value || '{}') : {}),
+        pipeline_spec: kind === 'pipeline_yaml' ? document.getElementById('pipeline-yaml').value : '',
+        script_name: kind === 'script' ? document.getElementById('ingest-script-select').value : '',
+        chunk_config: { strategy: chunkStrategy, chunk_size: 1200, overlap: 200 },
+        sync_mode: document.getElementById('ingest-sync-mode').value,
+        schedule_cron: document.getElementById('ingest-schedule').value
+      };
+    }
+
+    function showIngestPreview(obj) {
+      const wrap = document.getElementById('ingest-output-wrap');
+      const out = document.getElementById('ingest-preview-output');
+      wrap.style.display = 'block';
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(obj, null, 2);
+    }
+
+    async function createIngestSource() {
+      const payload = buildIngestPayload();
+      await api('/ingest-sources', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      showToast(`Added ingest source '${payload.name}'.`, 'ok');
+      await refreshRagOnly();
+    }
+
+    async function dryRunIngestSource() {
+      const p = buildIngestPayload();
+      const res = await api('/ingest-sources/dry-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_kind: p.source_kind,
+          plugin_id: p.plugin_id,
+          config: p.config,
+          pipeline_spec: p.pipeline_spec,
+          script_name: p.script_name,
+          limit: 5
+        })
+      });
+      showIngestPreview(res);
+      showToast('Dry run complete (previewing up to 5 docs).', 'ok');
+    }
+
+    function editSource(id) {
+      const s = loadedSources.find(x => x.id === id);
+      if (!s) return;
+      document.getElementById('edit-source-id').value = String(s.id);
+      document.getElementById('edit-source-title').textContent = `#${s.id}`;
+      document.getElementById('edit-source-name').value = s.name || '';
+      document.getElementById('edit-source-sync-mode').value = s.sync_mode || 'incremental';
+      document.getElementById('edit-source-schedule').value = s.schedule_cron || '';
+      document.getElementById('edit-source-enabled').value = s.enabled === false ? 'false' : 'true';
+      const pipeWrap = document.getElementById('edit-source-pipeline-wrap');
+      if (s.source_kind === 'pipeline_yaml') {
+        pipeWrap.style.display = 'block';
+        document.getElementById('edit-source-pipeline').value = s.pipeline_spec || '';
+      } else {
+        pipeWrap.style.display = 'none';
+        document.getElementById('edit-source-pipeline').value = '';
+      }
+      const box = document.getElementById('edit-source-box');
+      box.style.display = 'block';
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function cancelSourceEdit() {
+      document.getElementById('edit-source-box').style.display = 'none';
+    }
+
+    async function saveSourceEdit() {
+      const id = parseInt(document.getElementById('edit-source-id').value, 10);
+      if (!id) return;
+      const s = loadedSources.find(x => x.id === id);
+      const payload = {
+        name: document.getElementById('edit-source-name').value,
+        sync_mode: document.getElementById('edit-source-sync-mode').value,
+        schedule_cron: document.getElementById('edit-source-schedule').value,
+        enabled: document.getElementById('edit-source-enabled').value === 'true'
+      };
+      if (s && s.source_kind === 'pipeline_yaml') {
+        payload.pipeline_spec = document.getElementById('edit-source-pipeline').value;
+      }
+      await api(`/ingest-sources/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      cancelSourceEdit();
+      showToast(`Saved ingest source #${id}.`, 'ok');
+      await refreshRagOnly();
+    }
+
+    async function syncSource(id) {
+      const res = await api(`/ingest-sources/${id}/sync?async_mode=true`, { method: 'POST' });
+      showIngestPreview(res);
+      showToast(`Triggered sync for source #${id}.`, 'ok');
+      setTimeout(refreshRagOnly, 1200);
+    }
+
+    async function deleteSource(id) {
+      const { confirmed, checked } = await confirmModal({
+        title: `Delete Ingest Source #${id}`,
+        message: `Delete ingest source #${id} from '${projectSlug}'?`,
+        confirmText: 'Delete Source',
+        danger: true,
+        checkboxLabel: 'Also delete Qdrant vectors indexed by this source'
+      });
+      if (!confirmed) return;
+      await api(`/ingest-sources/${id}?delete_vectors=${checked}`, { method: 'DELETE' });
+      showToast(`Deleted ingest source #${id}.`, 'amber');
+      await refreshRagOnly();
+    }
+
+    function showJobLog(j) {
+      showIngestPreview({
+        id: j.id,
+        project_slug: j.project_slug,
+        trigger_type: j.trigger_type,
+        status: j.status,
+        stats: j.stats,
+        log_excerpt: j.log_excerpt
+      });
+    }
+
+    async function uploadProjectFile() {
+      const f = document.getElementById('direct-upload-file').files[0];
+      if (!f) return showError('Select a file to upload and index.');
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('chunk_strategy', document.getElementById('direct-chunk-strategy').value);
+      const res = await api('/ingest/files', { method: 'POST', body: fd });
+      showIngestPreview(res);
+      showToast(`Indexed '${f.name}' into '${projectSlug}'.`, 'ok');
+      await refreshRagOnly();
+    }
+
+    async function deleteIndexedDoc(docId, sourceKey) {
+      const { confirmed } = await confirmModal({
+        title: 'Delete Indexed Document',
+        message: `Delete document '${docId}' and its chunks from '${projectSlug}'?`,
+        confirmText: 'Delete Document',
+        danger: true
+      });
+      if (!confirmed) return;
+      const qs = sourceKey ? `?source_key=${encodeURIComponent(sourceKey)}` : '';
+      await api(`/ingest/documents/${encodeURIComponent(docId)}${qs}`, { method: 'DELETE' });
+      showToast(`Deleted document '${docId}'.`, 'amber');
+      await refreshRagOnly();
+    }
+
+    async function resetProjectIndex(clearVectors) {
+      const { confirmed } = await confirmModal({
+        title: clearVectors ? 'Reset Cache + Delete Vectors' : 'Reset Deduplication Cache',
+        message: clearVectors
+          ? `Clear deduplication cache AND delete all Qdrant vectors for '${projectSlug}'?`
+          : `Reset content-hash deduplication cache for '${projectSlug}'?`,
+        confirmText: clearVectors ? 'Reset & Delete Vectors' : 'Reset Cache',
+        danger: Boolean(clearVectors)
+      });
+      if (!confirmed) return;
+      const res = await api(`/ingest/reset?clear_vectors=${Boolean(clearVectors)}`, { method: 'POST' });
+      showIngestPreview(res);
+      showToast(`Reset index state for '${projectSlug}'.`, 'ok');
+      await refreshRagOnly();
+    }
+
+    async function exportProjectSnapshot() {
+      const res = await api('/snapshot/export', { method: 'POST' });
+      showOps(res);
+      showToast(`Exported Qdrant snapshot for '${projectSlug}'.`, 'ok');
+    }
+
+    async function uploadSnapshot() {
+      const f = document.getElementById('snap-file').files[0];
+      if (!f) return showError('Select a .snapshot file first.');
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await api('/snapshot/upload', { method: 'POST', body: fd });
+      showOps(res);
+      showToast(`Recovered snapshot for '${projectSlug}'.`, 'ok');
+    }
+
+    function showOps(obj) {
+      const wrap = document.getElementById('ops-output-wrap');
+      const out = document.getElementById('ops-output');
+      wrap.style.display = 'block';
+      out.style.display = 'block';
+      out.textContent = JSON.stringify(obj, null, 2);
+    }
+
+    function exportAuditJson() {
+      const blob = new Blob([JSON.stringify(loadedAudits || [], null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ark-audit-${projectSlug}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast('Exported project audit events JSON.', 'ok');
+    }
+
+    const initialHash = (window.location.hash || '').replace(/^#/, '');
+    if (VALID_TABS.includes(initialHash)) {
+      switchTab(initialHash, false);
+    }
+    window.addEventListener('hashchange', () => {
+      const h = (window.location.hash || '').replace(/^#/, '');
+      if (VALID_TABS.includes(h) && h !== activeTab) switchTab(h, false);
+    });
+
+    refreshConsole();
+  </script>
+</body>
+
+</html>

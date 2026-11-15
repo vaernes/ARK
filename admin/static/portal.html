@@ -286,14 +286,14 @@
         <a id="default-webui-link" class="nav-link" href="/"
           style="border-color:rgba(0,229,255,0.45);color:var(--cyan);font-size:0.78rem;padding:5px 10px;">Default WebUI Chat &rarr;</a>
       </div>
-      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Click <strong>Open Chat</strong> to launch a project's assistant in Open WebUI, or use its Base URL in IDE plugins (Continue/Cline), Office add-ins, or scripts with your personal <code>ark_proj_*</code> key.</p>
+      <p style="font-size:0.82rem; color:var(--gray); margin:0 0 8px;">Open each project's dedicated <strong>Project Console</strong> to manage documents, API keys, and settings, or click <strong>Open Chat</strong> to launch its assistant in Open WebUI.</p>
       <table id="proj-table">
         <thead>
           <tr>
             <th>Project</th>
             <th>Mode</th>
             <th>Role</th>
-            <th>WebUI Chat</th>
+            <th>Workspaces</th>
             <th>OpenAI Base URL</th>
           </tr>
         </thead>
@@ -437,12 +437,20 @@
                   : 'Clean'
               })),
               el('td', { text: p.user_role || 'member' }),
-              el('td', {}, el('a', {
-                className: 'nav-link',
-                href: p.webui_url || `/?model=${encodeURIComponent(p.model_id || (p.slug + '-assistant'))}`,
-                style: 'padding:4px 9px;font-size:0.76rem;border-color:rgba(0,229,255,0.45);color:var(--cyan);display:inline-block;',
-                text: 'Open Chat \u2192'
-              })),
+              el('td', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [
+                el('a', {
+                  className: 'nav-link',
+                  href: `/portal/projects/${encodeURIComponent(p.slug)}`,
+                  style: 'padding:4px 9px;font-size:0.76rem;background:var(--cyan);color:var(--void);border-color:var(--cyan);font-weight:700;display:inline-block;',
+                  text: 'Project Console \u2192'
+                }),
+                el('a', {
+                  className: 'nav-link',
+                  href: p.webui_url || `/?model=${encodeURIComponent(p.model_id || (p.slug + '-assistant'))}`,
+                  style: 'padding:4px 9px;font-size:0.76rem;border-color:rgba(0,229,255,0.45);color:var(--cyan);display:inline-block;',
+                  text: 'Open Chat \u2192'
+                })
+              ]),
               el('td', {}, el('code', { text: `${origin}/projects/${p.slug}/v1` }))
             ])
           )

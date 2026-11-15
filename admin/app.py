@@ -709,6 +709,10 @@ class ProjectModelRequest(BaseModel):
     llm_model: str = Field(default="", max_length=128)
 
 
+class ProjectPromptRequest(BaseModel):
+    system_prompt: str = Field(default="", max_length=16000)
+
+
 class ProjectMemberRequest(BaseModel):
     user_identifier: str = Field(min_length=1, max_length=255)
     role: str = Field(default="member", pattern="^(member|editor|viewer)$")
@@ -724,10 +728,11 @@ class ModelSwitchPlanRequest(BaseModel):
 
 
 class CreateKeyRequest(BaseModel):
-    project_slug: str
+    project_slug: str = ""
     label: str = Field(min_length=1, max_length=80)
     rate_limit_rpm: int = Field(default=60, ge=1, le=6000)
     scopes: list[str] = Field(default_factory=lambda: ["chat"])
+
 
 
 def _normalize_key_scopes(scopes: list[str] | None) -> list[str]:
@@ -788,8 +793,9 @@ class CreateConnectorRequest(BaseModel):
 
 
 class CreateIngestSourceRequest(BaseModel):
-    project_slug: str
+    project_slug: str = ""
     name: str = Field(min_length=1, max_length=100)
+
     source_kind: str = Field(default="plugin", pattern="^(plugin|pipeline_yaml|script)$")
     plugin_id: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
@@ -843,6 +849,16 @@ def admin_ui() -> HTMLResponse:
 def portal_ui() -> HTMLResponse:
     html_path = APP_DIR / "static" / "portal.html"
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/admin-console/projects/{slug}", response_class=HTMLResponse)
+@app.get("/admin-console/projects/{slug}/", response_class=HTMLResponse)
+@app.get("/portal/projects/{slug}", response_class=HTMLResponse)
+@app.get("/portal/projects/{slug}/", response_class=HTMLResponse)
+def project_console_ui(slug: str) -> HTMLResponse:
+    html_path = APP_DIR / "static" / "project.html"
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
 
 
 @app.get("/portal/api/me")
@@ -3624,6 +3640,437 @@ def get_audit_logs(
         {"id": r[0], "created_at": r[1].isoformat(), "event_type": r[2], "actor": r[3], "project_slug": r[4], "status": r[5], "details": r[6]}
         for r in rows
     ]
+
+
+# ==============================================================================
+# Per-Project Dedicated Console APIs (/admin-console/api/projects/{slug}/* & /portal/api/projects/{slug}/*)
+# ==============================================================================
+
+
+def _require_project_role(
+    request: Request,
+    slug: str,
+    allowed_roles: set[str],
+) -> tuple[str, str, dict[str, Any]]:
+    """
+    Verify that the caller has one of `allowed_roles` ('admin', 'editor', 'member', 'viewer')
+    on project `slug`, and return (actor, role, project_dict).
+    """
+    actor = get_actor(request)
+    groups = get_user_groups(request)
+    identities = get_user_identities(request)
+    member_roles = _get_user_project_roles(identities)
+    default_llm = get_default_llm_model()
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT p.slug, p.name, p.collection_name, p.group_name, p.model_id, p.rag_enabled, "
+                "p.extra_rag_projects, p.system_prompt, p.llm_model, p.created_at, "
+                "(SELECT COUNT(*) FROM project_members pm WHERE pm.project_slug = p.slug) "
+                "FROM projects p WHERE p.slug = %s",
+                (slug,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    role = resolve_user_project_role(groups, row[0], row[3], member_roles)
+    if role is None or role not in allowed_roles:
+        audit.record(
+            "project.console_denied",
+            actor=actor,
+            project_slug=slug,
+            status="denied",
+            details={"user_role": role, "allowed_roles": sorted(allowed_roles), "path": request.url.path},
+        )
+        raise HTTPException(status_code=403, detail="Insufficient permissions for this project.")
+
+    raw_llm = (row[8] or "").strip()
+    proj_dict = {
+        "slug": row[0],
+        "name": row[1],
+        "collection_name": row[2],
+        "group_name": row[3],
+        "model_id": row[4],
+        "rag_enabled": row[5],
+        "extra_rag_projects": list(row[6] or []),
+        "system_prompt": row[7] or "",
+        "llm_model": raw_llm,
+        "effective_llm_model": raw_llm or default_llm,
+        "webui_url": f"/?model={quote(row[4], safe='')}",
+        "created_at": row[9].isoformat(),
+        "member_count": int(row[10] or 0),
+        "user_role": role,
+    }
+    return actor, role, proj_dict
+
+
+@app.get("/admin-console/api/projects/{slug}/console")
+@app.get("/portal/api/projects/{slug}/console")
+def get_project_console_bundle(slug: str, request: Request) -> dict[str, Any]:
+    actor, role, proj = _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    groups = sorted(get_user_groups(request))
+    identities = get_user_identities(request) or {actor.strip().lower()}
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            if role == "admin":
+                cur.execute(
+                    "SELECT id, project_slug, label, key_prefix, rate_limit_rpm, revoked, created_at, scopes, owner "
+                    "FROM api_keys WHERE project_slug = %s AND revoked = FALSE ORDER BY created_at DESC",
+                    (slug,),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, project_slug, label, key_prefix, rate_limit_rpm, revoked, created_at, scopes, owner "
+                    "FROM api_keys WHERE project_slug = %s AND LOWER(owner) = ANY(%s) AND revoked = FALSE ORDER BY created_at DESC",
+                    (slug, sorted(identities)),
+                )
+            key_rows = cur.fetchall()
+
+    keys = [
+        {
+            "id": r[0],
+            "project_slug": r[1],
+            "label": r[2],
+            "key_prefix": r[3],
+            "rate_limit_rpm": r[4],
+            "revoked": r[5],
+            "created_at": r[6].isoformat(),
+            "scopes": list(r[7] or ["chat"]),
+            "owner": r[8] or "admin",
+        }
+        for r in key_rows
+    ]
+    sources = [s for s in list_ingest_sources() if s["project_slug"] == slug]
+    jobs = list_ingest_jobs(project_slug=slug, limit=15)
+    docs = admin_list_project_documents(slug, limit=200)["documents"] if proj["rag_enabled"] else []
+    audits = get_audit_logs(limit=25, project_slug=slug) if role in {"admin", "editor", "member"} else []
+
+    return {
+        "version": get_version_info(),
+        "me": {
+            "user": actor,
+            "groups": groups,
+            "is_admin": role == "admin",
+            "user_role": role,
+        },
+        "project": proj,
+        "accessible_projects": portal_projects(request),
+        "members": list_project_members(slug),
+        "keys": keys,
+        "ingest_sources": sources,
+        "ingest_jobs": jobs,
+        "documents": docs,
+        "audits": audits,
+        "plugins": list_available_plugins() if role in {"admin", "editor"} else {"plugins": [], "scripts": []},
+        "known_users": list_known_users() if role in {"admin", "editor"} else [],
+    }
+
+
+@app.patch("/admin-console/api/projects/{slug}/prompt")
+@app.patch("/portal/api/projects/{slug}/prompt")
+def update_project_prompt(slug: str, req: ProjectPromptRequest, request: Request) -> dict[str, Any]:
+    actor, _, proj = _require_project_role(request, slug, {"admin", "editor"})
+    new_prompt = req.system_prompt.strip()
+    if not new_prompt:
+        if proj["rag_enabled"] and proj["collection_name"]:
+            with psycopg.connect(DB_DSN) as conn:
+                with conn.cursor() as cur:
+                    _, extra_cols = _resolve_extra_rag_projects(cur, slug, proj["extra_rag_projects"])
+            new_prompt = _build_default_rag_prompt(proj["name"], proj["collection_name"], extra_cols)
+        else:
+            new_prompt = f"You are the dedicated AI Assistant for {proj['name']}. Operate as a clean, isolated assistant without external document retrieval."
+
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE projects SET system_prompt = %s WHERE slug = %s", (new_prompt, slug))
+        conn.commit()
+
+    webui_sync = "skipped_no_api_key"
+    if OPENWEBUI_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+            models = requests.get(f"{OPENWEBUI_URL}/api/v1/models/", headers=headers, timeout=15).json()
+            existing = next((m for m in models if m.get("id") == proj["model_id"]), None)
+            if existing:
+                payload = {
+                    **existing,
+                    "params": {**(existing.get("params") or {}), "system": new_prompt},
+                }
+                requests.post(
+                    f"{OPENWEBUI_URL}/api/v1/models/model/update?id={quote(proj['model_id'], safe='')}",
+                    headers=headers,
+                    json=payload,
+                    timeout=15,
+                ).raise_for_status()
+                webui_sync = "synced"
+        except Exception as exc:
+            logger.warning("Open WebUI prompt update sync warning for '%s': %s", slug, exc)
+            webui_sync = f"warning: {exc}"
+
+    audit.record(
+        "project.prompt_update",
+        actor=actor,
+        project_slug=slug,
+        details={"prompt_length": len(new_prompt), "webui_sync": webui_sync},
+    )
+    return {"slug": slug, "system_prompt": new_prompt, "webui_sync": webui_sync}
+
+
+@app.patch("/portal/api/projects/{slug}/model")
+def portal_update_project_model(slug: str, req: ProjectModelRequest, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return update_project_model(slug, req, request)
+
+
+@app.patch("/portal/api/projects/{slug}/rag-projects")
+def portal_update_project_rag_projects(slug: str, req: ProjectRagLinksRequest, request: Request) -> dict[str, Any]:
+    actor, role, _ = _require_project_role(request, slug, {"admin", "editor"})
+    if role != "admin":
+        accessible_slugs = {p["slug"] for p in portal_projects(request)}
+        unauthorized = [s.strip().lower() for s in (req.extra_rag_projects or []) if s.strip() and s.strip().lower() not in accessible_slugs]
+        if unauthorized:
+            audit.record(
+                "project.rag_links_denied",
+                actor=actor,
+                project_slug=slug,
+                status="denied",
+                details={"unauthorized_projects": unauthorized},
+            )
+            raise HTTPException(status_code=403, detail="Cannot link external RAG projects that you do not have access to.")
+    return update_project_rag_projects(slug, req, request)
+
+
+@app.get("/portal/api/projects/{slug}/members")
+def portal_list_project_members(slug: str, request: Request) -> list[dict[str, Any]]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    return list_project_members(slug)
+
+
+@app.post("/portal/api/projects/{slug}/members")
+def portal_grant_project_member(slug: str, req: ProjectMemberRequest, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return grant_project_member(slug, req, request)
+
+
+@app.delete("/portal/api/projects/{slug}/members/{user_identifier:path}")
+def portal_revoke_project_member(slug: str, user_identifier: str, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return revoke_project_member(slug, user_identifier, request)
+
+
+@app.get("/admin-console/api/projects/{slug}/keys")
+@app.get("/portal/api/projects/{slug}/keys")
+def list_project_scoped_keys(slug: str, request: Request) -> list[dict[str, Any]]:
+    actor, role, _ = _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    identities = get_user_identities(request) or {actor.strip().lower()}
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            if role == "admin":
+                cur.execute(
+                    "SELECT id, project_slug, label, key_prefix, rate_limit_rpm, revoked, created_at, scopes, owner "
+                    "FROM api_keys WHERE project_slug = %s AND revoked = FALSE ORDER BY created_at DESC",
+                    (slug,),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, project_slug, label, key_prefix, rate_limit_rpm, revoked, created_at, scopes, owner "
+                    "FROM api_keys WHERE project_slug = %s AND LOWER(owner) = ANY(%s) AND revoked = FALSE ORDER BY created_at DESC",
+                    (slug, sorted(identities)),
+                )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "project_slug": r[1],
+            "label": r[2],
+            "key_prefix": r[3],
+            "rate_limit_rpm": r[4],
+            "revoked": r[5],
+            "created_at": r[6].isoformat(),
+            "scopes": list(r[7] or ["chat"]),
+            "owner": r[8] or "admin",
+        }
+        for r in rows
+    ]
+
+
+@app.post("/admin-console/api/projects/{slug}/keys")
+@app.post("/portal/api/projects/{slug}/keys")
+def create_project_scoped_key(slug: str, req: CreateKeyRequest, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    scoped_req = CreateKeyRequest(
+        project_slug=slug,
+        label=req.label,
+        rate_limit_rpm=req.rate_limit_rpm,
+        scopes=req.scopes,
+    )
+    return portal_create_key(scoped_req, request)
+
+
+@app.delete("/admin-console/api/projects/{slug}/keys/{key_id}")
+@app.delete("/portal/api/projects/{slug}/keys/{key_id}")
+def revoke_project_scoped_key(slug: str, key_id: int, request: Request) -> dict[str, str]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT project_slug FROM api_keys WHERE id = %s", (key_id,))
+            row = cur.fetchone()
+    if not row or row[0] != slug:
+        raise HTTPException(status_code=404, detail="API key not found in this project.")
+    return portal_revoke_key(key_id, request)
+
+
+@app.get("/portal/api/projects/{slug}/ingest/documents")
+def portal_list_project_documents(slug: str, request: Request, limit: int = 200) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    return admin_list_project_documents(slug, limit=limit)
+
+
+@app.post("/portal/api/projects/{slug}/ingest/files")
+async def portal_upload_project_file(
+    slug: str,
+    request: Request,
+    file: UploadFile = File(...),
+    doc_id: str = Form(default=""),
+    chunk_strategy: str = Form(default="chars"),
+) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member"})
+    return await admin_upload_project_file(slug, request, file=file, doc_id=doc_id, chunk_strategy=chunk_strategy)
+
+
+@app.delete("/portal/api/projects/{slug}/ingest/documents/{doc_id:path}")
+def portal_delete_project_document(
+    slug: str,
+    doc_id: str,
+    request: Request,
+    source_key: str = "",
+) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member"})
+    return admin_delete_project_document(slug, doc_id, request, source_key=source_key)
+
+
+@app.post("/portal/api/projects/{slug}/ingest/reset")
+def portal_reset_project_ingest(slug: str, request: Request, clear_vectors: bool = False) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return admin_reset_project_ingest(slug, request, clear_vectors=clear_vectors)
+
+
+@app.get("/admin-console/api/projects/{slug}/ingest-sources")
+@app.get("/portal/api/projects/{slug}/ingest-sources")
+def list_project_scoped_ingest_sources(slug: str, request: Request) -> list[dict[str, Any]]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    return [s for s in list_ingest_sources() if s["project_slug"] == slug]
+
+
+@app.post("/admin-console/api/projects/{slug}/ingest-sources")
+@app.post("/portal/api/projects/{slug}/ingest-sources")
+def create_project_scoped_ingest_source(slug: str, req: CreateIngestSourceRequest, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    scoped_req = req.model_copy(update={"project_slug": slug})
+    return create_ingest_source(scoped_req, request)
+
+
+@app.patch("/admin-console/api/projects/{slug}/ingest-sources/{source_id}")
+@app.patch("/portal/api/projects/{slug}/ingest-sources/{source_id}")
+def update_project_scoped_ingest_source(
+    slug: str,
+    source_id: int,
+    req: UpdateIngestSourceRequest,
+    request: Request,
+) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT project_slug FROM ingest_sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+    if not row or row[0] != slug:
+        raise HTTPException(status_code=404, detail="Ingest source not found in this project.")
+    return update_ingest_source(source_id, req, request)
+
+
+@app.delete("/admin-console/api/projects/{slug}/ingest-sources/{source_id}")
+@app.delete("/portal/api/projects/{slug}/ingest-sources/{source_id}")
+def delete_project_scoped_ingest_source(
+    slug: str,
+    source_id: int,
+    request: Request,
+    delete_vectors: bool = False,
+) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT project_slug FROM ingest_sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+    if not row or row[0] != slug:
+        raise HTTPException(status_code=404, detail="Ingest source not found in this project.")
+    return delete_ingest_source(source_id, request, delete_vectors=delete_vectors)
+
+
+@app.post("/admin-console/api/projects/{slug}/ingest-sources/{source_id}/sync")
+@app.post("/portal/api/projects/{slug}/ingest-sources/{source_id}/sync")
+def sync_project_scoped_ingest_source(
+    slug: str,
+    source_id: int,
+    request: Request,
+    async_mode: bool = True,
+) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor", "member"})
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT project_slug FROM ingest_sources WHERE id = %s", (source_id,))
+            row = cur.fetchone()
+    if not row or row[0] != slug:
+        raise HTTPException(status_code=404, detail="Ingest source not found in this project.")
+    return trigger_ingest_source_sync(source_id, request, async_mode=async_mode)
+
+
+@app.post("/admin-console/api/projects/{slug}/ingest-sources/dry-run")
+@app.post("/portal/api/projects/{slug}/ingest-sources/dry-run")
+def dry_run_project_scoped_ingest_source(slug: str, req: DryRunIngestRequest, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return dry_run_ingest_source(req, request)
+
+
+@app.get("/admin-console/api/projects/{slug}/ingest-jobs")
+@app.get("/portal/api/projects/{slug}/ingest-jobs")
+def list_project_scoped_ingest_jobs(slug: str, request: Request, limit: int = 20) -> list[dict[str, Any]]:
+    _require_project_role(request, slug, {"admin", "editor", "member", "viewer"})
+    return list_ingest_jobs(project_slug=slug, limit=limit)
+
+
+@app.post("/portal/api/projects/{slug}/snapshot/export")
+def portal_export_project_snapshot(slug: str, request: Request) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return export_project_snapshot(slug, request)
+
+
+@app.get("/portal/api/projects/{slug}/snapshot/download")
+def portal_download_project_snapshot(slug: str, request: Request) -> FileResponse:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return download_project_snapshot(slug)
+
+
+@app.post("/portal/api/projects/{slug}/snapshot/upload")
+async def portal_upload_project_snapshot(slug: str, request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    _require_project_role(request, slug, {"admin", "editor"})
+    return await upload_project_snapshot(slug, request, file=file)
+
+
+@app.get("/admin-console/api/projects/{slug}/audit")
+@app.get("/portal/api/projects/{slug}/audit")
+def list_project_scoped_audit_logs(
+    slug: str,
+    request: Request,
+    limit: int = 50,
+    event_type: str = "",
+) -> list[dict[str, Any]]:
+    _require_project_role(request, slug, {"admin", "editor", "member"})
+    return get_audit_logs(limit=limit, event_type=event_type, project_slug=slug)
+
 
 
 # ==============================================================================
