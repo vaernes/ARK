@@ -580,7 +580,7 @@ def get_llm_backend_settings() -> dict[str, str]:
                 rows = dict(cur.fetchall())
     except Exception as exc:
         logger.warning("Failed to read LLM backend settings from DB, falling back to env: %s", exc)
-        return _validate_backend_destinations(cfg)
+        return cfg
 
     if "llm_backend_type" in rows:
         cfg["backend_type"] = normalize_backend_type(rows["llm_backend_type"], default=cfg["backend_type"])
@@ -600,7 +600,7 @@ def get_llm_backend_settings() -> dict[str, str]:
         cfg["provider"] = normalize_third_party_provider(rows.get("llm_provider"), cfg["api_base_url"])
     else:
         cfg["provider"] = "ark_llm"
-    return _validate_backend_destinations(cfg)
+    return cfg
 
 
 def get_image_backend_settings() -> dict[str, str]:
@@ -632,7 +632,7 @@ def get_image_backend_settings() -> dict[str, str]:
                 rows = dict(cur.fetchall())
     except Exception as exc:
         logger.warning("Failed to read Image backend settings from DB, falling back to env: %s", exc)
-        return _validate_backend_destinations(cfg)
+        return cfg
 
     if rows.get("image_api_base_url", "").strip():
         cfg["api_base_url"] = rows["image_api_base_url"].strip().rstrip("/")
@@ -644,10 +644,15 @@ def get_image_backend_settings() -> dict[str, str]:
         cfg["health_url"] = rows["image_health_url"].strip() or f"{cfg['api_base_url']}/models"
     elif "image_api_base_url" in rows:
         cfg["health_url"] = f"{cfg['api_base_url']}/models"
-    return _validate_backend_destinations(cfg)
+    return cfg
 
 
-def resolve_model_for_context(context: str = "text", *, model_override: str = "") -> dict[str, str]:
+def resolve_model_for_context(
+    context: str = "text",
+    *,
+    model_override: str = "",
+    enforce_connected: bool = True,
+) -> dict[str, str]:
     """Resolve upstream endpoint, key, provider, and model_id for a context ('text', 'image', 'code', 'other')."""
     ctx = (context or "text").strip().lower()
     if ctx not in VALID_MODEL_CONTEXTS:
@@ -670,10 +675,11 @@ def resolve_model_for_context(context: str = "text", *, model_override: str = ""
                     )
                     row = cur.fetchone()
                     if row:
-                        try:
-                            validate_provider_destination(row[3])
-                        except ValueError as exc:
-                            raise HTTPException(status_code=403, detail=str(exc)) from exc
+                        if enforce_connected:
+                            try:
+                                validate_provider_destination(row[3])
+                            except ValueError as exc:
+                                raise HTTPException(status_code=403, detail=str(exc)) from exc
                         return {
                             "model_id": row[0],
                             "backend_type": row[1],
@@ -695,10 +701,11 @@ def resolve_model_for_context(context: str = "text", *, model_override: str = ""
                     )
                     row = cur.fetchone()
                     if row:
-                        try:
-                            validate_provider_destination(row[3])
-                        except ValueError as exc:
-                            raise HTTPException(status_code=403, detail=str(exc)) from exc
+                        if enforce_connected:
+                            try:
+                                validate_provider_destination(row[3])
+                            except ValueError as exc:
+                                raise HTTPException(status_code=403, detail=str(exc)) from exc
                         return {
                             "model_id": row[0],
                             "backend_type": row[1],
@@ -1605,6 +1612,8 @@ def health_dashboard() -> dict[str, Any]:
     results: dict[str, str] = {}
     for name, url in checks.items():
         try:
+            if name == "llm_backend":
+                validate_provider_destination(url)
             headers = (
                 build_llm_headers(
                     llm_cfg["api_key"],
@@ -1616,6 +1625,8 @@ def health_dashboard() -> dict[str, Any]:
             )
             r = requests.get(url, headers=headers, timeout=3)
             results[name] = "healthy" if r.ok else f"http_{r.status_code}"
+        except ValueError:
+            results[name] = "offline_blocked"
         except Exception:
             results[name] = "unreachable"
 
@@ -4067,7 +4078,7 @@ def _list_model_profiles_rows() -> list[dict[str, Any]]:
 @app.get("/admin-console/api/model-profiles")
 def get_model_profiles() -> dict[str, Any]:
     profiles = _list_model_profiles_rows()
-    defaults = {ctx: resolve_model_for_context(ctx) for ctx in VALID_MODEL_CONTEXTS}
+    defaults = {ctx: resolve_model_for_context(ctx, enforce_connected=False) for ctx in VALID_MODEL_CONTEXTS}
     return {
         "profiles": profiles,
         "contexts": [{"id": ctx, "label": MODEL_CONTEXT_LABELS[ctx]} for ctx in VALID_MODEL_CONTEXTS],
@@ -4288,6 +4299,7 @@ def list_models() -> dict[str, Any]:
     llm_cfg = get_llm_backend_settings()
     llm_live: dict[str, Any] = {"reachable": False, "models": [], "error": ""}
     try:
+        validate_provider_destination(llm_cfg["api_base_url"])
         headers = build_llm_headers(
             llm_cfg["api_key"],
             provider=llm_cfg.get("provider", ""),
@@ -4303,6 +4315,8 @@ def list_models() -> dict[str, Any]:
             }
         else:
             llm_live["error"] = f"HTTP {resp.status_code}"
+    except ValueError as exc:
+        llm_live["error"] = str(exc)
     except Exception as exc:
         llm_live["error"] = str(exc)
 
@@ -5598,8 +5612,9 @@ def internal_webui_list_models(request: Request) -> dict[str, Any]:
             })
 
     # Also merge live models from the active default text backend if reachable
-    text_cfg = resolve_model_for_context("text")
+    text_cfg = resolve_model_for_context("text", enforce_connected=False)
     try:
+        validate_provider_destination(text_cfg["api_base_url"])
         headers = build_llm_headers(
             text_cfg["api_key"],
             provider=text_cfg.get("provider", ""),

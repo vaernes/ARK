@@ -1072,13 +1072,16 @@
             <div id="mp-provider-wrap" style="display:none;">
               <label for="mp-provider">3rd-Party Provider</label>
               <select id="mp-provider" onchange="applyMpProviderPreset(this.value)">
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic (Claude)</option>
-                <option value="google">Google (Gemini)</option>
-                <option value="huggingface">Hugging Face</option>
-                <option value="custom">Custom OpenAI-Compatible</option>
+                <option value="openai" data-public="true" data-label="OpenAI">OpenAI</option>
+                <option value="anthropic" data-public="true" data-label="Anthropic (Claude)">Anthropic (Claude)</option>
+                <option value="google" data-public="true" data-label="Google (Gemini)">Google (Gemini)</option>
+                <option value="huggingface" data-public="true" data-label="Hugging Face">Hugging Face</option>
+                <option value="custom" data-public="false" data-label="Custom OpenAI-Compatible">Custom OpenAI-Compatible</option>
               </select>
             </div>
+          </div>
+          <div id="mp-offline-notice" style="display:none;margin:6px 0 4px;padding:8px 10px;border-radius:6px;background:rgba(245,90,0,0.12);border:1px solid var(--amber);color:#FCD34D;font-size:0.79rem;">
+            Offline Mode is active: public cloud providers are disabled. Use <strong>Custom OpenAI-Compatible</strong> for LAN/on-prem endpoints, or set <code>ARK_CONNECTED_MODE=true</code> to enable cloud providers.
           </div>
           <div class="row">
             <div>
@@ -1132,18 +1135,21 @@
             <div id="llm-third-party-wrap" style="display:none;margin-top:8px;">
               <label for="llm-third-party-provider">3rd-Party Provider Preset</label>
               <select id="llm-third-party-provider" onchange="applyThirdPartyPreset(this.value)">
-                <option value="huggingface">Hugging Face</option>
-                <option value="anthropic">Anthropic (Claude)</option>
-                <option value="openai">OpenAI</option>
-                <option value="google">Google (Gemini)</option>
-                <option value="custom">Custom OpenAI-Compatible</option>
+                <option value="huggingface" data-public="true" data-label="Hugging Face">Hugging Face</option>
+                <option value="anthropic" data-public="true" data-label="Anthropic (Claude)">Anthropic (Claude)</option>
+                <option value="openai" data-public="true" data-label="OpenAI">OpenAI</option>
+                <option value="google" data-public="true" data-label="Google (Gemini)">Google (Gemini)</option>
+                <option value="custom" data-public="false" data-label="Custom OpenAI-Compatible">Custom OpenAI-Compatible</option>
               </select>
               <div id="llm-provider-quick-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
-                <button type="button" class="sm" onclick="applyThirdPartyPreset('huggingface')">Hugging Face</button>
-                <button type="button" class="sm" onclick="applyThirdPartyPreset('anthropic')">Anthropic</button>
-                <button type="button" class="sm" onclick="applyThirdPartyPreset('openai')">OpenAI</button>
-                <button type="button" class="sm" onclick="applyThirdPartyPreset('google')">Google</button>
-                <button type="button" class="secondary sm" onclick="applyThirdPartyPreset('custom')">Custom</button>
+                <button type="button" class="sm" data-public="true" onclick="applyThirdPartyPreset('huggingface')">Hugging Face</button>
+                <button type="button" class="sm" data-public="true" onclick="applyThirdPartyPreset('anthropic')">Anthropic</button>
+                <button type="button" class="sm" data-public="true" onclick="applyThirdPartyPreset('openai')">OpenAI</button>
+                <button type="button" class="sm" data-public="true" onclick="applyThirdPartyPreset('google')">Google</button>
+                <button type="button" class="secondary sm" data-public="false" onclick="applyThirdPartyPreset('custom')">Custom</button>
+              </div>
+              <div id="llm-offline-notice" style="display:none;margin-top:6px;padding:8px 10px;border-radius:6px;background:rgba(245,90,0,0.12);border:1px solid var(--amber);color:#FCD34D;font-size:0.79rem;">
+                Offline Mode is active: public cloud providers are disabled. Use <strong>Custom OpenAI-Compatible</strong> for LAN/on-prem endpoints, or set <code>ARK_CONNECTED_MODE=true</code>.
               </div>
             </div>
             <label for="llm-api-base-url">OpenAI API Base URL (including <code>/v1</code>)</label>
@@ -1966,6 +1972,7 @@
       ]);
 
       const verLabel = `v${ver.version}`;
+      window.arkAirGapMode = !!ver.air_gap_mode;
       document.getElementById('ark-version').textContent = verLabel;
       const commitSuffix = ver.git_commit && ver.git_commit !== 'unknown' ? ` (${ver.git_commit.slice(0, 7)})` : '';
       const networkMode = ver.air_gap_mode ? 'Offline mode' : 'Connected mode: cloud access enabled';
@@ -1986,6 +1993,7 @@
       renderIngestSection(pluginMeta, sources, jobs);
       renderAuditSection(audits);
       renderModelsSection(modelsInfo, llmBackend, imageBackend, modelProfiles);
+      syncProviderAvailabilityForNetworkMode();
       if (notify) showToast('Control plane state refreshed.', 'ok');
     }
 
@@ -2612,10 +2620,12 @@
       const isArk = document.getElementById('llm-backend-type').value === 'ark_llm';
       document.getElementById('llm-backend-admin-wrap').style.display = isArk ? 'block' : 'none';
       document.getElementById('llm-third-party-wrap').style.display = isArk ? 'none' : 'block';
+      syncProviderAvailabilityForNetworkMode();
       if (!isArk) {
         const curUrl = (document.getElementById('llm-api-base-url').value || '').trim();
         if (!curUrl || curUrl === 'http://vllm:8000/v1') {
-          applyThirdPartyPreset(document.getElementById('llm-third-party-provider').value || 'openai');
+          const defaultProvider = window.arkAirGapMode ? 'custom' : (document.getElementById('llm-third-party-provider').value || 'openai');
+          applyThirdPartyPreset(defaultProvider);
         }
       } else {
         const saved = window.savedLlmBackend;
@@ -2743,12 +2753,49 @@
       onMpBackendTypeChange();
     }
 
+    function syncProviderAvailabilityForNetworkMode() {
+      const offline = !!window.arkAirGapMode;
+      for (const selId of ['mp-provider', 'llm-third-party-provider']) {
+        const sel = document.getElementById(selId);
+        if (!sel) continue;
+        for (const opt of sel.options) {
+          const isPublic = opt.dataset.public === 'true';
+          const baseLabel = opt.dataset.label || opt.textContent;
+          opt.disabled = offline && isPublic;
+          opt.textContent = (offline && isPublic) ? `${baseLabel} (Offline Mode)` : baseLabel;
+        }
+        if (offline && sel.selectedOptions[0] && sel.selectedOptions[0].disabled) {
+          sel.value = 'custom';
+        }
+      }
+      const quickBtns = document.getElementById('llm-provider-quick-btns');
+      if (quickBtns) {
+        for (const btn of quickBtns.querySelectorAll('button[data-public="true"]')) {
+          btn.disabled = offline;
+          btn.style.opacity = offline ? '0.45' : '1';
+          btn.title = offline ? 'Requires ARK_CONNECTED_MODE=true' : '';
+        }
+      }
+      const mpNotice = document.getElementById('mp-offline-notice');
+      if (mpNotice) {
+        const isThird = document.getElementById('mp-backend-type').value === 'third_party';
+        mpNotice.style.display = (offline && isThird) ? 'block' : 'none';
+      }
+      const llmNotice = document.getElementById('llm-offline-notice');
+      if (llmNotice) {
+        const isThird = document.getElementById('llm-backend-type').value === 'third_party';
+        llmNotice.style.display = (offline && isThird) ? 'block' : 'none';
+      }
+    }
+
     function onMpBackendTypeChange() {
       const isThird = document.getElementById('mp-backend-type').value === 'third_party';
       document.getElementById('mp-provider-wrap').style.display = isThird ? 'block' : 'none';
+      syncProviderAvailabilityForNetworkMode();
       const urlEl = document.getElementById('mp-api-base-url');
       if (isThird && (!urlEl.value.trim() || urlEl.value.trim() === 'http://vllm:8000/v1')) {
-        applyMpProviderPreset(document.getElementById('mp-provider').value || 'openai');
+        const defaultProvider = window.arkAirGapMode ? 'custom' : (document.getElementById('mp-provider').value || 'openai');
+        applyMpProviderPreset(defaultProvider);
       } else if (!isThird && !document.getElementById('mp-id').value) {
         urlEl.value = 'http://vllm:8000/v1';
       }
