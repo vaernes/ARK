@@ -12,7 +12,7 @@ name: ark-llm
 
 services:
   vllm:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4.post1}
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}
     container_name: ark-vllm
     restart: unless-stopped
     shm_size: 16gb

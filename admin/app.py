@@ -853,8 +853,12 @@ def portal_ui() -> HTMLResponse:
 
 @app.get("/admin-console/projects/{slug}", response_class=HTMLResponse)
 @app.get("/admin-console/projects/{slug}/", response_class=HTMLResponse)
+@app.get("/admin-console/projects/{slug}/chat", response_class=HTMLResponse)
+@app.get("/admin-console/projects/{slug}/chat/", response_class=HTMLResponse)
 @app.get("/portal/projects/{slug}", response_class=HTMLResponse)
 @app.get("/portal/projects/{slug}/", response_class=HTMLResponse)
+@app.get("/portal/projects/{slug}/chat", response_class=HTMLResponse)
+@app.get("/portal/projects/{slug}/chat/", response_class=HTMLResponse)
 def project_console_ui(slug: str) -> HTMLResponse:
     html_path = APP_DIR / "static" / "project.html"
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
@@ -909,7 +913,9 @@ def portal_projects(request: Request) -> list[dict[str, Any]]:
                 "extra_rag_projects": list(r[5] or []),
                 "llm_model": raw_llm,
                 "effective_llm_model": raw_llm or default_llm,
-                "webui_url": f"/?model={quote(r[3], safe='')}",
+                "webui_url": f"/portal/projects/{quote(r[0], safe='')}/chat",
+                "chat_url": f"/portal/projects/{quote(r[0], safe='')}/chat",
+                "open_webui_url": f"/?model={quote(r[3], safe='')}",
                 "user_role": role,
                 "created_at": r[7].isoformat(),
             }
@@ -1530,7 +1536,9 @@ def list_projects() -> list[dict[str, Any]]:
             "system_prompt": r[7],
             "llm_model": r[8],
             "effective_llm_model": r[8].strip() if r[8] and r[8].strip() else default_llm,
-            "webui_url": f"/?model={quote(r[4], safe='')}",
+            "webui_url": f"/admin-console/projects/{quote(r[0], safe='')}/chat",
+            "chat_url": f"/admin-console/projects/{quote(r[0], safe='')}/chat",
+            "open_webui_url": f"/?model={quote(r[4], safe='')}",
             "created_at": r[9].isoformat(),
             "member_count": int(r[10]),
         }
@@ -3672,6 +3680,16 @@ def _require_project_role(
                 (slug,),
             )
             row = cur.fetchone()
+            extra_collections: list[str] = []
+            if row and row[5] and row[6]:
+                extra_slugs = [s for s in list(row[6]) if s and s != row[0]]
+                if extra_slugs:
+                    cur.execute(
+                        "SELECT slug, collection_name FROM projects WHERE slug = ANY(%s) AND rag_enabled = TRUE AND collection_name IS NOT NULL",
+                        (extra_slugs,),
+                    )
+                    col_by_slug = {r[0]: r[1] for r in cur.fetchall() if r[1]}
+                    extra_collections = [col_by_slug[s] for s in extra_slugs if s in col_by_slug]
 
     if not row:
         raise HTTPException(status_code=404, detail="Project not found.")
@@ -3688,6 +3706,8 @@ def _require_project_role(
         raise HTTPException(status_code=403, detail="Insufficient permissions for this project.")
 
     raw_llm = (row[8] or "").strip()
+    is_admin_console = request.url.path.startswith("/admin-console")
+    chat_prefix = "/admin-console" if is_admin_console else "/portal"
     proj_dict = {
         "slug": row[0],
         "name": row[1],
@@ -3696,10 +3716,13 @@ def _require_project_role(
         "model_id": row[4],
         "rag_enabled": row[5],
         "extra_rag_projects": list(row[6] or []),
+        "extra_collections": extra_collections,
         "system_prompt": row[7] or "",
         "llm_model": raw_llm,
         "effective_llm_model": raw_llm or default_llm,
-        "webui_url": f"/?model={quote(row[4], safe='')}",
+        "webui_url": f"{chat_prefix}/projects/{quote(row[0], safe='')}/chat",
+        "chat_url": f"{chat_prefix}/projects/{quote(row[0], safe='')}/chat",
+        "open_webui_url": f"/?model={quote(row[4], safe='')}",
         "created_at": row[9].isoformat(),
         "member_count": int(row[10] or 0),
         "user_role": role,
@@ -4233,10 +4256,13 @@ def _prepare_rag_and_llm_request(
     return chat_url, llm_headers, llm_payload, target_model, context_blocks, citations
 
 
-@app.post("/projects/{slug}/v1/chat/completions")
-async def project_chat_completions(slug: str, request: Request, auth: dict[str, Any] = Depends(authenticate_project_key)) -> Any:
-    _require_key_scope(auth, "chat", slug)
-    body = await request.json()
+async def _execute_project_chat_completion(
+    slug: str,
+    body: dict[str, Any],
+    auth_ctx: dict[str, Any],
+    actor_label: str,
+) -> Any:
+    """Shared RAG retrieval + LLM completion executor for API-key and WebUI-session project chats."""
     stream = bool(body.get("stream", False))
     include_citations = bool(body.get("include_citations", False))
 
@@ -4244,9 +4270,12 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
         _prepare_rag_and_llm_request,
         slug,
         body,
-        auth,
+        auth_ctx,
     )
-    rag_headers = {"X-Ark-Rag-Chunks": str(len(context_blocks))}
+    rag_headers = {
+        "X-Ark-Rag-Chunks": str(len(context_blocks)),
+        "X-Ark-Rag-Sources": json.dumps([c.get("source", "") for c in citations if c.get("source")]),
+    }
 
     if stream:
         try:
@@ -4256,25 +4285,26 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
         except requests.RequestException as exc:
             audit.record(
                 "api.chat_completion",
-                actor=f"key:{auth['key_label']}",
+                actor=actor_label,
                 project_slug=slug,
                 status="upstream_unreachable",
-                details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": True, "llm_model": target_model, "error": str(exc)},
+                details={"rag_enabled": auth_ctx["rag_enabled"], "context_chunks": len(context_blocks), "stream": True, "llm_model": target_model, "error": str(exc)},
             )
             return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"}, headers=rag_headers)
 
         audit.record(
             "api.chat_completion",
-            actor=f"key:{auth['key_label']}",
+            actor=actor_label,
             project_slug=slug,
             status="success" if resp.ok else f"http_{resp.status_code}",
-            details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": True, "llm_model": target_model},
+            details={"rag_enabled": auth_ctx["rag_enabled"], "context_chunks": len(context_blocks), "stream": True, "llm_model": target_model},
         )
         if not resp.ok:
             try:
                 err_body = resp.json()
             except ValueError:
                 err_body = {"error": resp.text}
+            resp.close()
             return JSONResponse(status_code=resp.status_code, content=err_body, headers=rag_headers)
 
         def event_stream():
@@ -4294,10 +4324,10 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
     except requests.RequestException as exc:
         audit.record(
             "api.chat_completion",
-            actor=f"key:{auth['key_label']}",
+            actor=actor_label,
             project_slug=slug,
             status="upstream_unreachable",
-            details={"rag_enabled": auth["rag_enabled"], "context_chunks": len(context_blocks), "stream": False, "llm_model": target_model, "error": str(exc)},
+            details={"rag_enabled": auth_ctx["rag_enabled"], "context_chunks": len(context_blocks), "stream": False, "llm_model": target_model, "error": str(exc)},
         )
         return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"}, headers=rag_headers)
 
@@ -4312,11 +4342,11 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
 
     audit.record(
         "api.chat_completion",
-        actor=f"key:{auth['key_label']}",
+        actor=actor_label,
         project_slug=slug,
         status="success" if resp.ok else f"http_{resp.status_code}",
         details={
-            "rag_enabled": auth["rag_enabled"],
+            "rag_enabled": auth_ctx["rag_enabled"],
             "context_chunks": len(context_blocks),
             "stream": False,
             "llm_model": target_model,
@@ -4324,6 +4354,29 @@ async def project_chat_completions(slug: str, request: Request, auth: dict[str, 
         },
     )
     return JSONResponse(status_code=resp.status_code, content=content, headers=rag_headers)
+
+
+@app.post("/admin-console/api/projects/{slug}/chat/completions")
+@app.post("/portal/api/projects/{slug}/chat/completions")
+async def console_project_chat_completions(slug: str, request: Request) -> Any:
+    """Session-authenticated, RBAC-gated per-project WebUI chat completions."""
+    actor, _, proj = await run_in_threadpool(
+        _require_project_role,
+        request,
+        slug,
+        {"admin", "editor", "member", "viewer"},
+    )
+    body = await request.json()
+    if "include_citations" not in body:
+        body["include_citations"] = True
+    return await _execute_project_chat_completion(slug, body, proj, actor_label=f"webui:{actor}")
+
+
+@app.post("/projects/{slug}/v1/chat/completions")
+async def project_chat_completions(slug: str, request: Request, auth: dict[str, Any] = Depends(authenticate_project_key)) -> Any:
+    _require_key_scope(auth, "chat", slug)
+    body = await request.json()
+    return await _execute_project_chat_completion(slug, body, auth, actor_label=f"key:{auth['key_label']}")
 
 
 @app.post("/projects/{slug}/v1/images/generations")

@@ -581,6 +581,167 @@
       line-height: 1.45;
       white-space: pre-line;
     }
+
+    /* Per-Project Isolated Chat WebUI */
+    .chat-shell {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .chat-isolation-bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      background: var(--shield-alt);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+    }
+
+    .chat-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .chat-thread {
+      min-height: 360px;
+      max-height: 540px;
+      overflow-y: auto;
+      background: var(--void);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .chat-empty {
+      margin: auto;
+      text-align: center;
+      max-width: 560px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.5;
+    }
+
+    .chat-starter-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .chat-starter-btn {
+      margin: 0;
+      background: var(--shield);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .chat-starter-btn:hover {
+      background: var(--cyan-soft);
+    }
+
+    .chat-msg {
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      max-width: 88%;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .chat-msg.user {
+      align-self: flex-end;
+      background: rgba(245, 90, 0, 0.1);
+      border-color: rgba(245, 90, 0, 0.42);
+    }
+
+    .chat-msg.assistant {
+      align-self: flex-start;
+      background: var(--shield);
+      border-color: rgba(0, 229, 255, 0.32);
+    }
+
+    .chat-msg.error {
+      border-color: var(--err);
+      background: rgba(239, 68, 68, 0.12);
+    }
+
+    .chat-msg-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--gray);
+      font-weight: 700;
+    }
+
+    .chat-msg.user .chat-msg-meta {
+      color: #FFB38A;
+    }
+
+    .chat-msg.assistant .chat-msg-meta {
+      color: var(--cyan);
+    }
+
+    .chat-msg-body {
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.55;
+      font-size: 0.9rem;
+      color: var(--text);
+    }
+
+    .chat-citations {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-top: 4px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(46, 61, 82, 0.8);
+    }
+
+    .citation-pill {
+      display: inline-block;
+      background: var(--void);
+      border: 1px solid rgba(0, 229, 255, 0.35);
+      color: var(--cyan);
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 0.72rem;
+      font-family: monospace;
+    }
+
+    .chat-composer {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    .chat-composer textarea {
+      flex: 1;
+      resize: vertical;
+      min-height: 54px;
+      max-height: 180px;
+      line-height: 1.45;
+    }
   </style>
 </head>
 
@@ -604,7 +765,7 @@
       </div>
       <a id="back-admin-link" class="nav-link" href="/admin-console/" style="display:none;">&larr; Control Plane</a>
       <a class="nav-link" href="/portal/">&larr; User Portal</a>
-      <a id="top-chat-link" class="nav-link cyan-cta" href="/">Open Chat &rarr;</a>
+      <a id="top-chat-link" class="nav-link cyan-cta" href="#chat" onclick="switchTab('chat'); return false;">Project Chat &rarr;</a>
       <a class="nav-link" href="/create/">Create Studio</a>
       <a class="nav-link" href="/oauth2/sign_out" style="color:var(--muted);">Sign Out</a>
       <button type="button" style="margin-top:0;" onclick="refreshConsole(true)">Refresh</button>
@@ -615,8 +776,13 @@
     style="display:none; background:rgba(239,68,68,0.16); border:1px solid var(--err); color:#FCA5A5; padding:10px 14px; border-radius:8px; margin-bottom:14px; font-size:0.84rem;">
   </div>
 
-  <!-- 4-Tab Project Console Navigation -->
+  <!-- 5-Tab Project Console Navigation -->
   <nav class="tab-bar" role="tablist" aria-label="Project Console Sections">
+    <button type="button" id="tab-btn-chat" class="tab-btn" role="tab" aria-selected="false"
+      onclick="switchTab('chat')">
+      <span>Assistant Chat</span>
+      <span id="tab-badge-chat" class="tab-count">WebUI</span>
+    </button>
     <button type="button" id="tab-btn-overview" class="tab-btn active" role="tab" aria-selected="true"
       onclick="switchTab('overview')">
       <span>Overview &amp; Settings</span>
@@ -637,6 +803,44 @@
       <span id="tab-badge-audit" class="tab-count">0</span>
     </button>
   </nav>
+
+  <!-- ==================== TAB 0: ISOLATED PROJECT CHAT WEBUI ==================== -->
+  <section id="panel-chat" class="tab-panel" role="tabpanel">
+    <div class="card rag-accent chat-shell">
+      <div class="chat-isolation-bar">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span id="chat-isolation-badge" class="badge rag">Isolated KB</span>
+          <span id="chat-model-badge" class="badge clean">Model: ...</span>
+          <span id="chat-isolation-detail" style="font-size:0.8rem;color:var(--muted);">Loading project isolation boundary...</span>
+        </div>
+        <div class="chat-controls">
+          <div id="chat-top-k-wrap" style="display:inline-flex;align-items:center;gap:6px;font-size:0.78rem;color:var(--muted);">
+            <span>RAG Top-K:</span>
+            <select id="chat-top-k" style="width:auto;padding:4px 8px;font-size:0.78rem;">
+              <option value="4" selected>4 chunks</option>
+              <option value="6">6 chunks</option>
+              <option value="8">8 chunks</option>
+            </select>
+          </div>
+          <label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:0.78rem;color:var(--text);font-weight:600;cursor:pointer;">
+            <input id="chat-stream-toggle" type="checkbox" checked style="width:auto;" />
+            Stream
+          </label>
+          <button type="button" id="chat-upload-shortcut" class="secondary sm" style="display:none;" onclick="switchTab('rag')">+ Upload Docs</button>
+          <button type="button" class="secondary sm" onclick="clearProjectChat()">New Chat</button>
+        </div>
+      </div>
+
+      <div id="chat-messages" class="chat-thread" aria-live="polite"></div>
+
+      <div class="chat-composer">
+        <textarea id="chat-input" rows="2"
+          placeholder="Ask this project's isolated assistant... (Enter to send, Shift+Enter for newline)"
+          onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); sendChatMessage();}"></textarea>
+        <button type="button" id="btn-send-chat" style="margin-top:0;padding:12px 20px;" onclick="sendChatMessage()">Send</button>
+      </div>
+    </div>
+  </section>
 
   <!-- ==================== TAB 1: OVERVIEW & SETTINGS ==================== -->
   <section id="panel-overview" class="tab-panel active" role="tabpanel">
@@ -668,7 +872,7 @@
       <div class="card rag-accent">
         <h2>
           <span>Project Gateway &amp; IDE Quick-Start</span>
-          <a id="card-chat-link" class="nav-link cyan-cta" href="/" style="padding:4px 10px;font-size:0.75rem;">Launch WebUI Chat &rarr;</a>
+          <a id="card-chat-link" class="nav-link cyan-cta" href="#chat" onclick="switchTab('chat'); return false;" style="padding:4px 10px;font-size:0.75rem;">Launch Project Chat &rarr;</a>
         </h2>
         <p class="section-sub">Connect Continue, Cline, Office add-ins, or scripts to this project's isolated OpenAI-compatible gateway.</p>
 
@@ -1137,8 +1341,9 @@
   </footer>
 
   <script>
-    const VALID_TABS = ['overview', 'access', 'rag', 'audit'];
-    let activeTab = 'overview';
+    const VALID_TABS = ['chat', 'overview', 'access', 'rag', 'audit'];
+    const isChatPath = /\/chat\/?$/.test(window.location.pathname);
+    let activeTab = isChatPath ? 'chat' : 'overview';
 
     const pathMatch = window.location.pathname.match(/^\/(admin-console|portal)\/projects\/([^/]+)/);
     const consolePrefix = pathMatch ? `/${pathMatch[1]}` : '/portal';
@@ -1152,6 +1357,8 @@
     let loadedSources = [];
     let loadedAudits = [];
     let expandedAuditIds = new Set();
+    let chatMessages = [];
+    let chatBusy = false;
 
     const DEFAULT_PIPELINE_YAML = [
       'apiVersion: ark-ingest/v1',
@@ -1245,7 +1452,8 @@
 
     function switchProjectConsole(targetSlug) {
       if (!targetSlug || targetSlug === projectSlug) return;
-      window.location.href = `${consolePrefix}/projects/${encodeURIComponent(targetSlug)}${window.location.hash || ''}`;
+      const suffix = activeTab === 'chat' ? '/chat' : (window.location.hash || '');
+      window.location.href = `${consolePrefix}/projects/${encodeURIComponent(targetSlug)}${suffix}`;
     }
 
     function confirmModal({ title = 'Confirm Action', message = '', confirmText = 'Confirm', danger = false, checkboxLabel = '' }) {
@@ -1440,7 +1648,7 @@
       );
       switcher.value = proj.slug;
 
-      const chatUrl = proj.webui_url || `/?model=${encodeURIComponent(proj.model_id)}`;
+      const chatUrl = proj.chat_url || proj.webui_url || `${consolePrefix}/projects/${encodeURIComponent(proj.slug)}/chat`;
       document.getElementById('top-chat-link').href = chatUrl;
       document.getElementById('card-chat-link').href = chatUrl;
 
@@ -1475,6 +1683,7 @@
       renderRagSection(bundle.plugins, bundle.ingest_sources || [], bundle.ingest_jobs || [], bundle.documents || []);
       renderAuditSection(bundle.audits || []);
       renderRolePermissions();
+      renderChatHeader();
 
       const snapLink = document.getElementById('download-proj-snap');
       snapLink.href = `${apiBase}/projects/${encodeURIComponent(proj.slug)}/snapshot/download`;
@@ -2085,6 +2294,253 @@
       out.textContent = JSON.stringify(obj, null, 2);
     }
 
+    function renderChatHeader() {
+      if (!currentProject) return;
+      const isoBadge = document.getElementById('chat-isolation-badge');
+      const modelBadge = document.getElementById('chat-model-badge');
+      const detailEl = document.getElementById('chat-isolation-detail');
+      const topKWrap = document.getElementById('chat-top-k-wrap');
+      const uploadBtn = document.getElementById('chat-upload-shortcut');
+      const canIngestDocs = ['admin', 'editor', 'member'].includes(currentUserRole);
+
+      isoBadge.className = `badge ${currentProject.rag_enabled ? 'rag' : 'clean'}`;
+      isoBadge.textContent = currentProject.rag_enabled ? 'RAG Isolated KB' : 'Clean Mode (Zero-RAG)';
+      modelBadge.textContent = `LLM: ${currentProject.effective_llm_model || '-'}`;
+
+      if (currentProject.rag_enabled) {
+        const linked = (currentProject.extra_rag_projects || []).length
+          ? ` + linked (${currentProject.extra_rag_projects.join(', ')})`
+          : '';
+        detailEl.textContent = `RBAC enforced for '${currentProject.slug}' (${currentUserRole}) \u2022 Collection: ${currentProject.collection_name}${linked}`;
+      } else {
+        detailEl.textContent = `RBAC enforced for '${currentProject.slug}' (${currentUserRole}) \u2022 Direct LLM without vector retrieval`;
+      }
+
+      topKWrap.style.display = currentProject.rag_enabled ? 'inline-flex' : 'none';
+      uploadBtn.style.display = (currentProject.rag_enabled && canIngestDocs) ? 'inline-block' : 'none';
+
+      if (!chatMessages.length) {
+        renderChatMessages();
+      }
+    }
+
+    function applyStarterQuestion(text) {
+      const inp = document.getElementById('chat-input');
+      if (!inp) return;
+      inp.value = text;
+      inp.focus();
+    }
+
+    function renderChatMessages() {
+      const container = document.getElementById('chat-messages');
+      if (!container) return;
+
+      if (!chatMessages.length) {
+        const projName = currentProject ? currentProject.name : (projectSlug || 'this project');
+        const isRag = currentProject ? Boolean(currentProject.rag_enabled) : true;
+        const starters = isRag
+          ? [
+              'Summarize the key documents in this project knowledge base.',
+              'List important requirements or risks mentioned in our project files.',
+              'What sources and policy rules apply to this workspace?'
+            ]
+          : [
+              'Help me draft an architecture checklist for this workspace.',
+              'Explain how this Clean Mode workspace isolates data from other projects.',
+              'Review this technical note and suggest clearer phrasing.'
+            ];
+        container.replaceChildren(
+          el('div', { id: 'chat-empty-state', className: 'chat-empty' }, [
+            el('div', { style: 'font-size:1rem;font-weight:700;color:var(--text);margin-bottom:6px;', text: `${projName} — Isolated Project WebUI` }),
+            el('div', {
+              text: isRag
+                ? `Only members of '${projectSlug}' can access this chat. Prompts retrieve exclusively from '${currentProject ? currentProject.collection_name : projectSlug}'${(currentProject && (currentProject.extra_rag_projects || []).length) ? ' and linked KBs' : ''}.`
+                : `Only members of '${projectSlug}' can access this chat. Prompts go straight to the model without accessing any Qdrant knowledge base.`
+            }),
+            el('div', { className: 'chat-starter-row' },
+              starters.map(q =>
+                el('button', {
+                  type: 'button',
+                  className: 'chat-starter-btn',
+                  text: q,
+                  onClick: () => applyStarterQuestion(q)
+                })
+              )
+            )
+          ])
+        );
+        return;
+      }
+
+      const projLabel = currentProject ? `${currentProject.name} Assistant` : 'Project Assistant';
+      const nodes = chatMessages.map(msg => {
+        const isUser = msg.role === 'user';
+        const children = [
+          el('div', { className: 'chat-msg-meta' }, [
+            el('span', { text: isUser ? 'You' : projLabel }),
+            el('span', { text: msg.streaming ? 'Streaming...' : (msg.error ? 'Error' : '') })
+          ]),
+          el('div', {
+            className: 'chat-msg-body',
+            text: msg.content || (msg.streaming ? 'Thinking...' : '')
+          })
+        ];
+
+        const uniqueSources = Array.from(new Set((msg.citations || []).filter(Boolean)));
+        if (!isUser && ((msg.chunkCount || 0) > 0 || uniqueSources.length > 0)) {
+          children.push(
+            el('div', { className: 'chat-citations' }, [
+              el('span', {
+                className: 'badge rag',
+                text: `RAG Grounded (${msg.chunkCount || uniqueSources.length} chunks)`
+              }),
+              ...uniqueSources.map(src => el('span', { className: 'citation-pill', text: src }))
+            ])
+          );
+        }
+
+        return el('div', {
+          className: `chat-msg ${isUser ? 'user' : 'assistant'}${msg.error ? ' error' : ''}`
+        }, children);
+      });
+
+      container.replaceChildren(...nodes);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function clearProjectChat() {
+      if (chatBusy) return;
+      chatMessages = [];
+      renderChatMessages();
+      showToast('Started a fresh project conversation.', 'ok');
+    }
+
+    async function sendChatMessage() {
+      if (chatBusy) return;
+      const inputEl = document.getElementById('chat-input');
+      const sendBtn = document.getElementById('btn-send-chat');
+      const text = (inputEl ? inputEl.value : '').trim();
+      if (!text) return;
+
+      const payloadMessages = chatMessages
+        .filter(m => !m.error && !m.streaming && m.content)
+        .map(m => ({ role: m.role, content: m.content }));
+      payloadMessages.push({ role: 'user', content: text });
+
+      chatMessages.push({ role: 'user', content: text });
+      const assistantMsg = { role: 'assistant', content: '', citations: [], chunkCount: 0, streaming: true, error: false };
+      chatMessages.push(assistantMsg);
+
+      inputEl.value = '';
+      chatBusy = true;
+      sendBtn.disabled = true;
+      showError('');
+      renderChatMessages();
+
+      const useStream = Boolean(document.getElementById('chat-stream-toggle')?.checked);
+      const topK = parseInt(document.getElementById('chat-top-k')?.value || '4', 10) || 4;
+
+      try {
+        const resp = await fetch(`${apiBase}/projects/${encodeURIComponent(projectSlug)}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: payloadMessages,
+            stream: useStream,
+            top_k: topK,
+            include_citations: true
+          })
+        });
+
+        const ragChunksHeader = parseInt(resp.headers.get('X-Ark-Rag-Chunks') || '0', 10) || 0;
+        let headerSources = [];
+        try {
+          headerSources = JSON.parse(resp.headers.get('X-Ark-Rag-Sources') || '[]');
+        } catch (_) {
+          headerSources = [];
+        }
+        assistantMsg.chunkCount = ragChunksHeader;
+        if (Array.isArray(headerSources) && headerSources.length) {
+          assistantMsg.citations = headerSources;
+        }
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          assistantMsg.streaming = false;
+          assistantMsg.error = true;
+          assistantMsg.content = `Request failed (${resp.status}): ${errText}`;
+          showError(`Chat error (${resp.status}): ${errText}`);
+          renderChatMessages();
+          return;
+        }
+
+        const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+        if (ctype.includes('text/event-stream') && resp.body) {
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let doneSeen = false;
+
+          const container = document.getElementById('chat-messages');
+          const msgCards = container ? container.querySelectorAll('.chat-msg-body') : [];
+          const activeBodyEl = msgCards.length ? msgCards[msgCards.length - 1] : null;
+
+          while (!doneSeen) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const rawLine of lines) {
+              const line = rawLine.trim();
+              if (!line || !line.startsWith('data:')) continue;
+              const dataStr = line.slice(5).trim();
+              if (dataStr === '[DONE]') {
+                doneSeen = true;
+                break;
+              }
+              try {
+                const evt = JSON.parse(dataStr);
+                const choice = evt && evt.choices && evt.choices[0];
+                const delta = (choice && choice.delta && choice.delta.content)
+                  || (choice && choice.message && choice.message.content)
+                  || '';
+                if (delta) {
+                  assistantMsg.content += delta;
+                  if (activeBodyEl) activeBodyEl.textContent = assistantMsg.content;
+                  if (container) container.scrollTop = container.scrollHeight;
+                }
+              } catch (_) {
+                // Ignore partial/keepalive SSE payloads
+              }
+            }
+          }
+          assistantMsg.streaming = false;
+          if (!assistantMsg.content) assistantMsg.content = '(No text content returned)';
+          renderChatMessages();
+        } else {
+          const data = await resp.json();
+          assistantMsg.streaming = false;
+          assistantMsg.content = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content)
+            || data.error
+            || JSON.stringify(data);
+          if (Array.isArray(data && data.ark_citations) && data.ark_citations.length) {
+            assistantMsg.citations = data.ark_citations.map(c => c.source).filter(Boolean);
+          }
+          renderChatMessages();
+        }
+      } catch (err) {
+        assistantMsg.streaming = false;
+        assistantMsg.error = true;
+        assistantMsg.content = `Chat request failed: ${err && err.message ? err.message : String(err)}`;
+        showError(assistantMsg.content);
+        renderChatMessages();
+      } finally {
+        chatBusy = false;
+        sendBtn.disabled = false;
+      }
+    }
+
     function exportAuditJson() {
       const blob = new Blob([JSON.stringify(loadedAudits || [], null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -2101,12 +2557,15 @@
     const initialHash = (window.location.hash || '').replace(/^#/, '');
     if (VALID_TABS.includes(initialHash)) {
       switchTab(initialHash, false);
+    } else if (isChatPath) {
+      switchTab('chat', false);
     }
     window.addEventListener('hashchange', () => {
       const h = (window.location.hash || '').replace(/^#/, '');
       if (VALID_TABS.includes(h) && h !== activeTab) switchTab(h, false);
     });
 
+    renderChatMessages();
     refreshConsole();
   </script>
 </body>

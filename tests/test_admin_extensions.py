@@ -185,9 +185,11 @@ class TestUiAndLlmAdminSecurity(unittest.TestCase):
         for tab_id in ("overview", "projects", "rag", "models", "security"):
             self.assertIn(f'id="tab-btn-{tab_id}"', admin_html)
             self.assertIn(f'id="panel-{tab_id}"', admin_html)
-        for tab_id in ("overview", "access", "rag", "audit"):
+        for tab_id in ("chat", "overview", "access", "rag", "audit"):
             self.assertIn(f'id="tab-btn-{tab_id}"', project_html)
             self.assertIn(f'id="panel-{tab_id}"', project_html)
+        self.assertIn('id="chat-messages"', project_html)
+        self.assertIn("sendChatMessage()", project_html)
         self.assertIn('onclick="exportProjectSnapshot()"', admin_html)
         self.assertIn('onclick="exportProjectSnapshot()"', project_html)
         self.assertIn("refreshAuditOnly()", admin_html)

@@ -412,6 +412,21 @@ class TestVersionAndLicense(unittest.TestCase):
             self.assertEqual(info["version"], "2027.01.2")
             self.assertEqual(info["git_commit"], "abc1234")
 
+    def test_product_versions_sync_and_readme_table(self) -> None:
+        import subprocess
+
+        self.assertTrue((REPO_ROOT / "versions.env").is_file())
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("## Bundled Products & Versions", readme)
+        self.assertIn("<!-- ARK_VERSIONS_START -->", readme)
+        proc = subprocess.run(
+            ["bash", str(REPO_ROOT / "scripts" / "sync-versions.sh"), "--check"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
 
 class TestLlmBackendConfig(unittest.TestCase):
     def test_explicit_external_openai_backend(self) -> None:

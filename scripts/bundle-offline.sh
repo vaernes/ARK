@@ -82,21 +82,28 @@ load_env() {
     fi
   fi
 
+  if [[ -f "${REPO_ROOT}/versions.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "${REPO_ROOT}/versions.env"
+    set +a
+  fi
+
   set -a
   # shellcheck disable=SC1090
   source "${source_env}"
   set +a
 
-  VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4.post1}"
-  TEI_IMAGE="${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.6}"
-  QDRANT_IMAGE="${QDRANT_IMAGE:-qdrant/qdrant:v1.12.5}"
-  OPEN_WEBUI_IMAGE="${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.5.10}"
-  POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
-  TIKA_IMAGE="${TIKA_IMAGE:-apache/tika:3.1.0.0-full}"
-  TIKA_IMAGE_DIGEST="${TIKA_IMAGE_DIGEST:-sha256:1221afa48af9158e14b8d005bbcfa49f3d7fc4e5113db48cad586955bc64992b}"
-  CADDY_IMAGE="${CADDY_IMAGE:-caddy:2-alpine}"
-  KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}"
-  OAUTH2_PROXY_IMAGE="${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.7.1}"
+  VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}"
+  TEI_IMAGE="${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.9.4}"
+  QDRANT_IMAGE="${QDRANT_IMAGE:-qdrant/qdrant:v1.17.1}"
+  OPEN_WEBUI_IMAGE="${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.13.3}"
+  POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18-alpine}"
+  TIKA_IMAGE="${TIKA_IMAGE:-apache/tika:3.3.0.0-full}"
+  TIKA_IMAGE_DIGEST="${TIKA_IMAGE_DIGEST:-sha256:ecdd37e204308266b1f8e28569f8516ebd5b96d7a4518a71d3904710b20c03b3}"
+  CADDY_IMAGE="${CADDY_IMAGE:-caddy:2.11.9-alpine}"
+  KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.2}"
+  OAUTH2_PROXY_IMAGE="${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.15.6}"
   ARK_ADMIN_IMAGE="${ARK_ADMIN_IMAGE:-ark-admin:latest}"
   ARK_LLM_ADMIN_IMAGE="${ARK_LLM_ADMIN_IMAGE:-ark-llm-admin:latest}"
 

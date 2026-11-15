@@ -1520,7 +1520,7 @@
                   text: 'Project Console \u2192'
                 }),
                 el('a', {
-                  href: p.webui_url || `/?model=${encodeURIComponent(p.model_id || (p.slug + '-assistant'))}`,
+                  href: p.chat_url || `/admin-console/projects/${encodeURIComponent(p.slug)}/chat`,
                   style: 'text-decoration:none;background:var(--void);border:1px solid rgba(0,229,255,0.45);color:var(--cyan);padding:4px 7px;border-radius:6px;font-size:0.74rem;font-weight:700;',
                   text: 'Chat'
                 }),
@@ -1565,7 +1565,7 @@
                 text: 'Console \u2192'
               }),
               el('a', {
-                href: p.webui_url || `/?model=${encodeURIComponent(p.model_id || (p.slug + '-assistant'))}`,
+                href: p.chat_url || `/admin-console/projects/${encodeURIComponent(p.slug)}/chat`,
                 style: 'text-decoration:none;background:var(--void);border:1px solid rgba(0,229,255,0.45);color:var(--cyan);padding:4px 7px;border-radius:6px;font-size:0.74rem;font-weight:700;',
                 text: 'Chat'
               }),

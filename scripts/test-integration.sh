@@ -10,6 +10,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+if [[ -f "${REPO_ROOT}/versions.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/versions.env"
+  set +a
+fi
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
+QDRANT_IMAGE="${QDRANT_IMAGE:-qdrant/qdrant:v1.12.5}"
+KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}"
+OAUTH2_PROXY_IMAGE="${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.7.1}"
+CADDY_IMAGE="${CADDY_IMAGE:-caddy:2-alpine}"
+
 KEEP_RUNNING=false
 if [[ "${1:-}" == "--keep" ]]; then
   KEEP_RUNNING=true
@@ -98,14 +110,14 @@ main() {
     -e POSTGRES_PASSWORD="${PG_PASS}" \
     -e POSTGRES_DB=openwebui \
     -v "${REPO_ROOT}/config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro" \
-    postgres:16-alpine >/dev/null
+    "${POSTGRES_IMAGE}" >/dev/null
 
   log "Starting Qdrant..."
   docker run -d --name ark-test-qdrant --network "${NET_NAME}" --network-alias qdrant \
     -e QDRANT__TELEMETRY_DISABLED=true \
     -e QDRANT__SERVICE__API_KEY="${QDRANT_KEY}" \
     -v "${REPO_ROOT}/config/qdrant/config.yaml:/qdrant/config/production.yaml:ro" \
-    qdrant/qdrant:v1.12.5 >/dev/null
+    "${QDRANT_IMAGE}" >/dev/null
 
   log "Starting Mock vLLM & Mock TEI..."
   docker run -d --name ark-test-vllm --network "${NET_NAME}" --network-alias vllm \
@@ -138,7 +150,7 @@ main() {
     -e KC_BOOTSTRAP_ADMIN_PASSWORD="${KC_PASS}" \
     -e KC_HEALTH_ENABLED=true \
     -v "${TMP_ROOT}/keycloak:/opt/keycloak/data/import:ro" \
-    quay.io/keycloak/keycloak:26.0 \
+    "${KEYCLOAK_IMAGE}" \
     start --import-realm --http-enabled=true --http-relative-path=/auth --hostname=https://localhost:${TEST_HTTPS_PORT}/auth --hostname-strict=false --hostname-backchannel-dynamic=true --proxy-headers=xforwarded >/dev/null
 
   log "Waiting for Keycloak readiness (up to 120s)..."
@@ -156,7 +168,7 @@ main() {
 
   log "Starting oauth2-proxy..."
   docker run -d --name ark-test-oauth2-proxy --network "${NET_NAME}" --network-alias oauth2-proxy \
-    quay.io/oauth2-proxy/oauth2-proxy:v7.7.1 \
+    "${OAUTH2_PROXY_IMAGE}" \
     --provider=oidc \
     --skip-oidc-discovery=true \
     --oidc-issuer-url=https://localhost:${TEST_HTTPS_PORT}/auth/realms/ark \
@@ -221,7 +233,7 @@ main() {
     -e ARK_DOMAIN="localhost" \
     -e ARK_PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET}" \
     -v "${REPO_ROOT}/config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
-    caddy:2-alpine >/dev/null
+    "${CADDY_IMAGE}" >/dev/null
   docker network connect "${CONTROL_NET}" ark-test-caddy >/dev/null
 
   log "Waiting for ark-admin readiness..."
@@ -441,17 +453,50 @@ denied = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, j
 assert denied.status_code == 403, denied.status_code
 denied_console = requests.get('http://localhost:8090/portal/api/projects/project-alpha/console', headers=H_BOB, timeout=5)
 assert denied_console.status_code == 403, denied_console.status_code
+denied_chat = requests.post(
+    'http://localhost:8090/portal/api/projects/project-alpha/chat/completions',
+    headers=H_BOB,
+    json={'messages': [{'role': 'user', 'content': 'Unauthorized chat test'}]},
+    timeout=5,
+)
+assert denied_chat.status_code == 403, denied_chat.status_code
 
-# Grant viewer role: bob sees user_role='viewer', can view project console, cannot mutate settings or issue ingest key (403), can issue chat key (200)
+# Grant viewer role: bob sees user_role='viewer', can view project console, use isolated project chat WebUI, cannot mutate settings or issue ingest key (403), can issue chat key (200)
 grant_v = requests.post('http://localhost:8090/admin-console/api/projects/project-alpha/members', headers=H_ADMIN, json={'user_identifier': 'bob@ark.local', 'role': 'viewer'}, timeout=5)
 grant_v.raise_for_status()
 projs_v = requests.get('http://localhost:8090/portal/api/projects', headers=H_BOB, timeout=5)
 projs_v.raise_for_status()
 alpha_entry = [p for p in projs_v.json() if p['slug'] == 'project-alpha'][0]
 assert alpha_entry.get('user_role') == 'viewer', alpha_entry
+assert alpha_entry.get('chat_url') == '/portal/projects/project-alpha/chat', alpha_entry
 bob_console_v = requests.get('http://localhost:8090/portal/api/projects/project-alpha/console', headers=H_BOB, timeout=5)
 bob_console_v.raise_for_status()
 assert bob_console_v.json()['me']['user_role'] == 'viewer', bob_console_v.json()
+
+html_chat_pc = requests.get('http://localhost:8090/portal/projects/project-alpha/chat', headers=H_BOB, timeout=5)
+html_chat_pc.raise_for_status()
+assert 'panel-chat' in html_chat_pc.text
+
+webui_chat = requests.post(
+    'http://localhost:8090/portal/api/projects/project-alpha/chat/completions',
+    headers=H_BOB,
+    json={'messages': [{'role': 'user', 'content': 'Summarize spec and policy'}]},
+    timeout=15,
+)
+webui_chat.raise_for_status()
+assert int(webui_chat.headers.get('X-Ark-Rag-Chunks', '0')) >= 1, webui_chat.headers
+assert 'Project_Alpha' in webui_chat.headers.get('X-Ark-Rag-Sources', ''), webui_chat.headers
+webui_json = webui_chat.json()
+assert webui_json.get('ark_citations'), webui_json
+
+webui_stream = requests.post(
+    'http://localhost:8090/portal/api/projects/project-alpha/chat/completions',
+    headers=H_BOB,
+    json={'stream': True, 'messages': [{'role': 'user', 'content': 'Stream via project webui'}]},
+    timeout=15,
+)
+webui_stream.raise_for_status()
+assert 'data: [DONE]' in webui_stream.text, webui_stream.text
 denied_model_v = requests.patch('http://localhost:8090/portal/api/projects/project-alpha/model', headers=H_BOB, json={'llm_model': 'unauth-llm'}, timeout=5)
 assert denied_model_v.status_code == 403, denied_model_v.status_code
 denied_ingest = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-ingest', 'scopes': ['ingest']}, timeout=5)
@@ -515,6 +560,13 @@ projs3.raise_for_status()
 assert all(p['slug'] != 'project-alpha' for p in projs3.json()), projs3.json()
 denied2 = requests.post('http://localhost:8090/portal/api/keys', headers=H_BOB, json={'project_slug': 'project-alpha', 'label': 'bob-key-2'}, timeout=5)
 assert denied2.status_code == 403, denied2.status_code
+denied_chat2 = requests.post(
+    'http://localhost:8090/portal/api/projects/project-alpha/chat/completions',
+    headers=H_BOB,
+    json={'messages': [{'role': 'user', 'content': 'Should fail after revoke'}]},
+    timeout=5,
+)
+assert denied_chat2.status_code == 403, denied_chat2.status_code
 " || fail "Per-user project access control verification failed"
   pass "Admin per-user project access grant/revoke, viewer key scope RBAC, and auto-key revocation verified."
 

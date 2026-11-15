@@ -446,7 +446,7 @@
                 }),
                 el('a', {
                   className: 'nav-link',
-                  href: p.webui_url || `/?model=${encodeURIComponent(p.model_id || (p.slug + '-assistant'))}`,
+                  href: p.chat_url || `/portal/projects/${encodeURIComponent(p.slug)}/chat`,
                   style: 'padding:4px 9px;font-size:0.76rem;border-color:rgba(0,229,255,0.45);color:var(--cyan);display:inline-block;',
                   text: 'Open Chat \u2192'
                 })

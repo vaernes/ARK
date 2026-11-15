@@ -77,6 +77,32 @@ For the full deployment runbook, see the **[Installation & Setup Guide](docs/INS
 
 ---
 
+## Bundled Products & Versions
+
+All third-party container image versions are pinned in a single file ([`versions.env`](versions.env)). To change a product version in one place and propagate it across `.env.example`, `docker-compose.yml`, `docker-compose.llm.yml`, `scripts/bundle-offline.sh`, and this table:
+
+```bash
+# 1. Edit versions.env
+# 2. Sync across the repository:
+./scripts/sync-versions.sh
+```
+
+<!-- ARK_VERSIONS_START -->
+| Product | Image | Pinned Version | Role |
+| :--- | :--- | :--- | :--- |
+| **vLLM** | `vllm/vllm-openai` | `v0.33.0` | Local OpenAI-compatible LLM inference engine |
+| **Hugging Face TEI** | `ghcr.io/huggingface/text-embeddings-inference` | `1.9.4` | Embeddings (`BAAI/bge-m3`) & Reranking (`BAAI/bge-reranker-v2-m3`) |
+| **Qdrant** | `qdrant/qdrant` | `v1.17.1` | Isolated per-project vector database |
+| **Open WebUI** | `ghcr.io/open-webui/open-webui` | `v0.13.3` | Optional shared WebChat UI (`/`), SSO-integrated |
+| **PostgreSQL** | `postgres` | `18-alpine` | Relational store for `ark-admin`, Keycloak, and Open WebUI |
+| **Apache Tika** | `apache/tika` | `3.3.0.0-full` | Offline document parsing & OCR extraction |
+| **Caddy** | `caddy` | `2.11.9-alpine` | Local HTTPS reverse proxy & internal TLS termination |
+| **Keycloak** | `quay.io/keycloak/keycloak` | `26.8.2` | Enterprise SSO / Active Directory / OIDC identity broker |
+| **OAuth2-Proxy** | `quay.io/oauth2-proxy/oauth2-proxy` | `v7.15.6` | Forward-auth session gateway for ARK portals & consoles |
+<!-- ARK_VERSIONS_END -->
+
+---
+
 ## Documentation
 
 | Document | Description |

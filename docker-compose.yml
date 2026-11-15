@@ -5,7 +5,7 @@ services:
   # 1. vLLM: High-concurrency OpenAI-compatible LLM Inference
   # ----------------------------------------------------------------------------
   vllm:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4.post1}
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.33.0}
     container_name: ark-vllm
     profiles: ["local-llm"]
     restart: unless-stopped
@@ -84,7 +84,7 @@ services:
   # 2. TEI Embeddings: BAAI/bge-m3
   # ----------------------------------------------------------------------------
   tei-embed:
-    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.6}
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.9.4}
     container_name: ark-tei-embed
     restart: unless-stopped
     environment:
@@ -123,7 +123,7 @@ services:
   # 3. TEI Reranker: BAAI/bge-reranker-v2-m3
   # ----------------------------------------------------------------------------
   tei-rerank:
-    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.6}
+    image: ${TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:1.9.4}
     container_name: ark-tei-rerank
     restart: unless-stopped
     environment:
@@ -162,7 +162,7 @@ services:
   # 4. Qdrant: Isolated Multi-Tenant Vector Database
   # ----------------------------------------------------------------------------
   qdrant:
-    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.12.5}
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.17.1}
     container_name: ark-qdrant
     restart: unless-stopped
     environment:
@@ -186,10 +186,10 @@ services:
       - ark-net
 
   # ----------------------------------------------------------------------------
-  # 5. PostgreSQL 16: High-Concurrency Relational Store for Open WebUI
+  # 5. PostgreSQL 18: High-Concurrency Relational Store for Open WebUI
   # ----------------------------------------------------------------------------
   postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    image: ${POSTGRES_IMAGE:-postgres:18-alpine}
     container_name: ark-postgres
     restart: unless-stopped
     environment:
@@ -198,7 +198,7 @@ services:
       POSTGRES_DB: "${POSTGRES_DB:-openwebui}"
       DO_NOT_TRACK: "1"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql
       - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ark_webui} -d ${POSTGRES_DB:-openwebui}"]
@@ -213,7 +213,7 @@ services:
   # 6. Apache Tika: Offline Document Parsing Engine
   # ----------------------------------------------------------------------------
   tika:
-    image: ${TIKA_IMAGE:-apache/tika:3.1.0.0-full}
+    image: ${TIKA_IMAGE:-apache/tika:3.3.0.0-full}
     container_name: ark-tika
     restart: unless-stopped
     environment:
@@ -231,7 +231,7 @@ services:
   # 7. Open WebUI: Multi-Tenant RAG Orchestrator, UI & RBAC
   # ----------------------------------------------------------------------------
   open-webui:
-    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.5.10}
+    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.13.3}
     container_name: ark-open-webui
     restart: unless-stopped
     depends_on:
@@ -339,7 +339,7 @@ services:
   # 8. Keycloak: Enterprise Identity Broker (AD/LDAPS, Kerberos, SAML 2.0)
   # ----------------------------------------------------------------------------
   keycloak:
-    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0}
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.2}
     container_name: ark-keycloak
     restart: unless-stopped
     depends_on:
@@ -379,7 +379,7 @@ services:
   # 9. OAuth2-Proxy: Forward-Auth Gateway for ark-admin (ark-admins group)
   # ----------------------------------------------------------------------------
   oauth2-proxy:
-    image: ${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.7.1}
+    image: ${OAUTH2_PROXY_IMAGE:-quay.io/oauth2-proxy/oauth2-proxy:v7.15.6}
     container_name: ark-oauth2-proxy
     restart: unless-stopped
     depends_on:
@@ -506,7 +506,7 @@ services:
   # 11. Caddy: Local HTTPS Termination & LAN API/UI Routing
   # ----------------------------------------------------------------------------
   caddy:
-    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    image: ${CADDY_IMAGE:-caddy:2.11.9-alpine}
     container_name: ark-caddy
     restart: unless-stopped
     depends_on:
