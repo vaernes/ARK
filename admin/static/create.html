@@ -704,6 +704,7 @@
     }
 
     async function generateImage() {
+      if (!imageGenerationEnabled) return showError('Image generation is not enabled.');
       const prompt = document.getElementById('create-prompt').value.trim();
       if (!prompt) return showError('Please describe the image or visual asset you want to generate.');
 

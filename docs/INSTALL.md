@@ -26,16 +26,27 @@ This guide walks through bundling ARK at a connected HQ environment, installing 
    ```bash
    cp .env.example .env
    ```
-3. Run the offline bundler:
+3. Generate an Ed25519 signing key at HQ, store the private key securely outside
+   the repository, and transfer its public key separately through a trusted
+   channel:
    ```bash
-   ./scripts/bundle-offline.sh --package-models
+   umask 077
+   openssl genpkey -algorithm ED25519 -out /secure/ark-bundle.key
+   openssl pkey -in /secure/ark-bundle.key -pubout -out /secure/ark-bundle.pub
+   ```
+4. Run the offline bundler:
+   ```bash
+   ./scripts/bundle-offline.sh --package-models --signing-key /secure/ark-bundle.key
    ```
    This will:
    - Pull all required container images (`vllm`, `tei`, `qdrant`, `open-webui`, `postgres`, `tika`, `caddy`, `keycloak`, `oauth2-proxy`).
    - Build `ark-admin:latest` from `./admin`.
    - Save and compress all images into `./artifacts/ark-images.tar.zst` (+ `.sha256`).
    - Download `Qwen/Qwen2.5-14B-Instruct`, `BAAI/bge-m3`, and `BAAI/bge-reranker-v2-m3` into `./artifacts/models/` and package `./artifacts/ark-models.tar.zst` (+ `.sha256`).
-4. Transfer the repository and `./artifacts/` directory to the air-gapped server via approved offline media.
+5. Transfer the repository and `./artifacts/` directory to the air-gapped server via approved offline media.
+   The signed manifest binds image and model archives to their SHA-256 hashes.
+   Use a separately authenticated public key; a key copied inside the same
+   untrusted bundle cannot establish provenance.
 
 ---
 
@@ -85,7 +96,7 @@ administration, expose it only through a trusted encrypted channel.
 
 Run the installer script:
 ```bash
-./scripts/install-offline.sh
+./scripts/install-offline.sh --trusted-key /secure/ark-bundle.pub
 ```
 
 During interactive execution, the installer will prompt you for:
@@ -97,10 +108,15 @@ You can also pass these non-interactively:
 ./scripts/install-offline.sh \
   --domain ark.corp.internal \
   --backup-dir /mnt/nas/ark-backups \
+  --trusted-key /secure/ark-bundle.pub \
   --non-interactive
 ```
 
-The installer verifies `nvidia-smi`, free disk space, and `.sha256` checksums, loads Docker images (`zstd -d -c | docker load`), unpacks model weights into `./artifacts/models/`, creates `./data/*` directories, and runs `docker compose up -d`.
+The installer verifies the Ed25519 signature, archive hashes, `nvidia-smi`,
+and free disk space before loading images and models. For legacy or
+development bundles only, `--allow-unsigned` explicitly disables signature
+authentication. Signed installs require the signed model archive; `--models-src`
+is supported only with `--allow-unsigned`.
 
 Verify all containers are healthy:
 ```bash
@@ -162,7 +178,7 @@ The database dumps and snapshots are taken sequentially, so quiesce application
 writes and ingestion during a coordinated backup window. Schedule and monitor
 off-host backups according to your organization's recovery objectives.
 
-Full backups created from the Admin Console (`Run Full Backup Now`) write a timestamped directory under `ARK_BACKUP_DIR` (`ark-backup-<UTC_TIMESTAMP>/`) containing:
+Backups created from the Admin Console (`Back Up Databases & Vectors`) write a timestamped directory under `ARK_BACKUP_DIR` (`ark-backup-<UTC_TIMESTAMP>/`) containing:
 - `openwebui.sql.gz`, `keycloak.sql.gz`, and `ark_admin.sql.gz` (PostgreSQL dumps)
 - `qdrant/<collection>/<snapshot>.snapshot` (downloaded Qdrant collection snapshots)
 - `manifest.json` (SHA-256 checksums and file inventory for all databases and Qdrant snapshots)

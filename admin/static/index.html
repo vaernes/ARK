@@ -2274,7 +2274,7 @@
     }
 
     async function runBackup() {
-      showToast('Running full backup bundle...', 'amber');
+      showToast('Backing up databases and vectors...', 'amber');
       const res = await api('/backups/run', { method: 'POST' });
       showOps(res);
       showToast(`Backup '${res.backup_name || 'bundle'}' created.`, 'ok');

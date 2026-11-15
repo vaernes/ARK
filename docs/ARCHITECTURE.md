@@ -123,7 +123,11 @@ ark-stack/
 
 ## 3. Running for Testing (No GPU Required)
 
-You can validate the full integration—PostgreSQL, Qdrant, Keycloak SSO, `oauth2-proxy`, `ark-admin`, Caddy routing, per-project APIs, backups, and audit logging—on any Linux workstation without an NVIDIA GPU or model weights.
+You can validate PostgreSQL, Qdrant, Keycloak discovery and authentication
+redirects, `oauth2-proxy`, `ark-admin`, Caddy routing, per-project APIs,
+database/vector backups, and audit logging without an NVIDIA GPU or model
+weights. This suite uses mocked inference and does not start Open WebUI or
+Tika, exercise a complete SSO login, or test a clean-host recovery.
 
 ### Option A: Automated Integration Test Suite (Works Without `docker compose`)
 

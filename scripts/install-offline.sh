@@ -27,6 +27,8 @@ LLM_BACKEND_ADMIN_URL_ARG=""
 NON_INTERACTIVE=false
 SKIP_GPU_CHECK=false
 NO_START=false
+TRUSTED_KEY=""
+ALLOW_UNSIGNED=false
 
 log()  { printf '[%s] [INFO]  %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 warn() { printf '[%s] [WARN]  %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
@@ -53,6 +55,8 @@ Options:
       --non-interactive      Do not prompt for domain, backup dir, or LLM mode
       --skip-gpu-check       Skip nvidia-smi GPU verification (for testing only)
       --no-start             Load images and prepare volumes without running docker compose up -d
+      --trusted-key PATH     Trusted Ed25519 public key for bundle signature verification
+      --allow-unsigned       Explicitly install an unsigned development/legacy bundle
   -V, --version              Print ARK version and exit
   -h, --help                 Show this help message and exit
 EOF
@@ -74,6 +78,8 @@ while [[ $# -gt 0 ]]; do
     --non-interactive)   NON_INTERACTIVE=true; shift ;;
     --skip-gpu-check)    SKIP_GPU_CHECK=true; shift ;;
     --no-start)          NO_START=true; shift ;;
+    --trusted-key)       TRUSTED_KEY="$2"; shift 2 ;;
+    --allow-unsigned)    ALLOW_UNSIGNED=true; shift ;;
     -V|--version)        printf 'ARK v%s\n' "${ARK_VERSION}"; exit 0 ;;
     -h|--help)           usage; exit 0 ;;
     *)                   err "Unknown argument: $1" ;;
@@ -158,6 +164,21 @@ main() {
 
   if [[ ! -f "${IMAGES_ARCHIVE}" ]]; then
     err "Images archive not found: ${IMAGES_ARCHIVE}"
+  fi
+  if [[ -n "${TRUSTED_KEY}" && "${ALLOW_UNSIGNED}" == true ]]; then
+    err "--trusted-key and --allow-unsigned cannot be combined."
+  fi
+  if [[ "${ALLOW_UNSIGNED}" == true ]]; then
+    warn "Installing without bundle signature authentication (--allow-unsigned)."
+  else
+    require_cmd openssl
+    [[ -n "${TRUSTED_KEY}" ]] || err "Provide --trusted-key, or explicitly use --allow-unsigned for legacy bundles."
+    [[ -f "${ARTIFACTS_DIR}/ark-bundle.json" ]] || err "Signed bundle manifest is missing."
+    [[ -z "${MODELS_SRC}" ]] || err "Signed installs require a signed models archive, not --models-src."
+    [[ -f "${MODELS_ARCHIVE}" ]] || err "Signed models archive is missing."
+    python3 "${SCRIPT_DIR}/bundle_manifest.py" verify \
+      --manifest "${ARTIFACTS_DIR}/ark-bundle.json" --key "${TRUSTED_KEY}" \
+      --version "${ARK_VERSION}" --artifact "images=${IMAGES_ARCHIVE}" --artifact "models=${MODELS_ARCHIVE}"
   fi
   verify_sha256 "${IMAGES_ARCHIVE}"
 

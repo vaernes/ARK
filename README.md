@@ -48,7 +48,7 @@ From the **ARK User Portal**, users can view the projects they have access to an
 ![ARK User Portal](docs/images/user-portal.png)
 
 ### 4. ARK Control Plane (`/admin-console/`)
-IT administrators use the **ARK Control Plane** to monitor system health, provision RAG or Clean projects, control per-user project access, issue and revoke scoped API keys, configure document connectors and ingestion pipelines, manage LLM and Image Generation backends, view audit logs, and run full backups.
+IT administrators use the **ARK Control Plane** to monitor system health, provision RAG or Clean projects, control per-user project access, issue and revoke scoped API keys, configure document connectors and ingestion pipelines, manage LLM and Image Generation backends, view audit logs, and back up databases and vectors.
 
 ![ARK Control Plane](docs/images/admin-console.png)
 
@@ -70,8 +70,8 @@ When running inference on a dedicated GPU host, infrastructure teams can use the
 For detailed instructions and API examples, see the **[User & Operations Guide](docs/USER_GUIDE.md)**.
 
 ### For Administrators
-1. **Bundle at HQ:** On an internet-connected build machine, run `./scripts/bundle-offline.sh --package-models` to package container images and model weights for offline transfer.
-2. **Install Offline:** Transfer the bundle to your air-gapped Linux GPU server, configure `.env`, and run `./scripts/install-offline.sh`.
+1. **Bundle at HQ:** On an internet-connected build machine, run `./scripts/bundle-offline.sh --package-models --signing-key /secure/ark-bundle.key` to package and sign container images and model weights for offline transfer.
+2. **Install Offline:** Transfer the bundle to your air-gapped Linux GPU server, configure `.env`, and run `./scripts/install-offline.sh --trusted-key /secure/ark-bundle.pub` using a separately trusted public key.
 3. **Provision & Operate:** Open `/admin-console/` to create projects, connect SharePoint/M-Files/SMB data sources, manage API keys, and back up databases and vectors.
 
 For the full deployment runbook, see the **[Installation & Setup Guide](docs/INSTALL.md)**.

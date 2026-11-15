@@ -319,6 +319,71 @@ class TestAdminRuntimePolicies(unittest.TestCase):
                 finally:
                     module.ingest_executor.shutdown(wait=False)
 
+    def test_interrupted_replayable_jobs_are_requeued(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = importlib.util.spec_from_file_location("ark_admin_restart_test", ADMIN_DIR / "app.py")
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            settings = {
+                "ARK_ADMIN_DB_URL": "postgresql://unused",
+                "ARK_AUDIT_LOG_FILE": str(Path(tmp) / "audit.jsonl"),
+            }
+            with mock.patch.dict(os.environ, settings), mock.patch.dict(sys.modules, {spec.name: module}):
+                spec.loader.exec_module(module)
+                try:
+                    cursor = mock.MagicMock()
+                    cursor.__enter__.return_value = cursor
+                    connection = mock.MagicMock()
+                    connection.__enter__.return_value = connection
+                    connection.cursor.return_value = cursor
+                    with mock.patch.object(module.psycopg, "connect", return_value=connection):
+                        module.init_db()
+                    statements = [call.args[0] for call in cursor.execute.call_args_list]
+                    requeue = next(i for i, sql in enumerate(statements)
+                                   if "Requeued after service restart" in sql)
+                    fail_unrecoverable = next(i for i, sql in enumerate(statements)
+                                              if "Cannot recover interrupted job" in sql)
+                    self.assertLess(requeue, fail_unrecoverable)
+                    self.assertIn("payload_enc IS NOT NULL", statements[requeue])
+                    self.assertIn("attempts < %s", statements[requeue])
+                finally:
+                    module.ingest_executor.shutdown(wait=False)
+
+    def test_durable_push_payload_and_queue_limit(self):
+        from fastapi import HTTPException
+
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = importlib.util.spec_from_file_location("ark_admin_queue_test", ADMIN_DIR / "app.py")
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            settings = {
+                "ARK_ADMIN_DB_URL": "postgresql://unused",
+                "ARK_AUDIT_LOG_FILE": str(Path(tmp) / "audit.jsonl"),
+                "ARK_SECRETS_KEY": "test-key",
+                "ARK_INGEST_MAX_QUEUED_JOBS": "1",
+            }
+            with mock.patch.dict(os.environ, settings), mock.patch.dict(sys.modules, {spec.name: module}):
+                spec.loader.exec_module(module)
+                try:
+                    import base64
+                    token = module.encrypt_secrets({
+                        "documents": [{"doc_id": "doc", "content_type": "binary",
+                                       "_raw_bytes_b64": base64.b64encode(b"\x00\xff").decode()}],
+                        "source_name": "test", "sync_mode": "incremental",
+                    })
+                    self.assertNotIn(b"doc", token)
+                    docs, source, mode = module._decode_push_payload(token)
+                    self.assertEqual((docs[0].raw_bytes, source, mode), (b"\x00\xff", "test", "incremental"))
+                    with self.assertRaises(ValueError):
+                        module._decode_push_payload(b"corrupt")
+                    cursor = mock.MagicMock()
+                    cursor.fetchone.return_value = (1,)
+                    with self.assertRaises(HTTPException) as full:
+                        module._reserve_ingest_slot(cursor)
+                    self.assertEqual(full.exception.status_code, 503)
+                finally:
+                    module.ingest_executor.shutdown(wait=False)
+
     def test_image_generation_is_gated_and_audited(self):
         import asyncio
         from fastapi import HTTPException, Request

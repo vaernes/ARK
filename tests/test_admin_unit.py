@@ -360,7 +360,7 @@ class TestEnvironmentConfiguration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for rel in ("VERSION", "config/keycloak/ark-realm.json", "scripts/install-offline.sh",
-                        "scripts/load-env.sh", "scripts/parse_env.py"):
+                        "scripts/load-env.sh", "scripts/parse_env.py", "scripts/bundle_manifest.py"):
                 target = root / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO_ROOT / rel, target)
@@ -394,7 +394,7 @@ class TestEnvironmentConfiguration(unittest.TestCase):
             env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
             proc = subprocess.run(
                 ["bash", str(root / "scripts" / "install-offline.sh"), "--skip-gpu-check",
-                 "--min-free-gb", "0", "--non-interactive", "--no-start"],
+                 "--min-free-gb", "0", "--non-interactive", "--no-start", "--allow-unsigned"],
                 cwd=root, env=env, capture_output=True, text=True,
             )
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)

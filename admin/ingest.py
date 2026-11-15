@@ -448,6 +448,14 @@ def process_ingest_documents(
                     for c_txt in apply_chunking(doc.content, doc_chunking):
                         chunk_items.append((c_txt, base_meta))
 
+                # Invalidate the old hash before replacing vectors so replay after a crash cannot skip missing points.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM ingest_documents WHERE source_key = %s AND project_slug = %s AND doc_id = %s",
+                        (source_key, project_slug, doc.doc_id),
+                    )
+                conn.commit()
+
                 # Always delete previous points for this doc_id so shrinking/empty docs don't leave stale chunks
                 delete_document_points(qdrant, collection_name, source_key, doc.doc_id)
 

@@ -129,6 +129,10 @@ OPENWEBUI_API_KEY = os.environ.get("OPENWEBUI_API_KEY", "")
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_INTERNAL_URL", "http://keycloak:8080")
 EMBED_VECTOR_SIZE = int(os.environ.get("EMBED_VECTOR_SIZE", "1024"))
 ARK_INGEST_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get("ARK_INGEST_MAX_CONCURRENT_JOBS", "2")))
+ARK_INGEST_MAX_QUEUED_JOBS = max(1, int(os.environ.get("ARK_INGEST_MAX_QUEUED_JOBS", "100")))
+ARK_INGEST_MAX_PAYLOAD_BYTES = max(1024, int(os.environ.get("ARK_INGEST_MAX_PAYLOAD_BYTES", "16777216")))
+ARK_INGEST_MAX_ATTEMPTS = max(1, int(os.environ.get("ARK_INGEST_MAX_ATTEMPTS", "3")))
+ARK_INGEST_WAIT_TIMEOUT_SEC = max(1, int(os.environ.get("ARK_INGEST_WAIT_TIMEOUT_SEC", "1800")))
 DEFAULT_BACKUP_DIR = os.environ.get("ARK_BACKUP_DIR", "/backups")
 AUDIT_LOG_FILE = Path(os.environ.get("ARK_AUDIT_LOG_FILE", "/var/log/ark/audit.jsonl"))
 PROXY_AUTH_SECRET = os.environ.get("ARK_PROXY_AUTH_SECRET", "")
@@ -144,6 +148,9 @@ audit = AuditLogger(db_dsn=DB_DSN, log_file=AUDIT_LOG_FILE)
 rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 rate_buckets_lock = threading.Lock()
 ingest_executor = ThreadPoolExecutor(max_workers=ARK_INGEST_MAX_CONCURRENT_JOBS, thread_name_prefix="ark-ingest")
+_ingest_wakeup = threading.Event()
+_ingest_stop = threading.Event()
+_INGEST_QUEUE_LOCK = 0x41524B49
 _scheduler_started = False
 
 app = FastAPI(
@@ -266,6 +273,10 @@ def init_db() -> None:
                     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     finished_at TIMESTAMPTZ
                 );
+                ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS payload_enc BYTEA;
+                ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS queue_key TEXT NOT NULL DEFAULT '';
+                ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+                CREATE INDEX IF NOT EXISTS idx_ingest_jobs_queue ON ingest_jobs(status, id);
 
                 CREATE TABLE IF NOT EXISTS ingest_documents (
                     source_key TEXT NOT NULL,
@@ -338,13 +349,20 @@ def init_db() -> None:
             cur.execute(
                 """
                 UPDATE ingest_jobs
-                SET status = 'failed',
-                    finished_at = NOW(),
-                    log_excerpt = CASE
-                        WHEN COALESCE(log_excerpt, '') = '' THEN '[ERROR] Interrupted by ark-admin service restart.'
-                        ELSE log_excerpt || E'\n[ERROR] Interrupted by ark-admin service restart.'
-                    END
-                WHERE status IN ('queued', 'running')
+                SET status = 'queued', finished_at = NULL,
+                    log_excerpt = COALESCE(log_excerpt, '') || E'\n[WARN] Requeued after service restart.'
+                WHERE status = 'running' AND attempts < %s
+                  AND (source_id IS NOT NULL OR (trigger_type = 'push_api' AND payload_enc IS NOT NULL))
+                """,
+                (ARK_INGEST_MAX_ATTEMPTS,),
+            )
+            cur.execute(
+                """
+                UPDATE ingest_jobs
+                SET status = 'failed', finished_at = NOW(),
+                    log_excerpt = COALESCE(log_excerpt, '') || E'\n[ERROR] Cannot recover interrupted job.'
+                WHERE (status = 'running'
+                       OR (status = 'queued' AND source_id IS NULL AND payload_enc IS NULL))
                 """
             )
             cur.execute(
@@ -419,7 +437,7 @@ def _scheduler_loop() -> None:
                 except Exception as exc:
                     logger.warning("Scheduled ingest trigger failed for source %s: %s", source_id, exc)
         except Exception as exc:
-            logger.debug("Ingest scheduler tick error: %s", exc)
+            logger.error("Ingest scheduler tick error: %s", exc)
 
 
 @app.on_event("startup")
@@ -430,8 +448,19 @@ def on_startup() -> None:
         audit.record("network.connected_mode", actor="system", details={"enabled": True})
     if not _scheduler_started:
         _scheduler_started = True
+        _ingest_stop.clear()
+        for _ in range(ARK_INGEST_MAX_CONCURRENT_JOBS):
+            ingest_executor.submit(_ingest_worker_loop)
         t = threading.Thread(target=_scheduler_loop, daemon=True, name="ark-ingest-scheduler")
         t.start()
+        _ingest_wakeup.set()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    _ingest_stop.set()
+    _ingest_wakeup.set()
+    ingest_executor.shutdown(wait=False)
 
 
 def get_actor(request: Request) -> str:
@@ -1190,11 +1219,11 @@ def create_projects(request: Request) -> list[dict[str, Any]]:
 
 @app.get("/create/api/presets")
 def create_presets() -> dict[str, Any]:
-    img_cfg = get_image_backend_settings()
+    default_model = get_image_backend_settings()["default_model"] if IMAGE_GENERATION_ENABLED else IMAGE_SERVED_NAME
     return {
         "presets": list(CREATE_STYLE_PRESETS.values()),
         "sizes": CREATE_SUPPORTED_SIZES,
-        "default_model": img_cfg["default_model"],
+        "default_model": default_model,
         "image_generation_enabled": IMAGE_GENERATION_ENABLED,
     }
 
@@ -2957,6 +2986,119 @@ def _execute_ingest_source_job(job_id: int, source_id: int, triggered_by: str) -
         raise
 
 
+def _reserve_ingest_slot(cur: Any) -> None:
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_INGEST_QUEUE_LOCK,))
+    cur.execute("SELECT count(*) FROM ingest_jobs WHERE status = 'queued'")
+    if cur.fetchone()[0] >= ARK_INGEST_MAX_QUEUED_JOBS:
+        raise HTTPException(status_code=503, detail="Ingest queue is full; retry later.", headers={"Retry-After": "30"})
+
+
+def _wait_ingest_job(job_id: int) -> dict[str, Any]:
+    deadline = time.monotonic() + ARK_INGEST_WAIT_TIMEOUT_SEC
+    while time.monotonic() < deadline:
+        with psycopg.connect(DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT status, stats, log_excerpt FROM ingest_jobs WHERE id = %s", (job_id,))
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Ingest job {job_id} no longer exists.")
+        if row[0] in {"succeeded", "succeeded_with_errors"}:
+            return row[1] or {}
+        if row[0] == "failed":
+            raise HTTPException(status_code=500, detail=f"Ingest job {job_id} failed: {row[2]}")
+        time.sleep(0.1)
+    raise HTTPException(status_code=504, detail=f"Ingest job {job_id} is still running; check its status.")
+
+
+def _claim_ingest_job() -> tuple[Any, ...] | None:
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_INGEST_QUEUE_LOCK,))
+            cur.execute(
+                """
+                SELECT j.id, j.source_id, j.project_slug, j.trigger_type, j.triggered_by,
+                       j.payload_enc, p.collection_name, p.rag_enabled
+                FROM ingest_jobs j JOIN projects p ON p.slug = j.project_slug
+                WHERE j.status = 'queued'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ingest_jobs active
+                      WHERE active.status = 'running' AND active.queue_key <> ''
+                        AND active.queue_key = j.queue_key
+                  )
+                ORDER BY j.id
+                FOR UPDATE OF j SKIP LOCKED LIMIT 1
+                """
+            )
+            job = cur.fetchone()
+            if job:
+                cur.execute(
+                    "UPDATE ingest_jobs SET status = 'running', attempts = attempts + 1 WHERE id = %s",
+                    (job[0],),
+                )
+        conn.commit()
+    return job
+
+
+def _decode_push_payload(token: bytes | memoryview | None) -> tuple[list[IngestDocument], str, str]:
+    payload = decrypt_secrets(token)
+    if not isinstance(payload.get("documents"), list) or not isinstance(payload.get("source_name"), str):
+        raise ValueError("Stored ingest payload is missing or cannot be decrypted.")
+    if payload.get("sync_mode") not in {"incremental", "full_mirror"}:
+        raise ValueError("Stored ingest payload has an invalid sync mode.")
+    documents = []
+    for item in payload["documents"]:
+        if not isinstance(item, dict):
+            raise ValueError("Stored ingest payload contains an invalid document.")
+        item = dict(item)
+        raw_b64 = item.pop("_raw_bytes_b64", None)
+        if raw_b64 is not None:
+            item["raw_bytes"] = base64.b64decode(raw_b64, validate=True)
+        documents.append(IngestDocument.model_validate(item))
+    return documents, payload["source_name"], payload["sync_mode"]
+
+
+def _ingest_worker_loop() -> None:
+    while not _ingest_stop.is_set():
+        try:
+            job = _claim_ingest_job()
+            if not job:
+                _ingest_wakeup.wait(1)
+                _ingest_wakeup.clear()
+                continue
+            job_id, source_id, slug, trigger_type, actor, payload_enc, collection_name, rag_enabled = job
+            try:
+                if source_id is not None:
+                    _execute_ingest_source_job(job_id, source_id, actor)
+                elif trigger_type == "push_api" and rag_enabled and collection_name:
+                    documents, source_name, sync_mode = _decode_push_payload(payload_enc)
+                    _run_push_ingest_job(
+                        job_id=job_id, slug=slug, collection_name=collection_name, documents=documents,
+                        source_key=f"push:{source_name}", source_system=source_name,
+                        sync_mode=sync_mode, actor=actor,
+                    )
+                else:
+                    raise ValueError("Queued ingest job has no valid project or source.")
+            except Exception as exc:
+                logger.exception("Ingest job %s failed: %s", job_id, exc)
+                with psycopg.connect(DB_DSN) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE ingest_jobs SET status = 'failed', log_excerpt = %s, finished_at = NOW() "
+                            "WHERE id = %s AND status = 'running'",
+                            (str(exc)[:4000], job_id),
+                        )
+                        updated = cur.rowcount
+                    conn.commit()
+                if updated:
+                    audit.record("ingest.job_finish", actor=actor, project_slug=slug,
+                                 status="error", details={"job_id": job_id, "error": str(exc)})
+            finally:
+                _ingest_wakeup.set()
+        except Exception as exc:
+            logger.exception("Ingest worker error: %s", exc)
+            _ingest_stop.wait(5)
+
+
 def enqueue_ingest_source_job(
     *,
     source_id: int,
@@ -2990,10 +3132,11 @@ def enqueue_ingest_source_job(
                             "source_id": source_id, "project_slug": slug}
                 raise HTTPException(status_code=409, detail="An ingest job is already queued or running for this source.")
 
+            _reserve_ingest_slot(cur)
             cur.execute(
-                "INSERT INTO ingest_jobs (source_id, project_slug, trigger_type, triggered_by, status) "
-                "VALUES (%s, %s, %s, %s, 'queued') RETURNING id",
-                (source_id, slug, trigger_type, triggered_by),
+                "INSERT INTO ingest_jobs (source_id, project_slug, trigger_type, triggered_by, status, queue_key) "
+                "VALUES (%s, %s, %s, %s, 'queued', %s) RETURNING id",
+                (source_id, slug, trigger_type, triggered_by, f"source:{source_id}"),
             )
             job_id = cur.fetchone()[0]
         conn.commit()
@@ -3004,12 +3147,9 @@ def enqueue_ingest_source_job(
         project_slug=slug,
         details={"job_id": job_id, "source_id": source_id, "trigger_type": trigger_type},
     )
-    future = ingest_executor.submit(_execute_ingest_source_job, job_id, source_id, triggered_by)
+    _ingest_wakeup.set()
     if wait:
-        try:
-            stats = future.result()
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        stats = _wait_ingest_job(job_id)
         return {"status": "ok", "job_id": job_id, **stats}
     return {"status": "queued", "job_id": job_id, "source_id": source_id, "project_slug": slug}
 
@@ -5165,8 +5305,9 @@ def _run_push_ingest_job(
         with psycopg.connect(DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE ingest_jobs SET status = %s, stats = %s::jsonb, log_excerpt = %s, finished_at = NOW() WHERE id = %s",
-                    (job_status, json.dumps(stats_dict), "\n".join(stats.error_messages[:50]), job_id),
+                    "UPDATE ingest_jobs SET status = %s, stats = %s::jsonb, log_excerpt = %s, finished_at = NOW(), "
+                    "payload_enc = CASE WHEN %s = 'succeeded' THEN NULL ELSE payload_enc END WHERE id = %s",
+                    (job_status, json.dumps(stats_dict), "\n".join(stats.error_messages[:50]), job_status, job_id),
                 )
             conn.commit()
         audit.record(
@@ -5201,7 +5342,10 @@ async def project_push_documents(
         raise HTTPException(status_code=400, detail="Cannot ingest documents into a non-RAG clean project.")
 
     content_type = (request.headers.get("content-type") or "").lower()
-    raw_body = (await request.body()).decode("utf-8")
+    raw_bytes = await request.body()
+    if len(raw_bytes) > ARK_INGEST_MAX_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Ingest payload exceeds the configured queue size limit.")
+    raw_body = raw_bytes.decode("utf-8")
     source_name = "push_api"
     sync_mode = "incremental"
     docs: list[IngestDocument] = []
@@ -5220,42 +5364,33 @@ async def project_push_documents(
         sync_mode = req.sync_mode
 
     actor = f"key:{auth['key_label']}"
-    source_key = f"push:{source_name}"
+    if not (os.environ.get("ARK_SECRETS_KEY") or os.environ.get("ARK_PROXY_AUTH_SECRET")):
+        raise HTTPException(status_code=503, detail="A secret encryption key is required for durable ingestion.")
+    serialized_docs = []
+    for doc in docs:
+        item = doc.model_dump(mode="json")
+        if doc.raw_bytes is not None:
+            item["_raw_bytes_b64"] = base64.b64encode(doc.raw_bytes).decode("ascii")
+        serialized_docs.append(item)
+    payload_enc = encrypt_secrets({"documents": serialized_docs, "source_name": source_name, "sync_mode": sync_mode})
     with psycopg.connect(DB_DSN) as conn:
         with conn.cursor() as cur:
+            _reserve_ingest_slot(cur)
             cur.execute(
-                "INSERT INTO ingest_jobs (source_id, project_slug, trigger_type, triggered_by, status) "
-                "VALUES (NULL, %s, 'push_api', %s, 'queued') RETURNING id",
-                (slug, actor),
+                "INSERT INTO ingest_jobs (source_id, project_slug, trigger_type, triggered_by, status, payload_enc, queue_key) "
+                "VALUES (NULL, %s, 'push_api', %s, 'queued', %s, %s) RETURNING id",
+                (slug, actor, payload_enc, f"push:{slug}:{source_name}"),
             )
             job_id = cur.fetchone()[0]
         conn.commit()
 
+    audit.record("ingest.push_queued", actor=actor, project_slug=slug,
+                 details={"job_id": job_id, "source": source_name, "documents": len(docs)})
+    _ingest_wakeup.set()
     if async_mode or request.query_params.get("async") == "true":
-        ingest_executor.submit(
-            _run_push_ingest_job,
-            job_id=job_id,
-            slug=slug,
-            collection_name=auth["collection_name"],
-            documents=docs,
-            source_key=source_key,
-            source_system=source_name,
-            sync_mode=sync_mode,
-            actor=actor,
-        )
         return {"status": "queued", "job_id": job_id, "project_slug": slug, "documents_queued": len(docs)}
 
-    stats_dict = await run_in_threadpool(
-        _run_push_ingest_job,
-        job_id=job_id,
-        slug=slug,
-        collection_name=auth["collection_name"],
-        documents=docs,
-        source_key=source_key,
-        source_system=source_name,
-        sync_mode=sync_mode,
-        actor=actor,
-    )
+    stats_dict = await run_in_threadpool(_wait_ingest_job, job_id)
     return {"status": "ok", "job_id": job_id, **stats_dict}
 
 
@@ -5373,6 +5508,38 @@ def project_list_documents(
             for r in rows
         ],
     }
+
+
+@app.post("/projects/{slug}/v1/ingest/jobs/{job_id}/retry")
+def project_retry_ingest_job(
+    slug: str,
+    job_id: int,
+    auth: dict[str, Any] = Depends(authenticate_project_key),
+) -> dict[str, Any]:
+    _require_key_scope(auth, "ingest", slug)
+    with psycopg.connect(DB_DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, payload_enc FROM ingest_jobs "
+                "WHERE id = %s AND project_slug = %s AND trigger_type = 'push_api' FOR UPDATE",
+                (job_id, slug),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Ingest job not found.")
+            if row[0] not in {"failed", "succeeded_with_errors"} or not row[1]:
+                raise HTTPException(status_code=409, detail="This ingest job cannot be retried.")
+            _reserve_ingest_slot(cur)
+            cur.execute(
+                "UPDATE ingest_jobs SET status = 'queued', attempts = 0, finished_at = NULL, triggered_by = %s "
+                "WHERE id = %s",
+                (f"key:{auth['key_label']}", job_id),
+            )
+        conn.commit()
+    audit.record("ingest.push_retry", actor=f"key:{auth['key_label']}", project_slug=slug,
+                 details={"job_id": job_id})
+    _ingest_wakeup.set()
+    return {"status": "queued", "job_id": job_id, "project_slug": slug}
 
 
 @app.get("/projects/{slug}/v1/ingest/jobs/{job_id}")

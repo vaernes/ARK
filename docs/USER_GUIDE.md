@@ -41,6 +41,7 @@ If your administrator issued a **Project API Key** (`ark_proj_...`) for your tea
 - `POST /ingest/files` — multipart file upload extracted via Apache Tika and indexed into the project's Qdrant collection (requires `ingest` key scope)
 - `DELETE /ingest/documents/<doc_id>` — remove a document's vectors from the project's Qdrant collection (requires `ingest` key scope)
 - `GET /ingest/documents` & `GET /ingest/jobs/<job_id>` — list tracked document hashes and check async ingest job status (requires `ingest` key scope)
+- `POST /ingest/jobs/<job_id>/retry` — retry a failed or partially completed push job within the same project (requires `ingest` key scope)
 
 > **Scope Note:** Other OpenAI endpoints (`/embeddings`, `/completions`, `/audio/*`, `/files/*`, `/assistants/*`) are intentionally not exposed by the project gateway. Direct unauthenticated calls to `/v1/chat/completions` are also blocked (`403 Forbidden`) so RBAC, key scopes (`chat` / `images` / `ingest`), rate limits, and audit logging are always enforced.
 
@@ -92,6 +93,11 @@ In the **Data Ingestion (Plugins, Pipelines & Scripts)** panel, select a **RAG-e
 All modes support **Incremental** (content-hash deduplication + stale chunk cleanup) or **Full Mirror** (prunes deleted documents) sync modes, configurable chunking (`chars`, `markdown`, `lines`, `none`), and schedules (`@15m`, `@hourly`, `@daily`).
 Only one sync per source can be queued or running at a time; a manual sync
 returns a conflict while an earlier job is active.
+Queued jobs and encrypted push payloads survive a service restart. Interrupted
+jobs are retried up to `ARK_INGEST_MAX_ATTEMPTS`; failed or partially completed
+push jobs can be retried via the project API. Completed push payloads are
+deleted. Queue capacity and payload size are configurable; full queues return
+`503` and oversized push requests return `413`.
 
 ### 5. Exporting & Importing Project KB Snapshots
 1. To export a project's Qdrant snapshot for transfer (e.g., HQ to an office deployment):

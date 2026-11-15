@@ -717,6 +717,47 @@ print(r.json()['api_key'])
   curl -ksf -X DELETE "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/documents/push/guide-1" \
     -H "Authorization: Bearer ${ingest_key}" | grep -q '"status":"deleted"' || fail "Push delete failed."
 
+  log "Testing encrypted asynchronous ingest recovery after an interrupted worker..."
+  docker pause "${TEST_EMBED}" >/dev/null
+  local queued job_id job_status
+  queued=$(curl -ksf -X POST "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/documents?async=true" \
+    -H "Authorization: Bearer ${ingest_key}" -H "Content-Type: application/json" \
+    -d '{"documents":[{"doc_id":"restart-test","content":"durable-private-test-document"}]}')
+  job_id=$(printf '%s' "${queued}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])')
+  job_status=""
+  for _ in $(seq 1 30); do
+    job_status=$(curl -ksf "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/jobs/${job_id}" \
+      -H "Authorization: Bearer ${ingest_key}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
+    [[ "${job_status}" == "running" ]] && break
+    sleep 1
+  done
+  [[ "${job_status}" == "running" ]] || fail "Expected queued job to start, got ${job_status}."
+  docker exec "${TEST_ADMIN}" python3 -c "
+import os, psycopg
+with psycopg.connect(os.environ['ARK_ADMIN_DB_URL']) as conn:
+    payload = conn.execute('SELECT payload_enc FROM ingest_jobs WHERE id = %s', (${job_id},)).fetchone()[0]
+assert payload and b'durable-private-test-document' not in bytes(payload)
+"
+  docker restart -t 1 "${TEST_ADMIN}" >/dev/null
+  docker unpause "${TEST_EMBED}" >/dev/null
+  job_status=""
+  for _ in $(seq 1 90); do
+    job_status=$(curl -ks "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/jobs/${job_id}" \
+      -H "Authorization: Bearer ${ingest_key}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' 2>/dev/null || true)
+    [[ "${job_status}" == "succeeded" || "${job_status}" == "failed" ]] && break
+    sleep 1
+  done
+  [[ "${job_status}" == "succeeded" ]] || fail "Interrupted ingest job did not recover: ${job_status}."
+  docker exec "${TEST_ADMIN}" python3 -c "
+import os, psycopg
+with psycopg.connect(os.environ['ARK_ADMIN_DB_URL']) as conn:
+    status, payload, attempts = conn.execute('SELECT status, payload_enc, attempts FROM ingest_jobs WHERE id = %s', (${job_id},)).fetchone()
+assert status == 'succeeded' and payload is None and attempts >= 2, (status, attempts)
+"
+  curl -ksf -X DELETE "https://localhost:${TEST_HTTPS_PORT}/projects/project-alpha/v1/ingest/documents/restart-test" \
+    -H "Authorization: Bearer ${ingest_key}" >/dev/null
+  pass "Encrypted push job resumed after restart and its payload was removed on success."
+
   # Test Plugin discovery, YAML Pipeline Dry-Run & Sync, and Custom Script Sync
   docker exec "${TEST_ADMIN}" python3 -c "
 import requests
