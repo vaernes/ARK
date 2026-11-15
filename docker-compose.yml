@@ -289,9 +289,9 @@ services:
       LDAP_SEARCH_FILTERS: "${LDAP_SEARCH_FILTERS:-}"
       LDAP_APP_DN: "${LDAP_APP_DN:-}"
       LDAP_APP_PASSWORD: "${LDAP_APP_PASSWORD:-}"
-      # LLM Inference (Separate vLLM Server or 3rd-Party OpenAI-Compatible API)
-      OPENAI_API_BASE_URL: "${LLM_API_BASE_URL:-http://vllm:8000/v1}"
-      OPENAI_API_KEY: "${LLM_API_KEY:-${VLLM_API_KEY}}"
+      # LLM Inference (Routed through ark-admin internal Model Registry gateway)
+      OPENAI_API_BASE_URL: "http://ark-admin:8090/internal/webui/v1"
+      OPENAI_API_KEY: "${ARK_PROXY_AUTH_SECRET:-ark-internal-webui}"
       DEFAULT_MODELS: "${LLM_SERVED_NAME:-ark-llm}"
       # Image Generation (ARK Create / OpenAI-Compatible Images API)
       ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-true}"

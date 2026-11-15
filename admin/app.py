@@ -3649,6 +3649,29 @@ def test_llm_backend(req: LlmBackendConfigRequest) -> dict[str, Any]:
     }
 
 
+def _sync_openwebui_openai_gateway() -> str:
+    """Point Open WebUI's OpenAI connector at ark-admin's internal Model Registry gateway."""
+    if not OPENWEBUI_API_KEY:
+        return "skipped_no_api_key"
+    gateway_key = PROXY_AUTH_SECRET or "ark-internal-webui"
+    try:
+        headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
+        requests.post(
+            f"{OPENWEBUI_URL}/openai/config/update",
+            headers=headers,
+            json={
+                "ENABLE_OPENAI_API": True,
+                "OPENAI_API_BASE_URLS": ["http://ark-admin:8090/internal/webui/v1"],
+                "OPENAI_API_KEYS": [gateway_key],
+            },
+            timeout=10,
+        ).raise_for_status()
+        return "synced"
+    except Exception as exc:
+        logger.warning("Open WebUI OpenAI config sync warning: %s", exc)
+        return f"warning: {exc}"
+
+
 @app.post("/admin-console/api/llm-backend")
 def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[str, Any]:
     actor = get_actor(request)
@@ -3679,24 +3702,7 @@ def update_llm_backend(req: LlmBackendConfigRequest, request: Request) -> dict[s
                 )
         conn.commit()
 
-    webui_sync = "skipped_no_api_key"
-    if OPENWEBUI_API_KEY:
-        try:
-            headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
-            requests.post(
-                f"{OPENWEBUI_URL}/openai/config/update",
-                headers=headers,
-                json={
-                    "ENABLE_OPENAI_API": True,
-                    "OPENAI_API_BASE_URLS": [api_base_url],
-                    "OPENAI_API_KEYS": [new_api_key],
-                },
-                timeout=10,
-            ).raise_for_status()
-            webui_sync = "synced"
-        except Exception as exc:
-            logger.warning("Open WebUI OpenAI config sync warning: %s", exc)
-            webui_sync = f"warning: {exc}"
+    webui_sync = _sync_openwebui_openai_gateway()
 
     default_model_saved = ""
     if req.default_model is not None and req.default_model.strip():
@@ -3823,21 +3829,7 @@ def _sync_default_profile_to_settings(
                         (k, v),
                     )
             conn.commit()
-        if OPENWEBUI_API_KEY:
-            try:
-                headers = {"Authorization": f"Bearer {OPENWEBUI_API_KEY}", "Content-Type": "application/json"}
-                requests.post(
-                    f"{OPENWEBUI_URL}/openai/config/update",
-                    headers=headers,
-                    json={
-                        "ENABLE_OPENAI_API": True,
-                        "OPENAI_API_BASE_URLS": [api_base_url],
-                        "OPENAI_API_KEYS": [api_key],
-                    },
-                    timeout=10,
-                ).raise_for_status()
-            except Exception as exc:
-                logger.warning("Open WebUI OpenAI config sync warning: %s", exc)
+        _sync_openwebui_openai_gateway()
         return _apply_default_llm_model(model_id)
 
     if context == "image":
@@ -5337,3 +5329,121 @@ def project_get_ingest_job(
         "started_at": row[4].isoformat() if row[4] else None,
         "finished_at": row[5].isoformat() if row[5] else None,
     }
+
+
+def _verify_internal_webui_auth(request: Request) -> None:
+    expected = PROXY_AUTH_SECRET or "ark-internal-webui"
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+    if not token or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=403, detail="Forbidden: invalid internal WebUI gateway token.")
+
+
+@app.get("/internal/webui/v1/models")
+def internal_webui_list_models(request: Request) -> dict[str, Any]:
+    """OpenAI-compatible /v1/models feed for Open WebUI aggregating all enabled text/code/other profiles."""
+    _verify_internal_webui_auth(request)
+    seen: set[str] = set()
+    models_data: list[dict[str, Any]] = []
+
+    for prof in _list_model_profiles_rows():
+        if not prof.get("enabled") or prof.get("context") == "image":
+            continue
+        mid = (prof.get("model_id") or "").strip()
+        if mid and mid not in seen:
+            seen.add(mid)
+            models_data.append({
+                "id": mid,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": prof.get("provider") or "ark",
+            })
+
+    # Also merge live models from the active default text backend if reachable
+    text_cfg = resolve_model_for_context("text")
+    try:
+        headers = build_llm_headers(
+            text_cfg["api_key"],
+            provider=text_cfg.get("provider", ""),
+            api_base_url=text_cfg["api_base_url"],
+        )
+        resp = requests.get(f"{text_cfg['api_base_url']}/models", headers=headers, timeout=5)
+        if resp.ok:
+            for m in (resp.json().get("data") or []):
+                if isinstance(m, dict) and m.get("id") and m["id"] not in seen:
+                    seen.add(m["id"])
+                    models_data.append(m)
+    except Exception:
+        pass
+
+    fallback_id = (text_cfg.get("model_id") or get_default_llm_model() or "ark-llm").strip()
+    if fallback_id and fallback_id not in seen:
+        models_data.append({
+            "id": fallback_id,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": text_cfg.get("provider") or "ark",
+        })
+
+    return {"object": "list", "data": models_data}
+
+
+@app.post("/internal/webui/v1/chat/completions")
+async def internal_webui_chat_completions(request: Request) -> Any:
+    """OpenAI-compatible /v1/chat/completions proxy for Open WebUI routed via Model Registry."""
+    _verify_internal_webui_auth(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+
+    requested_model = str(body.get("model") or "").strip()
+    stream = bool(body.get("stream", False))
+    resolved = resolve_model_for_context("text", model_override=requested_model)
+    target_model = resolved["model_id"]
+    llm_payload = {**body, "model": target_model, "stream": stream}
+    llm_headers = build_llm_headers(
+        resolved["api_key"],
+        json_content=True,
+        provider=resolved.get("provider", ""),
+        api_base_url=resolved["api_base_url"],
+    )
+    chat_url = f"{resolved['api_base_url']}/chat/completions"
+
+    if stream:
+        try:
+            resp = await run_in_threadpool(
+                lambda: requests.post(chat_url, headers=llm_headers, json=llm_payload, stream=True, timeout=180)
+            )
+        except requests.RequestException as exc:
+            return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"})
+
+        if not resp.ok:
+            try:
+                err_body = resp.json()
+            except ValueError:
+                err_body = {"error": resp.text}
+            resp.close()
+            return JSONResponse(status_code=resp.status_code, content=err_body)
+
+        def event_stream():
+            try:
+                for line in resp.iter_lines(decode_unicode=False):
+                    if line:
+                        yield line + b"\n\n"
+            finally:
+                resp.close()
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    try:
+        resp = await run_in_threadpool(
+            lambda: requests.post(chat_url, headers=llm_headers, json=llm_payload, timeout=180)
+        )
+    except requests.RequestException as exc:
+        return JSONResponse(status_code=502, content={"error": f"LLM backend unreachable: {exc}"})
+
+    try:
+        content = resp.json()
+    except ValueError:
+        content = {"error": resp.text}
+    return JSONResponse(status_code=resp.status_code, content=content)
